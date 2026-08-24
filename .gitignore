@@ -1,0 +1,23 @@
+# 内部文档（个人/策略/工作笔记，不进开源仓库）
+localdocs/
+
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+core/bin/
+
+# 环境与密钥
+.env
+.env.*
+*.pem
+*.key
+*.p12
+
+# 日志与临时
+*.log
+*.tmp
+.DS_Store
+.idea/
+.vscode/
