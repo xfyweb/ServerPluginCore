@@ -1,0 +1,19 @@
+{
+  "name": "serverplugin-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Plugin-driven server management core (spike)",
+  "scripts": {
+    "spike": "tsx core/main.ts",
+    "verify:sandbox": "node scripts/verify-quickjs-patch.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "quickjs-emscripten": "^0.32.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.12"
+  }
+}

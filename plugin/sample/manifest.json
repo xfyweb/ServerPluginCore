@@ -1,0 +1,6 @@
+{
+  "id": "official:sample",
+  "name": "Sample Plugin",
+  "version": { "code": 1, "name": "0.0.1" },
+  "entry": "main.ts"
+}
