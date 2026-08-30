@@ -198,17 +198,52 @@
           "additionalProperties": false,
           "properties": {
             "publish": {
+              "description": "发布的事件：显式声明 topic + 保密等级（public/sensitive/secret）",
               "type": "array",
               "items": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+                "type": "object",
+                "required": [
+                  "topic",
+                  "classification"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+                  },
+                  "classification": {
+                    "enum": [
+                      "public",
+                      "sensitive",
+                      "secret"
+                    ]
+                  }
+                }
               }
             },
             "subscribe": {
+              "description": "订阅的事件：mode = notify(只读通知，宽松) | arbitrate(裁决修改，严格)",
               "type": "array",
               "items": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+                "type": "object",
+                "required": [
+                  "topic",
+                  "mode"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+                  },
+                  "mode": {
+                    "enum": [
+                      "notify",
+                      "arbitrate"
+                    ]
+                  }
+                }
               }
             }
           }

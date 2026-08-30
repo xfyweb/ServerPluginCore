@@ -3,12 +3,17 @@ import { join } from 'node:path';
 import { transform } from 'esbuild';
 import { validateManifest } from '../sdk/validate';
 import type { Manifest } from '../sdk/types';
+import { initAudit } from './audit';
 import { hostApi } from './hostApi';
 import { createSandbox } from './sandbox';
+import type { Tier } from './permissions/registry';
 
 const pluginDir = join(import.meta.dirname, '..', 'plugin', 'sample');
 
 async function main() {
+  // 0) 审计链路启动探测（写不了就退出，fail-closed at startup）
+  initAudit();
+
   // 1) 读插件清单并校验（schema 单一事实源：sdk/schema/manifest.schema.json）
   const raw = JSON.parse(readFileSync(join(pluginDir, 'manifest.json'), 'utf8'));
   const check = validateManifest(raw);
@@ -27,13 +32,18 @@ async function main() {
     target: 'es2022',
   });
 
-  // 2) 建沙箱，注入宿主 API（spike：无鉴权，P1 接入权限注册表）
-  const sandbox = await createSandbox(hostApi);
+  // 2) 插件上下文：档位（official 前缀）+ manifest 权限请求 → 权限检查 + 审计
+  const tier: Tier = manifest.id.startsWith('official:') ? 'official' : 'thirdparty';
+  const sandbox = await createSandbox(hostApi, {
+    pluginId: manifest.id,
+    permissions: manifest.permissions.map((p) => p.name),
+    tier,
+  });
 
   try {
     // 3) 加载并执行插件（ESM）
     await sandbox.runModule(manifest.id, code);
-    console.log(`[core] plugin "${manifest.id}" executed.`);
+    console.log(`[core] plugin "${manifest.id}" executed (tier=${tier}).`);
   } finally {
     sandbox.dispose();
   }

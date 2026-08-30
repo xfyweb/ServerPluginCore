@@ -22,7 +22,10 @@ const validFull = {
   exports: {
     webApis: [{ path: '/api/docker/containers', permission: 'docker.read' }],
     routes: [{ path: '/docker', title: 'Docker', icon: 'container', order: 10 }],
-    events: { publish: ['backup.done'], subscribe: ['docker.container.crash'] },
+    events: {
+      publish: [{ topic: 'backup.done', classification: 'public' }],
+      subscribe: [{ topic: 'docker.container.crash', mode: 'notify' }],
+    },
   },
   dependencies: {
     npm: [{ name: 'zod', version: '3.x', tier: 'whitelist' }],

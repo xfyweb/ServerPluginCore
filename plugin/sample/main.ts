@@ -1,5 +1,5 @@
-// 沙箱内只有注入的 @host/api 可用——没有 require、没有 process、没有 fs
-import { write } from '@host/api';
+// 样板插件：fs 分组 API（权限由宿主侧检查 + 审计）
+import { fs } from '@host/api';
 
-const result = write('~/test.txt', 'HelloWorld');
+const result = fs.write('~/test.txt', 'HelloWorld');
 console.log('[plugin] write result:', result);

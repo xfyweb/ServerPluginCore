@@ -18,3 +18,4 @@ core/bin/
 .DS_Store
 .idea/
 .vscode/
+.spc/

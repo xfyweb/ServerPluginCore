@@ -19,12 +19,62 @@
 - 错误码规范：`PERMISSION_DENIED` / `INVALID_ARGS` / `NOT_FOUND` / `TIMEOUT` / `INTERNAL` / `CONTRACT_MISMATCH`；
 - 超时与并发上限宿主侧强制（防失控，不防恶意）。
 
-## 3. 事件推送（宿主 → 插件，反向通道）
+## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
 
-- 事件总线：插件在 manifest `exports.events.subscribe` **显式声明**订阅的 topic；
-- 宿主推送（进程内：注入的回调；子进程：RPC notification）；
-- topic 授权：**枚举声明，无通配**（manifest-design 要点 6）；发布同样显式声明 `exports.events.publish`；
-- 典型事件：`docker.container.crash`、`backup.done`、`timers.fired`。
+### 3.1 事件分类（manifest 声明）
+
+插件在 manifest `exports.events` 中**显式声明**发布与订阅，两类语义分开：
+
+```json
+"exports": {
+  "events": {
+    "publish": [
+      { "topic": "backup.done", "classification": "public" }
+    ],
+    "subscribe": [
+      { "topic": "job.finished", "mode": "notify" },        // 只读通知（宽松）
+      { "topic": "exec.before",  "mode": "arbitrate" }      // 裁决修改（严格）
+    ]
+  }
+}
+```
+
+- **notify（只读通知）**：fire-and-forget，订阅方只读事件负载；
+- **arbitrate（裁决修改）**：可返回 EventResult（allow/deny/modify/pass）影响核心流程（如 SSO 裁决登录）；
+- topic 授权：**枚举声明，无通配**；事件负载可能含敏感信息（如 exec.after 的命令输出），订阅门槛见 §3.3。
+
+### 3.2 事件实例结构
+
+```ts
+interface EventContext {
+  event: string;              // "auth.login.before"
+  pluginId: string;           // 处理方
+  ts: number;
+  subject: string;            // 触发者
+  payload: unknown;           // 事件数据（只读）
+  state: Record<string, unknown>;  // 跨 before→after 可变上下文
+}
+
+interface EventResult {
+  status: 'allow' | 'deny' | 'modify' | 'pass';  // 放行/拒绝/改写后继续/不处理
+  data?: unknown;     // modify 时的改写内容
+  reason?: string;    // deny 时的原因（进审计）
+}
+```
+
+### 3.3 安全等级（三级矩阵）
+
+两个正交维度：**保密等级**（读门槛，管谁能订阅通知）与**执行等级**（写门槛，管谁能裁决）。
+
+| 等级 | 通知订阅（读） | 裁决修改（写） |
+|---|---|---|
+| `public` / `low` | 无需额外授权 | 无需额外授权 |
+| `sensitive` / `medium` | 显式授权（安装时确认） | 显式授权 |
+| `secret` / `high` | **仅官方** | **仅官方** |
+
+- **调用时声明**：插件每次调用宿主 API 时通过 `meta` 声明本次操作的等级（不同目录/命令敏感度不同）；权限点的 `confidentiality/executionLevel` 是**默认值**（未声明时兜底）；
+- **用户目录覆盖（只升不降）**：管理员可配置目录 → 等级映射（`pathLevels`，P2 进配置中心），涉及指定目录时 `effective = max(调用方声明, 用户配置)`——用户设置高于调用方时升级，低于时尊重调用方；
+- 审计记录 effective 等级。
 
 ## 4. 方法组（核心第一版）
 
