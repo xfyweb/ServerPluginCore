@@ -30,7 +30,7 @@
 
 | 方法组 | 方法 | 权限点 | 说明 |
 |---|---|---|---|
-| **exec（模板）** | `exec.runTemplate` | `exec.template.<action>.<op>` | **无自由命令**，仅模板 + 参数校验（详 §5） |
+| **exec（模板）** | `exec.run`（阻塞）`exec.spawn`（异步→句柄） | `exec.template.<action>.<op>` | **无自由命令**，仅模板 + 参数校验（详 §5、§4.1） |
 | **fs（受限）** | `fs.read` `fs.write` `fs.list` `fs.stat` | `fs.read.<scope>` `fs.write.<scope>` | 路径收敛 + realpath（详 §5） |
 | **kv** | `kv.get` `kv.set` `kv.delete` | `kv.<namespace>` | 插件作用域持久化存储 |
 | **timers** | `timers.every` `timers.cron` | `timers.schedule` | 宿主侧调度，插件不保活 |
@@ -39,6 +39,54 @@
 | **audit** | （无需插件调用） | — | 宿主对每个调用落审计（§8） |
 
 **核心不提供**（由能力插件经扩展注册点提供，见 §10）：db 连接代理、SSH、Docker 客户端、net 裸 socket、pty、媒体处理。
+
+## 4.1 命令执行任务模型（参考 MCSManager）
+
+> 设计参考：MCSManager 的 AsyncTask 模型（daemon/src/service/async_task_service）+ 进程适配器 + 状态机。
+> 落地：P2（进程管理器），P1 仅 `exec.run` 阻塞形态。
+
+**统一任务模型**：阻塞与异步是同一任务对象的两种消费方式，不是两套 API。
+
+```
+exec.run(template, params, {timeoutMs})       // 阻塞：spawn + await handle.wait()
+exec.spawn(template, params) → TaskHandle     // 异步：立即返回句柄
+```
+
+**TaskHandle（沙箱内句柄对象，方法调用走宿主桥）**——插件三态切换：
+
+```ts
+interface TaskHandle {
+  id: string;                    // 复杂随机，防枚举（MCSM：taskId 防越权）
+  status(): 'running' | 'done' | 'error' | 'killed';
+  wait(): Promise<{ exitCode: number }>;      // 阻塞等待（STOP→resolve / ERROR→reject）
+  output(opts?): string[];                   // 拉取输出（增量/尾部）
+  kill(): Promise<void>;                     // 取消（先软后硬杀树）
+  events: EventEmitter;                       // started/exit/data/error（或走事件总线）
+}
+```
+
+**关键机制**（MCSM 验证过的坑，必须内置）：
+
+| 机制 | 说明 |
+|---|---|
+| **世代号（startCount）** | 句柄记录代际；所有超时/取消回调先校验"还是不是原来那个任务"再动手——防竞态 |
+| **取消三层链** | abort 流 → 销毁句柄 → **杀进程树**（Linux `/proc` 递归子进程、Windows `taskkill /T /F`）——防子进程逃逸 |
+| **优雅停止契约** | 停止策略配置化：`{ stopCommand?, signal, timeoutMs }`——先命令式停止 → ^C/SIGINT → 超时升级 SIGKILL → 杀树兜底 |
+| **`detached: false`** | 不分离子进程——父进程异常退出时子进程不继续运行 |
+| **输出环形缓冲** | 固定容量（默认 256 块 × 256 字符，50ms flush），**截断时插入 `[截断]` 标记**；内存固定不增长 |
+| **任务归属** | 句柄绑定创建者插件——只能控制自己的任务（`jobs.manage` 区分"自己/全局"） |
+| **任务级资源限制** | 非容器场景务实方案：磁盘配额 + 降权运行（runAs）+ 超时杀树；硬限制（内存/CPU）留给 docker/未来 |
+
+**长驻进程（MC 服务器等）**——任务模型的特殊形态（无终态，状态机）：
+
+```
+process.start(id, template, params) → ProcessHandle   // spawn（低权限用户，数组参数不拼 shell）
+process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
+权限点：process.start / process.signal / process.stop（dangerous 级）
+状态机：STOPPING → STARTING → RUNNING（+ 崩溃自动重启：autoRestart + 次数上限）
+```
+
+**事件扩展**（进 §3 事件清单）：`job.finished`、`process.exit`、`process.crash`、`process.data`（输出流订阅可选）。
 
 ## 5. 危险原语策略
 
