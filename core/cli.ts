@@ -2,6 +2,7 @@
 import { request } from 'node:http';
 import { t } from './i18n';
 import { verifyDaemon } from './handshake';
+import { BRAND } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
 
@@ -64,6 +65,11 @@ async function acquireToken(): Promise<string> {
 async function main() {
   const cmd = process.argv[2] ?? 'help';
 
+  if (cmd === 'about') {
+    console.log(BRAND);
+    return;
+  }
+
   if (cmd === 'status') {
     const token = await acquireToken();
     const r = (await httpJson('GET', '/api/status', token)) as {
@@ -119,6 +125,7 @@ async function main() {
   }
 
   console.log(t('cli.usage', { port: PORT }));
+  console.log(BRAND);
 }
 
 main().catch((e) => {

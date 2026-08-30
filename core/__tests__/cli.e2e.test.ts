@@ -74,6 +74,13 @@ test('CLI plugin list：复用 schema 校验器返回插件列表', async () => 
   assert.match(r.stdout, /official:sample@0\.0\.1/);
 });
 
+
+test('CLI about：输出品牌与构建指纹（本地信息，无需 daemon）', async () => {
+  const r = await run(['core/cli.ts', 'about'], { SPC_PORT: String(port) });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /ServerPluginCore 0\.0\.0 \(spc\.xfyweb\.cn\) build dev-\d{4}-\d{2}-\d{2}/);
+});
+
 test('CLI 未指定子命令：打印用法', async () => {
   const r = await run(['core/cli.ts'], { SPC_PORT: String(port) });
   assert.equal(r.code, 0);

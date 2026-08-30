@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { validateManifest } from '../sdk/validate';
 import { t } from './i18n';
 import { HandshakeServer } from './handshake';
+import { BRAND } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
 const pluginsDir = join(import.meta.dirname, '..', 'plugin');
@@ -124,6 +125,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
+  console.log(`[daemon] ${BRAND}`);
   console.log(t('daemon.listen', { port: PORT, pid: process.pid }));
   console.log(t('daemon.key', { key: handshake.publicKeyB64.slice(0, 24) }));
 });
