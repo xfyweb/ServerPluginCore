@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateManifest } from '../sdk/validate';
+import { t } from './i18n';
 import { HandshakeServer } from './handshake';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
@@ -11,7 +12,7 @@ const pluginsDir = join(import.meta.dirname, '..', 'plugin');
 
 // 非 root fail-closed（ADR-004）：daemon 拒绝以 root 运行
 if (typeof process.getuid === 'function' && process.getuid() === 0) {
-  console.error('[daemon] 拒绝以 root 运行（ADR-004 非 root 底线）。请使用专用低权限用户（如 spc）。');
+  console.error(t('daemon.root.deny'));
   process.exit(1);
 }
 
@@ -94,7 +95,7 @@ const server = createServer(async (req, res) => {
 
     // 其余端点需会话 token
     if (!requireAuth(req)) {
-      sendJson(res, 401, { error: 'UNAUTHORIZED', message: '无效或过期的会话 token' });
+      sendJson(res, 401, { error: 'UNAUTHORIZED', message: t('server.unauthorized') });
       return;
     }
 
@@ -116,15 +117,15 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    sendJson(res, 404, { error: 'NOT_FOUND', message: path });
+    sendJson(res, 404, { error: 'NOT_FOUND', message: t('server.notfound', { path }) });
   } catch (e) {
     sendJson(res, 500, { error: 'INTERNAL', message: e instanceof Error ? e.message : String(e) });
   }
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[daemon] spc core listening on http://127.0.0.1:${PORT} (pid ${process.pid})`);
-  console.log(`[daemon] 私钥仅内存；公钥 ${handshake.publicKeyB64.slice(0, 24)}...（重启即全部失效）`);
+  console.log(t('daemon.listen', { port: PORT, pid: process.pid }));
+  console.log(t('daemon.key', { key: handshake.publicKeyB64.slice(0, 24) }));
 });
 
 process.on('SIGINT', () => {

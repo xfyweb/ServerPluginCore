@@ -1,0 +1,17 @@
+{
+  "cli.status.running": "核心运行中：version {version} · pid {pid} · {platform} · uptime {uptime}s",
+  "cli.status.fail": "status 失败（{code}）",
+  "cli.plugin.list.empty": "（无插件）",
+  "cli.plugin.list.item.valid": "{dir}: {id}@{version} {name}",
+  "cli.plugin.list.item.invalid": "{dir}: manifest 无效 ⚠️",
+  "cli.handshake.fail": "握手失败（{code}）",
+  "cli.handshake.verify.fail": "daemon 签名验证失败——连接的可能不是真正的核心（防假冒拦截）",
+  "cli.handshake.session.fail": "会话建立失败（{code}）",
+  "cli.usage": "用法：spc status | spc plugin list\n（SPC_PORT 环境变量可覆盖默认端口 {port}）",
+  "cli.connect.fail": "无法连接核心（{msg}）。核心未启动？",
+  "daemon.listen": "[daemon] spc core listening on http://127.0.0.1:{port} (pid {pid})",
+  "daemon.key": "[daemon] 私钥仅内存；公钥 {key}...（重启即全部失效）",
+  "daemon.root.deny": "[daemon] 拒绝以 root 运行（ADR-004 非 root 底线）。请使用专用低权限用户（如 spc）。",
+  "server.unauthorized": "无效或过期的会话 token",
+  "server.notfound": "路径不存在：{path}"
+}

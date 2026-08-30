@@ -1,9 +1,9 @@
 // spc CLI：ed25519 握手客户端（管理面，docs/management-channel.md）
 import { request } from 'node:http';
+import { t } from './i18n';
 import { verifyDaemon } from './handshake';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
-const BASE = `http://127.0.0.1:${PORT}`;
 
 function httpJson(method: string, path: string, token?: string, body?: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -33,7 +33,7 @@ function httpJson(method: string, path: string, token?: string, body?: unknown):
         });
       },
     );
-    req.on('error', (e) => reject(new Error(`无法连接核心（${e.message}）。核心未启动？`)));
+    req.on('error', (e) => reject(new Error(t('cli.connect.fail', { msg: e.message }))));
     if (payload) req.write(payload);
     req.end();
   });
@@ -46,18 +46,18 @@ async function acquireToken(): Promise<string> {
     status: number;
     body: { challenge: string; signature: string; pubkey: string };
   };
-  if (hs.status !== 200) throw new Error(`握手失败（${hs.status}）`);
+  if (hs.status !== 200) throw new Error(t('cli.handshake.fail', { code: hs.status }));
 
   // ② 验签：确认对面是真正的 daemon（防假冒）
   if (!verifyDaemon(hs.body.pubkey, hs.body.challenge, hs.body.signature)) {
-    throw new Error('daemon 签名验证失败——连接的可能不是真正的核心（防假冒拦截）');
+    throw new Error(t('cli.handshake.verify.fail'));
   }
 
   // ③ 一次性 challenge 换短时会话 token
   const sess = (await httpJson('POST', '/auth/session', undefined, {
     challenge: hs.body.challenge,
   })) as { status: number; body: { token: string } };
-  if (sess.status !== 200) throw new Error(`会话建立失败（${sess.status}）`);
+  if (sess.status !== 200) throw new Error(t('cli.handshake.session.fail', { code: sess.status }));
   return sess.body.token;
 }
 
@@ -70,9 +70,16 @@ async function main() {
       status: number;
       body: { ok: boolean; version: string; pid: number; platform: string; uptimeMs: number };
     };
-    if (r.status !== 200) throw new Error(`status 失败（${r.status}）`);
+    if (r.status !== 200) throw new Error(t('cli.status.fail', { code: r.status }));
     const s = r.body;
-    console.log(`核心运行中：version ${s.version} · pid ${s.pid} · ${s.platform} · uptime ${(s.uptimeMs / 1000).toFixed(0)}s`);
+    console.log(
+      t('cli.status.running', {
+        version: s.version,
+        pid: s.pid,
+        platform: s.platform,
+        uptime: (s.uptimeMs / 1000).toFixed(0),
+      }),
+    );
     return;
   }
 
@@ -80,23 +87,38 @@ async function main() {
     const token = await acquireToken();
     const r = (await httpJson('GET', '/api/plugins', token)) as {
       status: number;
-      body: { plugins: { dir: string; valid: boolean; manifest: { id: string; name: string; version: { name: string } } | null }[] };
+      body: {
+        plugins: {
+          dir: string;
+          valid: boolean;
+          manifest: { id: string; name: string; version: { name: string } } | null;
+        }[];
+      };
     };
-    if (r.status !== 200) throw new Error(`plugin list 失败（${r.status}）`);
+    if (r.status !== 200) throw new Error(t('cli.status.fail', { code: r.status }));
     const plugins = r.body.plugins;
     if (plugins.length === 0) {
-      console.log('（无插件）');
+      console.log(t('cli.plugin.list.empty'));
       return;
     }
     for (const p of plugins) {
-      const info = p.valid && p.manifest ? `${p.manifest.id}@${p.manifest.version.name} ${p.manifest.name}` : 'manifest 无效';
-      console.log(`- ${p.dir}: ${info}${p.valid ? '' : ' ⚠️'}`);
+      if (p.valid && p.manifest) {
+        console.log(
+          t('cli.plugin.list.item.valid', {
+            dir: p.dir,
+            id: p.manifest.id,
+            version: p.manifest.version.name,
+            name: p.manifest.name,
+          }),
+        );
+      } else {
+        console.log(t('cli.plugin.list.item.invalid', { dir: p.dir }));
+      }
     }
     return;
   }
 
-  console.log(`用法：spc status | spc plugin list
-（SPC_PORT 环境变量可覆盖默认端口 ${PORT}）`);
+  console.log(t('cli.usage', { port: PORT }));
 }
 
 main().catch((e) => {
