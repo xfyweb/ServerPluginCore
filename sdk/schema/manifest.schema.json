@@ -1,0 +1,307 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://spc.xfyweb.cn/schema/manifest.schema.json",
+  "title": "ServerPluginCore Plugin Manifest",
+  "description": "插件清单（schema 2）。单一事实源：SDK 校验器、核心加载器、市场上传校验共用。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "name",
+    "version",
+    "runtime",
+    "permissions"
+  ],
+  "properties": {
+    "schema": {
+      "const": 2
+    },
+    "type": {
+      "description": "插件类别：ability(默认) | panel | driver | hook（driver/hook 为占位，后续阶段细化）",
+      "enum": [
+        "ability",
+        "panel",
+        "driver",
+        "hook"
+      ],
+      "default": "ability"
+    },
+    "id": {
+      "description": "命名空间 id：official:<name> / thirdparty:<name>，小写字母数字连字符",
+      "type": "string",
+      "pattern": "^(official|thirdparty):[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "version": {
+      "type": "object",
+      "required": [
+        "code",
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "程序化比较用（升级判断），整数递增",
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "description": "展示用 semver",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+      }
+    },
+    "compat": {
+      "description": "核心版本兼容：minCore 必填，targetCore 可选",
+      "type": "object",
+      "required": [
+        "minCore"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "minCore": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "targetCore": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+      }
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "homepage": {
+          "type": "string",
+          "pattern": "^https?://"
+        }
+      }
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "entry": {
+      "description": "构建源入口（如 main.ts/main.js），构建层从这里开始打包；缺省 main.ts",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "default": "main.ts"
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "quickjs",
+            "node-child"
+          ]
+        },
+        "esm": {
+          "description": "ESM-only 是硬约束（ADR-005），schema 层面拒绝非 ESM 插件",
+          "const": true
+        }
+      }
+    },
+    "permissions": {
+      "description": "权限请求（uses-permission 语义）：无默认放行，必须显式声明",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "exports": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "webApis": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/api/"
+              },
+              "permission": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "title"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "icon": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "events": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "publish": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+              }
+            },
+            "subscribe": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "npm": {
+          "description": "依赖三层：whitelist(L1 平台托管) / user-opt-in(L2 用户放行)；原生模块与重型二进制不进此表(L3)",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "version",
+              "tier"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 214
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "tier": {
+                "enum": [
+                  "whitelist",
+                  "user-opt-in"
+                ]
+              }
+            }
+          }
+        },
+        "plugins": {
+          "description": "插件间显式可见性（ADR-005：默认不可见，声明才可交互）",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(official|thirdparty):[a-z0-9][a-z0-9_-]{0,62}$"
+              },
+              "version": {
+                "type": "string",
+                "maxLength": 64
+              }
+            }
+          }
+        }
+      }
+    },
+    "signature": {
+      "description": "P4 签名落地前整体可选；存在时必须完整",
+      "type": "object",
+      "required": [
+        "algorithm",
+        "keyId",
+        "digest",
+        "sig"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "ed25519"
+          ]
+        },
+        "keyId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sig": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -6,14 +6,21 @@
   "description": "Plugin-driven server management core (spike)",
   "scripts": {
     "spike": "tsx core/main.ts",
-    "verify:sandbox": "node scripts/verify-quickjs-patch.mjs"
+    "daemon": "tsx core/server.ts",
+    "spc": "tsx core/cli.ts",
+    "verify:sandbox": "node scripts/verify-quickjs-patch.mjs",
+    "test": "tsx --test sdk/__tests__/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "license": "MIT",
   "dependencies": {
+    "ajv": "^8.20.0",
     "quickjs-emscripten": "^0.32.0"
   },
   "devDependencies": {
+    "@types/node": "^26.4.0",
     "esbuild": "^0.28.2",
-    "tsx": "^4.23.12"
+    "tsx": "^4.23.12",
+    "typescript": "6.0.3"
   }
 }

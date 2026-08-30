@@ -1,6 +1,9 @@
 {
+  "schema": 2,
   "id": "official:sample",
   "name": "Sample Plugin",
   "version": { "code": 1, "name": "0.0.1" },
+  "runtime": { "type": "quickjs", "esm": true },
+  "permissions": [{ "name": "fs.write.data", "reason": "spike：向用户主目录写入 test.txt" }],
   "entry": "main.ts"
 }

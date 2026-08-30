@@ -41,7 +41,8 @@ export async function createSandbox(api: Record<string, unknown>): Promise<Sandb
           );
           return vm.newString(JSON.stringify(result ?? null));
         } catch (err) {
-          vm.throwError(err instanceof Error ? err.message : String(err));
+          // 注意：API 是 vm.throw（@experimental），不存在 throwError
+          vm.throw(err instanceof Error ? err : new Error(String(err)));
           return vm.undefined;
         }
       }),
