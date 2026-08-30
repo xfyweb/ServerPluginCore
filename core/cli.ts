@@ -1,0 +1,105 @@
+// spc CLI：ed25519 握手客户端（管理面，docs/management-channel.md）
+import { request } from 'node:http';
+import { verifyDaemon } from './handshake';
+
+const PORT = Number(process.env.SPC_PORT ?? 18777);
+const BASE = `http://127.0.0.1:${PORT}`;
+
+function httpJson(method: string, path: string, token?: string, body?: unknown): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port: PORT,
+        path,
+        method,
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(payload ? { 'content-length': Buffer.byteLength(payload) } : {}),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          try {
+            resolve({ status: res.statusCode ?? 0, body: text ? JSON.parse(text) : null });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: text });
+          }
+        });
+      },
+    );
+    req.on('error', (e) => reject(new Error(`无法连接核心（${e.message}）。核心未启动？`)));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/** 握手三步：验签 daemon → 换会话 token（docs/management-channel.md §3.2） */
+async function acquireToken(): Promise<string> {
+  // ① 拿 challenge + daemon 签名 + 公钥
+  const hs = (await httpJson('GET', '/auth/handshake')) as {
+    status: number;
+    body: { challenge: string; signature: string; pubkey: string };
+  };
+  if (hs.status !== 200) throw new Error(`握手失败（${hs.status}）`);
+
+  // ② 验签：确认对面是真正的 daemon（防假冒）
+  if (!verifyDaemon(hs.body.pubkey, hs.body.challenge, hs.body.signature)) {
+    throw new Error('daemon 签名验证失败——连接的可能不是真正的核心（防假冒拦截）');
+  }
+
+  // ③ 一次性 challenge 换短时会话 token
+  const sess = (await httpJson('POST', '/auth/session', undefined, {
+    challenge: hs.body.challenge,
+  })) as { status: number; body: { token: string } };
+  if (sess.status !== 200) throw new Error(`会话建立失败（${sess.status}）`);
+  return sess.body.token;
+}
+
+async function main() {
+  const cmd = process.argv[2] ?? 'help';
+
+  if (cmd === 'status') {
+    const token = await acquireToken();
+    const r = (await httpJson('GET', '/api/status', token)) as {
+      status: number;
+      body: { ok: boolean; version: string; pid: number; platform: string; uptimeMs: number };
+    };
+    if (r.status !== 200) throw new Error(`status 失败（${r.status}）`);
+    const s = r.body;
+    console.log(`核心运行中：version ${s.version} · pid ${s.pid} · ${s.platform} · uptime ${(s.uptimeMs / 1000).toFixed(0)}s`);
+    return;
+  }
+
+  if (cmd === 'plugin' && process.argv[3] === 'list') {
+    const token = await acquireToken();
+    const r = (await httpJson('GET', '/api/plugins', token)) as {
+      status: number;
+      body: { plugins: { dir: string; valid: boolean; manifest: { id: string; name: string; version: { name: string } } | null }[] };
+    };
+    if (r.status !== 200) throw new Error(`plugin list 失败（${r.status}）`);
+    const plugins = r.body.plugins;
+    if (plugins.length === 0) {
+      console.log('（无插件）');
+      return;
+    }
+    for (const p of plugins) {
+      const info = p.valid && p.manifest ? `${p.manifest.id}@${p.manifest.version.name} ${p.manifest.name}` : 'manifest 无效';
+      console.log(`- ${p.dir}: ${info}${p.valid ? '' : ' ⚠️'}`);
+    }
+    return;
+  }
+
+  console.log(`用法：spc status | spc plugin list
+（SPC_PORT 环境变量可覆盖默认端口 ${PORT}）`);
+}
+
+main().catch((e) => {
+  console.error(`[spc] ${e instanceof Error ? e.message : e}`);
+  process.exit(1);
+});
