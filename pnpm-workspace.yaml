@@ -1,0 +1,5 @@
+allowBuilds:
+  esbuild: true
+patchedDependencies:
+  quickjs-emscripten-core: patches/quickjs-emscripten-core.patch
+confirmModulesPurge: false
