@@ -107,7 +107,7 @@ MIT License
 
 ---
 
-*受 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件化哲学启发；安全模型参考了 Velocity / Paper / AstrBot 等开源项目的权限设计经验。*
+*受 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件化哲学启发；安全模型参考了 Velocity / Paper / AstrBot 等开源项目的权限设计经验。命令执行模块参考了 MCSManager 开源项目的设计经验，在此对全体开源项目贡献者致谢！*
 
 *Author: [xfy2412](https://github.com/xfy2412)*
 
