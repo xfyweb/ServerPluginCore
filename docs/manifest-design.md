@@ -23,9 +23,12 @@
 
 ## 二、manifest 草案（schema 2）
 
+> `type` 声明插件类型，缺省 `ability`。四类：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点）、**panel** 面板插件（Web 壳 + 组件库，内置可卸载）、**driver** 驱动插件（核心端注册权限节点 + API 端点并自行鉴权，严审）、**hook** 协作插件（事件钩子，位置/权限设计中）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
+
 ```json
 {
   "schema": 2,
+  "type": "ability",
 
   "id": "official:docker",
   "name": "Docker Management",
@@ -33,12 +36,11 @@
   "compat": { "minCore": "0.1.0", "targetCore": "0.3.0" },
   "author": { "name": "...", "homepage": "..." },
   "runtime": { "type": "quickjs", "esm": true },
-  "description": "Docker 容器/镜像/网络/卷管理（薄适配器）",
+  "description": "Docker 容器/镜像/网络/卷管理（能力插件：面板页面 + 调驱动插件端点）",
 
   "permissions": [
     { "name": "docker.read", "reason": "列出容器与镜像" },
-    { "name": "docker.write" },
-    { "name": "exec.template.nginx.reload" }
+    { "name": "docker.write" }
   ],
 
   "exports": {
@@ -49,14 +51,14 @@
       { "path": "/docker", "title": "Docker", "icon": "container", "order": 10 }
     ],
     "events": {
-      "publish":   ["backup.done"],
-      "subscribe": ["docker.container.crash"]
+      "publish":   [{ "topic": "backup.done", "classification": "public" }],
+      "subscribe": [{ "topic": "job.finished", "mode": "notify" }]
     }
   },
 
   "dependencies": {
     "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ],
-    "plugins": []
+    "plugins": [ { "id": "official:docker-driver", "version": ">=0.1.0" } ]
   },
 
   "signature": {
@@ -78,7 +80,7 @@
    | `normal` | 官方档自动授予 | `docker.read`、`fs.read.data` |
    | `dangerous` | 第三方档需安装确认 + 降级映射（D5） | `docker.write`、exec 模板、`net.fetch.*` |
    | `signature` | **仅官方签名插件可申请**，第三方声明即无效 | 任意 fs 读写、`net.listen`、secrets |
-   - 内置插件（面板本身）≈ Android 的 `signatureOrSystem`（特权但同源）。
+   - 内置插件（面板插件本身）≈ Android 的 `signatureOrSystem`（同源内置、可卸载，见 ADR-002 v2）。
    - **signature 档是 Android 模型对我们最有价值的一点**：官方专属能力由签名链保证，第三方插件连"请求"都不会被受理——比我们在 manifest 里写死"官方插件才允许 X"更优雅、更可审计。
 
 3. **`exports` 显式导出（默认私有）**：插件对外的一切（Web API、前端路由、事件 topic）默认不对外；必须显式声明且经宿主网关登记后才可路由（对应 Android `android:exported` 默认 false）。比 AstrBot/Bukkit 的"注册即对外"更严，与"插件 Web API/页面纳入宿主网关鉴权"（AstrBot 研究结论 5）一致。
@@ -101,7 +103,7 @@
 | 无 exports | `exports: {webApis, routes, events}` | 默认私有 + 显式导出（要点 3） |
 | `version: "1.0.0"` 字符串 | `version: {code, name}` | 版本比较正确性（要点 4） |
 | 无 compat | `compat: {minCore, targetCore}` | 插件-核心版本耦合（要点 5） |
-| `runtime: "node"` 字符串 | `runtime: {type, version}` | 运行时版本约束 |
+| `runtime: "node"` 字符串 | `runtime: {type, esm}` | 运行时类型 + ESM-only 硬约束（ADR-005 §4） |
 | 无 dependencies | `dependencies: {npm, plugins}` | 依赖管控 + 插件间可见性（要点 6/8） |
 | — | `schema: 2` | 清单 schema 版本化（D10） |
 

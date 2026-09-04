@@ -1,6 +1,11 @@
 // Manifest 类型定义（与 sdk/schema/manifest.schema.json 对齐，手写维护）
 // 单一事实源是 JSON Schema；本文件仅提供 TS 静态类型。
 
+// 插件类型（中文叫法：面板插件/能力插件/驱动插件/协作插件）
+//   panel   面板插件：构建 Web 壳与页面、提供组件库，其他插件挂载页面；内置可卸载，不算普通插件
+//   ability 能力插件（默认）：运行在 QuickJS 沙箱内，挂载管理页面，经 @host/api 调驱动端点
+//   driver  驱动插件：运行在核心端（特权），注册权限节点 + API 端点暴露给沙箱并自行鉴权
+//   hook    协作插件：钩子触发逻辑，参与核心事件生命周期并干预/修改（位置/权限设计中）
 export type PluginType = 'ability' | 'panel' | 'driver' | 'hook';
 export type RuntimeType = 'quickjs' | 'node-child';
 export type DependencyTier = 'whitelist' | 'user-opt-in';
@@ -8,7 +13,7 @@ export type DependencyTier = 'whitelist' | 'user-opt-in';
 export interface Manifest {
   /** schema 版本，必须为 2 */
   schema: 2;
-  /** 插件类别，缺省视为 ability */
+  /** 插件类型，缺省视为 ability（能力插件） */
   type?: PluginType;
   /** 命名空间 id：official:<name> / thirdparty:<name> */
   id: string;
@@ -53,8 +58,16 @@ export interface Manifest {
       order?: number;
     }[];
     events?: {
-      publish?: string[];
-      subscribe?: string[];
+      publish?: {
+        topic: string;
+        /** 事件保密等级：public/sensitive/secret */
+        classification: 'public' | 'sensitive' | 'secret';
+      }[];
+      subscribe?: {
+        topic: string;
+        /** notify 只读通知 / arbitrate 裁决修改（协作插件 hook 语义） */
+        mode: 'notify' | 'arbitrate';
+      }[];
     };
   };
   dependencies?: {

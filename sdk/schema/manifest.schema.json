@@ -18,7 +18,7 @@
       "const": 2
     },
     "type": {
-      "description": "插件类别：ability(默认) | panel | driver | hook（driver/hook 为占位，后续阶段细化）",
+      "description": "插件类型：ability(能力插件,默认,沙箱内挂载管理页面) | panel(面板插件,Web壳与组件库,内置可卸载) | driver(驱动插件,核心端特权,注册API端点并自行鉴权,严审) | hook(协作插件,事件钩子,位置/权限设计中)",
       "enum": [
         "ability",
         "panel",

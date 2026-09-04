@@ -17,7 +17,7 @@
 |---|---|---|---|
 | P0 | 契约定稿（v0.2 最小集） | S | — |
 | P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 审计 | M | P0 |
-| P2 | 构建层与依赖三层 + 事件总线 + 能力插件扩展点 | L | P1 |
+| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | L | P1 |
 | P3 | 面板插件 + 前端运行时加载 | L | P1（可与 P2 并行） |
 | P4 | 签名与市场（双档落地） | M | P1 + P3 |
 | P5 | 核心插件集 + 加固 + 发布 | L | P2 + P3 |
@@ -31,7 +31,7 @@
   - 方法组最小集：exec（模板）、fs（受限）、kv、timers、events、lifecycle、audit（api-contract §4）；
   - 权限注册表 + protectionLevel（normal/dangerous/signature）+ 三态判定（§6/§7）；
   - manifest schema 2 编译成 JSON Schema（sdk/schema/manifest.schema.json）。
-- **明确不做**：db/ssh/网络能力（能力插件，P2+）；事件总线细化授权（v0.3）。
+- **明确不做**：db/ssh/网络能力（驱动插件，P2+）；事件总线细化授权（v0.3）。
 - 交付：api-contract.md v0.2 + manifest JSON Schema + interface-audit-exec-fs.md 评审通过。
 - 验收：核心方法 ≤ 10 个；威胁建模清单（interface-audit-exec-fs）过审。
 
@@ -47,21 +47,21 @@
 - **demo 插件**（内置示例）：kv 写入 + 定时器 + fs.data 读写 + 一次 exec 模板调用。
 - 验收：威胁建模测试清单（§5）全部通过；kill 沙箱插件 → 核心不挂；审计有条目；`panel disable` 后 CLI 一切可用。
 
-## P2：命令任务模型 + 构建层 + 能力插件
+## P2：命令任务模型 + 构建层 + 驱动插件
 
 1. **命令执行任务模型**（api-contract §4.1，参考 MCSManager）：exec.spawn → TaskHandle（wait/output/kill）、世代号防竞态、取消三层链（杀进程树）、优雅停止契约、输出环形缓冲 + 截断标记；**进程管理器**（process.* 组：长驻进程状态机 + 崩溃自动重启）——MC 管理场景的落地；
 2. **构建流水线**：依赖图静态解析 → 白名单校验（禁原生模块/禁用模块）→ esbuild ESM bundle → 签名（ADR-005 §6）；依赖三层（L1 平台托管 / L2 用户放行 / L3 禁区）落地；
-3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，钩子插件地基）；
+3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，协作插件地基）；
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
-5. **API 扩展注册点**：能力插件注册协议（§10）+ 第一个能力插件候选：db（pg/mysql2，社区）；
+5. **API 扩展注册点**：驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
 6. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
-- 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；能力插件注册的方法进注册表且可被沙箱插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）。
+- 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）。
 
 ## P3：面板插件 + 前端运行时加载
 
 - 前端运行时加载（先最小 proof）：React shell 按 manifest 资源路径运行时加载插件 bundle；
-- panel 插件（默认内置、特权）：登录/auth、仪表盘、插件管理页、审计查看、市场页（P4 后接入）。
-- 验收：禁用 panel → Web 不可用、CLI 全可用；第三方插件前端无需重编译。
+- **面板插件**（panel，默认内置、可卸载）：构建 Web 壳 + 组件库，其他插件按统一规范挂载页面；承载登录/auth、仪表盘、插件管理页、审计查看、市场页（P4 后接入）。
+- 验收：卸载/禁用 panel → Web 不可用、CLI 全可用；第三方插件前端无需重编译。
 
 ## P4：签名与市场（双档落地）
 
@@ -83,7 +83,7 @@
 | R1 QuickJS 性能不足（薄适配器假设不成立） | P1 前置 benchmark，不成立则回退子进程档或混合 |
 | R2 构建层静态分析误伤合法插件（动态 require） | 白名单内允许受限动态 require；文档明确"静态可审计优先" |
 | R3 exec 模板设计不足 → 插件做不了事 | P1 先做 2 个真实模板（nginx/git）验证；模板注册表是核心评审对象 |
-| R4 能力插件与核心进程边界不清 | api-contract §11-3 待定项，P2 落地时定 |
+| R4 驱动插件与核心进程边界不清 | api-contract §11-3 待定项，P2 落地时定 |
 | R5 单人节奏拖垮 | 每阶段小步可演示；P2 与 P3 可并行 |
 
 ## 明确不做（现阶段）

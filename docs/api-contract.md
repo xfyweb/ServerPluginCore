@@ -1,6 +1,6 @@
 # 宿主 API 契约（v0.2）
 
-> 依据：ADR-001（零环境权力）、ADR-005（QuickJS 沙箱 + 能力插件）、manifest-design.md（schema 2）。
+> 依据：ADR-001（零环境权力）、ADR-005（QuickJS 沙箱 + 驱动插件机制）、manifest-design.md（schema 2）。
 > v0.2 变更：传输模型从"JSON-RPC over stdio"改为**进程内 `@host/api` 注入为主**（QuickJS 沙箱），stdio JSON-RPC 降级为子进程档次通道；新增权限注册表、事件推送、API 扩展注册点。
 
 ## 1. 传输模型（双通道，同一套方法签名）
@@ -8,7 +8,7 @@
 | 通道 | 适用 | 形态 | 说明 |
 |---|---|---|---|
 | **主通道** | QuickJS 沙箱（默认档） | 进程内 `@host/api` 模块注入（函数调用） | 插件 `import { fs, exec } from '@host/api'`；µs 级调用；注入即能力 |
-| **次通道** | 子进程档（第三方隔离档）/ 能力插件 | stdio JSON-RPC 2.0 | 与主通道**共用同一套方法签名、参数 schema、错误码**，仅传输不同 |
+| **次通道** | 子进程档（第三方隔离档）/ 驱动插件 | stdio JSON-RPC 2.0 | 与主通道**共用同一套方法签名、参数 schema、错误码**，仅传输不同 |
 
 - **版本协商**：`lifecycle.version`（核心返回契约版本，插件 SDK 校验兼容）；契约按 semver 演进，破坏性变更走废弃期；
 - 沙箱插件**只能**通过注入拿到 `@host/api`；子进程档插件通过 RPC 信封拿同一组方法。
@@ -20,6 +20,8 @@
 - 超时与并发上限宿主侧强制（防失控，不防恶意）。
 
 ## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
+
+> 事件订阅方主要是**协作插件**（hook，类型设计中）：钩子触发逻辑，参与核心事件生命周期并干预/修改；notify/arbitrate 语义即协作插件的工作方式。运行位置（核心/沙箱）与默认权限（网络/文件）待 ADR 定稿。
 
 ### 3.1 事件分类（manifest 声明）
 
@@ -88,7 +90,7 @@ interface EventResult {
 | **lifecycle** | `lifecycle.health` `lifecycle.version` | 自动授予 | 心跳、契约协商 |
 | **audit** | （无需插件调用） | — | 宿主对每个调用落审计（§8） |
 
-**核心不提供**（由能力插件经扩展注册点提供，见 §10）：db 连接代理、SSH、Docker 客户端、net 裸 socket、pty、媒体处理。
+**核心不提供**（由驱动插件经扩展注册点提供，见 §10）：db 连接代理、SSH、Docker 客户端、net 裸 socket、pty、媒体处理。
 
 ## 4.1 命令执行任务模型（参考 MCSManager）
 
@@ -169,7 +171,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
   - `normal`：官方档自动授予（docker.read、fs.read.data）；
   - `dangerous`：第三方档需安装确认 + 降级映射（docker.write、exec 模板）；
   - `signature`：仅官方签名插件可申请（任意 fs 读写、secrets），第三方声明即无效。
-- 注册表是审计、管理 UI、测试、能力插件枚举的单一事实源。
+- 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
 
 ## 7. 权限判定（三态 + 匹配算法）
 
@@ -182,6 +184,8 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 每条调用落：`{ts, pluginId, method, paramsDigest, result, permission: {decision, reason}}`——审计日志只增不改，插件不可达；权限拒绝单独告警。
 
 ## 9. manifest（schema 2）
+
+> `type` 声明插件类型（ability/panel/driver/hook），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005；type 目前不改变核心加载行为（tier 由 id 前缀判定），P2/P3 起按类型分派运行档与信任策略。
 
 完整设计见 manifest-design.md，要点（与旧 schema 1 的差异）：
 
@@ -197,7 +201,10 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
   "exports": {
     "webApis": [ { "path": "/api/docker/containers", "permission": "docker.read" } ],
     "routes": [ { "path": "/docker", "title": "Docker", "icon": "container" } ],
-    "events": { "publish": ["backup.done"], "subscribe": ["docker.container.crash"] }
+    "events": {
+      "publish":   [ { "topic": "backup.done", "classification": "public" } ],
+      "subscribe": [ { "topic": "docker.container.crash", "mode": "notify" } ]
+    }
   },
   "dependencies": { "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ], "plugins": [] },
   "signature": { "algorithm": "ed25519", "keyId": "official-2026", "digest": "...", "sig": "..." }
@@ -208,21 +215,24 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 - `dependencies.npm.tier`：`whitelist`（L1，平台托管）/ `user-opt-in`（L2，需用户放行）；原生模块与重型二进制不进此表（L3 禁区）；
 - `runtime.type`：`quickjs`（默认）| `node-child`（子进程档）；ESM-only 全后端统一。
 
-## 10. API 扩展注册点（能力插件机制）
+## 10. API 扩展注册点（驱动插件机制）
 
-核心提供注册协议，让**特权能力插件**扩展 `@host/api`：
+核心提供注册协议，让**驱动插件**（driver，核心端特权档）扩展 `@host/api`：
 
 ```
 注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query" }] }
 ```
 
-- 能力插件必须：官方签名 + 特权档（跑在核心侧/独立 Node 进程，拥有 node API）；
-- 每个注册方法：进权限注册表（D4）、过威胁建模评审、随核心一起审计；
-- 普通沙箱插件通过 `import { db } from '@host/api/db'` 调用，**与基础 API 无感知差异**。
+- 驱动插件必须：官方签名 + 特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
+- 驱动插件向面板注册**权限节点 + API 端点**暴露给沙箱：每个注册方法进权限注册表（D4）、过威胁建模评审、随核心一起审计；
+- **鉴权双层**：核心网关先强制检查"调用方（沙箱内能力插件）有没有该端点权限"（D3 单一强制点不放松）；驱动插件内部再按面板给的权限列表**自行鉴权**（参数是否越界等）——驱动插件是市场严审对象，第三方安装有严厉提醒；
+- 沙箱内的**能力插件**（ability）通过 `import { db } from '@host/api/db'` 调用，**与基础 API 无感知差异**。
+
+> 术语沿革：早期文档称驱动插件为"能力插件（特权档）"，v2 定稿后"能力插件"专指沙箱内挂载管理页面的插件（ability），核心端注册端点的插件称**驱动插件**（driver）。
 
 ## 11. 待定项（v0.3 再议）
 
 1. 事件总线 topic 与插件可见性（dependencies.plugins 显式声明）的细化授权模型；
 2. `@host/api` 类型声明的自动生成（从注册表生成 TS 类型，保证 IDE 体验与运行时一致）；
-3. 能力插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）；
+3. 驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）；
 4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响。
