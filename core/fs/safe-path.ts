@@ -36,23 +36,27 @@ export interface PathValidation {
  */
 export function validatePath(requested: string, roots: string[]): PathValidation {
   const abs = isAbsolute(requested) ? requested : resolve(requested);
-  // 根目录特判：resolve('/') 是 '/'（Windows 是 'C:\\'），直接 + sep 会变成 '//' 导致白名单失效
-  const normRoots = roots.map((r) => {
-    const resolved = resolve(r);
-    const isRoot = parse(resolved).root === resolved;
-    return isRoot ? resolved : resolved + sep;
-  });
+  // 作用域匹配：根自身也算在作用域内（否则作用域根被自己拒绝），子路径按 "根 + sep" 前缀匹配。
+  // 特判盘根：resolve('/') 是 '/'（Windows 是 'C:\\'），此时不能再补 sep（'//' 会导致白名单失效）。
+  const normRoots = roots.map((r) => resolve(r));
   const inRoot = (p: string): boolean =>
-    normRoots.some((root) => p === root || p.startsWith(root));
+    normRoots.some((root) => {
+      if (p === root) return true;
+      const prefix = root.endsWith(sep) ? root : root + sep;
+      return p.startsWith(prefix);
+    });
 
   // 1) 快速前缀检查（字符串级，先拦明显越界）
   if (!inRoot(abs)) {
     throw new PathError(`路径不在允许的作用域内: ${abs}`);
   }
 
-  // 2) 逐级符号链接检查（F2）：从根开始，每级 lstat
-  const segments = abs.split(sep).filter(Boolean);
-  let current: string = sep; // 显式 string：sep 的字面量类型 '\\'|'/' 会被 join 返回值拓宽冲突
+  // 2) 逐级符号链接检查（F2）：从卷根开始，每级 lstat
+  // 起点必须是卷根（POSIX '/'；Windows 'D:\'）——直接以 sep 起步会在 Windows 拼出 '\D:'，
+  // 使 lstat 立即失败并 break，整段扫描被跳过（悬空软链因此可被放行）。
+  const vol = parse(abs).root;
+  const segments = abs.slice(vol.length).split(sep).filter(Boolean);
+  let current: string = vol;
   for (const seg of segments) {
     current = join(current, seg);
     let st;
@@ -62,7 +66,13 @@ export function validatePath(requested: string, roots: string[]): PathValidation
       break; // 路径尚不存在（新文件场景），停止逐级检查
     }
     if (st.isSymbolicLink()) {
-      const target = realpathSync(current);
+      let target: string;
+      try {
+        target = realpathSync(current);
+      } catch {
+        // 悬空软链（目标不存在）：无法证明其在作用域内 → fail-closed
+        throw new PathError(`符号链接无法解析（目标不存在）: ${current}`);
+      }
       if (!inRoot(target)) {
         throw new PathError(`符号链接逃逸拦截: ${current} → ${target}`);
       }

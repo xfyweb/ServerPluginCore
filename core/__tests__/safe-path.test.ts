@@ -11,6 +11,22 @@ const root = mkdtempSync(join(tmpdir(), 'spc-path-'));
 const outside = mkdtempSync(join(tmpdir(), 'spc-outside-'));
 const ROOTS = [root];
 
+/**
+ * 软链能力探测：POSIX 恒可用；Windows 需开发者模式或管理员权限（否则 EPERM）。
+ * 按能力而非平台决定跳过——能建软链就真跑这些用例（曾经按 win32 一刀切，掩盖了两个 bug）。
+ */
+const canSymlink = (() => {
+  try {
+    const probe = mkdtempSync(join(tmpdir(), 'spc-symlink-probe-'));
+    symlinkSync(join(probe, 'missing-target'), join(probe, 'link'));
+    rmSync(probe, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const symlinkCase = { skip: canSymlink ? false : '当前环境无法创建符号链接（Windows 需开发者模式/管理员）' };
+
 test.before(() => {
   mkdirSync(join(root, 'sub'), { recursive: true });
   writeFileSync(join(root, 'existing.txt'), 'hello');
@@ -33,7 +49,7 @@ test('F1: 绝对路径越界被拒', () => {
 });
 
 // F2：符号链接逃逸
-test('F2: 软链指向作用域外被拒', { skip: process.platform === 'win32' }, () => {
+test('F2: 软链指向作用域外被拒', symlinkCase, () => {
   symlinkSync(join(outside, 'secret.txt'), join(root, 'evil-link'));
   assert.throws(() => validatePath(join(root, 'evil-link'), ROOTS), PathError);
 });
@@ -92,16 +108,36 @@ test('正常: 作用域内已存在文件', () => {
 // ---- 同事 review 补充场景 ----
 
 // 1. 多级符号链接：link1 -> a -> outside（逐级 lstat 应解析完整链）
-test('F2: 多级软链指向外部被拒', { skip: process.platform === 'win32' }, () => {
-  symlinkSync(join(root, 'a'), join(root, 'link1'));
-  symlinkSync(join(outside, 'secret.txt'), join(root, 'a'));
+test('F2: 多级软链指向外部被拒', symlinkCase, () => {
+  symlinkSync(join(root, 'a'), join(root, 'link1'), 'file');
+  symlinkSync(join(outside, 'secret.txt'), join(root, 'a'), 'file');
   assert.throws(() => validatePath(join(root, 'link1'), ROOTS), PathError);
 });
 
-// 2. 父目录为符号链接的新文件（指向外部）
-test('F6: 新文件的父目录是软链指向外部', { skip: process.platform === 'win32' }, () => {
-  symlinkSync(join(outside, 'sub'), join(root, 'linkdir'));
+// 2. 父目录为符号链接的新文件（指向外部已存在目录）
+test('F6: 新文件的父目录是软链指向外部', symlinkCase, () => {
+  mkdirSync(join(outside, 'sub'), { recursive: true });
+  symlinkSync(join(outside, 'sub'), join(root, 'linkdir'), 'dir');
   assert.throws(() => validatePath(join(root, 'linkdir', 'new.txt'), ROOTS), PathError);
+});
+
+// 2a. 悬空软链（目标不存在）作为最终段：必须 fail-closed。
+// 回归：Windows 上逐级扫描曾被跳过 → 悬空软链被当作"新文件"放行，写入会落到作用域外。
+test('F2: 悬空软链作为最终段被拒（fail-closed，非放行/非裸 ENOENT）', symlinkCase, () => {
+  symlinkSync(join(outside, 'created-later.txt'), join(root, 'sub', 'dangling'), 'file');
+  assert.throws(() => validatePath(join(root, 'sub', 'dangling'), ROOTS), PathError);
+});
+
+// 2b. 悬空软链作为父目录，同样 fail-closed
+test('F6: 悬空软链作为父目录被拒', symlinkCase, () => {
+  symlinkSync(join(outside, 'no-such-dir'), join(root, 'dangling-dir'), 'dir');
+  assert.throws(() => validatePath(join(root, 'dangling-dir', 'new.txt'), ROOTS), PathError);
+});
+
+// 2c. 作用域根自身在作用域内（曾经被自己的白名单拒绝）
+test('作用域根自身可访问（根也在白名单内）', () => {
+  const v = validatePath(root, ROOTS);
+  assert.equal(v.path, root);
 });
 
 // 3. 中间目录不存在：明确 PathError（不冒泡裸 ENOENT）
