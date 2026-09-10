@@ -78,6 +78,7 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 | [宿主 API 契约](docs/api-contract.md) | 双通道传输、方法组、权限注册表、manifest schema 2 |
 | [市场授权设计](docs/market-license-design.md) | 永久授权 + 维护窗口、下载控制面（P4 付费市场基线） |
 | [接口审计：exec + fs](docs/interface-audit-exec-fs.md) | 危险接口威胁建模清单（P1 验收依据） |
+| [exec 沙箱与模板注册制](docs/exec-sandbox-design.md) | 模板三方来源与命名空间、双层安全模型、E1–E10、系统级沙箱（P1/P2） |
 | [开发路线](docs/ROADMAP.md) | P0–P5 阶段规划 |
 
 **记录**：

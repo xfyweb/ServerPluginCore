@@ -142,8 +142,8 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 
 ## 5. 危险原语策略
 
-**exec 模板**（核心第一版审计焦点，详细规范见 interface-audit-exec-fs.md）：
-- 模板注册表（核心侧）：`{action, op, paramsSchema}`；参数用枚举/正则/白名单校验；
+**exec 模板**（核心第一版审计焦点，详细规范见 interface-audit-exec-fs.md，沙箱与注册制见 exec-sandbox-design.md）：
+- 模板注册表（**注册制**，三方来源 + 命名空间 `core:` / `<pluginId>:` / `admin:`）：插件在 manifest `execTemplates` 声明 → 核心静态校验（E1–E10）→ 管理员批准 → 进注册表；参数用枚举/正则/白名单校验；
 - 命令构造禁止字符串拼接用户输入（数组传参）；凭据禁明文 `-p`，走 `MYSQL_PWD`/`--defaults-extra-file`（chmod 600，用完即删）；
 - 输出大小限制、超时、工作目录固定、环境变量白名单；
 - 第一版模板：nginx（reload/test）、git（pull，repo 白名单）、psql/mysql（凭据走环境）。

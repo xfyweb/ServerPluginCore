@@ -42,6 +42,7 @@
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（JSON/正则/API 往返，验证"薄适配器无感"）；
 - **基础宿主 API**：exec 模板（nginx/git 起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 三态判定 + 审计**（interface-audit-exec-fs E1–E8/F1–F7 全部测试用例）；
+- **exec 基线与沙箱设计**（docs/exec-sandbox-design.md）：P1 落地"降权（spc）+ env 白名单 + 超时/输出截断"基线，声明层为过渡期唯一防线；注册制与系统级沙箱见 P2/P5；
 - **CLI**：`plugin list / install <dir> / enable / disable`、`panel status`、`audit tail`；
 - **sdk**：`@host/api` 类型声明、esbuild 构建模板（ESM-only）、manifest 校验器；
 - **demo 插件**（内置示例）：kv 写入 + 定时器 + fs.data 读写 + 一次 exec 模板调用。
@@ -53,7 +54,7 @@
 2. **构建流水线**：依赖图静态解析 → 白名单校验（禁原生模块/禁用模块）→ esbuild ESM bundle → 签名（ADR-005 §6）；依赖三层（L1 平台托管 / L2 用户放行 / L3 禁区）落地；
 3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，协作插件地基）；
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
-5. **API 扩展注册点**：驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
+5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（三方来源 + 命名空间，静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
 6. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
 - 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）。
 
