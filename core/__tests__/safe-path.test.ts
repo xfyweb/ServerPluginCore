@@ -125,13 +125,19 @@ test('F6: 新文件的父目录是软链指向外部', symlinkCase, () => {
 // 回归：Windows 上逐级扫描曾被跳过 → 悬空软链被当作"新文件"放行，写入会落到作用域外。
 test('F2: 悬空软链作为最终段被拒（fail-closed，非放行/非裸 ENOENT）', symlinkCase, () => {
   symlinkSync(join(outside, 'created-later.txt'), join(root, 'sub', 'dangling'), 'file');
-  assert.throws(() => validatePath(join(root, 'sub', 'dangling'), ROOTS), PathError);
+  assert.throws(
+    () => validatePath(join(root, 'sub', 'dangling'), ROOTS),
+    { name: 'PathError', code: 'SYMLINK_DANGLING' },
+  );
 });
 
 // 2b. 悬空软链作为父目录，同样 fail-closed
 test('F6: 悬空软链作为父目录被拒', symlinkCase, () => {
   symlinkSync(join(outside, 'no-such-dir'), join(root, 'dangling-dir'), 'dir');
-  assert.throws(() => validatePath(join(root, 'dangling-dir', 'new.txt'), ROOTS), PathError);
+  assert.throws(
+    () => validatePath(join(root, 'dangling-dir', 'new.txt'), ROOTS),
+    { name: 'PathError', code: 'SYMLINK_DANGLING' },
+  );
 });
 
 // 2c. 作用域根自身在作用域内（曾经被自己的白名单拒绝）

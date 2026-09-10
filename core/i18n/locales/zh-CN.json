@@ -12,6 +12,40 @@
   "daemon.listen": "[daemon] spc core listening on http://127.0.0.1:{port} (pid {pid})",
   "daemon.key": "[daemon] 私钥仅内存；公钥 {key}...（重启即全部失效）",
   "daemon.root.deny": "[daemon] 拒绝以 root 运行（ADR-004 非 root 底线）。请使用专用低权限用户（如 spc）。",
-  "server.unauthorized": "无效或过期的会话 token",
-  "server.notfound": "路径不存在：{path}"
+  "audit.dir.not_writable": "审计目录不可写（{dir}）",
+  "audit.buffer.overflow": "审计缓冲超限（>{limit} bytes），审计链路失效，进程退出。",
+
+  "err.ALLOWED": "已允许",
+  "err.PERMISSION_DENIED": "权限被拒绝：{permission}（判定：{reason}）",
+  "err.INVALID_ARGS": "参数无效",
+  "err.NOT_FOUND": "资源不存在",
+  "err.TIMEOUT": "操作超时",
+  "err.INTERNAL": "内部错误",
+  "err.UNEXPECTED": "未预期的内部错误",
+  "err.PLUGIN_LOAD_FAILED": "插件加载失败：{pluginId}（{cause}）",
+
+  "err.UNAUTHENTICATED": "未认证：会话 token 无效或已过期",
+  "err.CHALLENGE_USED": "challenge 已使用或无效",
+  "err.ROUTE_NOT_FOUND": "路径不存在：{path}",
+
+  "err.PATH_OUT_OF_SCOPE": "路径不在允许的作用域内：{path}",
+  "err.SYMLINK_DANGLING": "符号链接无法解析（目标不存在）：{path}",
+  "err.SYMLINK_ESCAPE": "符号链接逃逸拦截：{path} → {target}",
+  "err.PARENT_MISSING": "父目录不存在：{path}",
+  "err.PARENT_ESCAPE": "父目录逃逸拦截：{path}",
+  "err.SPECIAL_PATH_DENIED": "特殊路径被拒：{path}",
+  "err.INODE_PRECHECK_MISSING": "inode 校验缺少预检值（新文件场景不应调用）",
+  "err.INODE_MISMATCH": "TOCTOU 检测：文件在校验后被替换",
+
+  "err.FILE_TOO_LARGE": "文件过大：{bytes} > {limit} bytes",
+  "err.TARGET_TOO_LARGE": "目标文件过大（拒绝覆盖）：{path}",
+
+  "err.UNKNOWN_POINT": "未知权限点：{permission}",
+  "err.NOT_DECLARED": "插件未声明权限：{permission}",
+  "err.TIER_DENIED": "{tier} 档默认拒绝：{permission}",
+  "err.LEVEL_OFFICIAL_ONLY": "{mode}等级={level}：仅官方插件可用",
+  "err.LEVEL_NEEDS_GRANT": "{mode}等级={level}：需显式授权（thirdparty 未获授权）",
+
+  "err.DUPLICATE_POINT": "权限点重复注册：{permission}",
+  "err.LEVEL_ORDER_INVALID": "权限点 {permission} 定义错误：执行等级({executionLevel}) 低于保密等级({confidentiality})"
 }

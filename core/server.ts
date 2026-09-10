@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateManifest } from '../sdk/validate';
 import { t } from './i18n';
+import { toErrorShape } from './errors';
 import { HandshakeServer } from './handshake';
 import { BRAND } from './version';
 
@@ -22,6 +23,20 @@ const handshake = new HandshakeServer();
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
+}
+
+/**
+ * 错误响应：**只传英文码**（`error` 顶层码 + `detail.code/params`），不承载本地化文本。
+ * 渲染发生在客户端：CLI 用 tError()，面板自行请求 locale 文件在前端渲染。
+ */
+function sendError(
+  res: ServerResponse,
+  status: number,
+  error: string,
+  code: string,
+  params?: Record<string, string>,
+): void {
+  sendJson(res, status, { error, detail: params ? { code, params } : { code } });
 }
 
 function readBody(req: IncomingMessage): Promise<unknown> {
@@ -82,12 +97,12 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && path === '/auth/session') {
       const body = (await readBody(req)) as { challenge?: string };
       if (typeof body.challenge !== 'string') {
-        sendJson(res, 400, { error: 'INVALID_ARGS', message: 'challenge required' });
+        sendError(res, 400, 'INVALID_ARGS', 'CHALLENGE_REQUIRED');
         return;
       }
       const session = handshake.openSession(body.challenge);
       if (!session) {
-        sendJson(res, 403, { error: 'CHALLENGE_USED', message: 'challenge 已使用或无效' });
+        sendError(res, 403, 'INVALID_ARGS', 'CHALLENGE_USED');
         return;
       }
       sendJson(res, 200, session);
@@ -96,7 +111,7 @@ const server = createServer(async (req, res) => {
 
     // 其余端点需会话 token
     if (!requireAuth(req)) {
-      sendJson(res, 401, { error: 'UNAUTHORIZED', message: t('server.unauthorized') });
+      sendError(res, 401, 'PERMISSION_DENIED', 'UNAUTHENTICATED');
       return;
     }
 
@@ -118,9 +133,10 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    sendJson(res, 404, { error: 'NOT_FOUND', message: t('server.notfound', { path }) });
+    sendError(res, 404, 'NOT_FOUND', 'ROUTE_NOT_FOUND', { path });
   } catch (e) {
-    sendJson(res, 500, { error: 'INTERNAL', message: e instanceof Error ? e.message : String(e) });
+    const shape = toErrorShape(e);
+    sendError(res, 500, 'INTERNAL', shape?.code ?? 'UNEXPECTED', shape?.params);
   }
 });
 

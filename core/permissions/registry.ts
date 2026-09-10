@@ -1,5 +1,6 @@
 // 权限注册表（D4）：宿主侧集中登记全部权限点
 // 注册表是审计、管理 UI、测试、能力插件枚举的单一事实源（api-contract §6）。
+import { SpcError } from '../errors';
 export type ProtectionLevel = 'normal' | 'dangerous' | 'signature';
 export type Tier = 'official' | 'thirdparty';
 export type Decision = 'allow' | 'deny';
@@ -31,13 +32,15 @@ export class PermissionRegistry {
 
   register(point: PermissionPoint): void {
     if (this.points.has(point.name)) {
-      throw new Error(`权限点重复注册: ${point.name}`);
+      throw new SpcError('DUPLICATE_POINT', { permission: point.name });
     }
     // 一致性约束：执行等级必须 >= 保密等级（否则仲裁通道成为保密旁路）
     if (EXEC_ORDER[point.executionLevel] < CONF_ORDER[point.confidentiality]) {
-      throw new Error(
-        `权限点 ${point.name} 定义错误：执行等级(${point.executionLevel}) 低于保密等级(${point.confidentiality})`,
-      );
+      throw new SpcError('LEVEL_ORDER_INVALID', {
+        permission: point.name,
+        executionLevel: point.executionLevel,
+        confidentiality: point.confidentiality,
+      });
     }
     this.points.set(point.name, point);
   }

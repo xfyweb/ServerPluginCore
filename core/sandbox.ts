@@ -1,11 +1,36 @@
+import { readFileSync } from 'node:fs';
 import { isSuccess, newQuickJSAsyncWASMModule, Scope } from 'quickjs-emscripten';
-import { audit, digest } from './audit';
+import { audit, digest, digestParams } from './audit';
+import { SpcError, toErrorShape } from './errors';
 import { checkPermission } from './permissions/check';
 import { registry, type Tier } from './permissions/registry';
 
 export interface Sandbox {
   runModule(name: string, source: string): Promise<void>;
   dispose(): void;
+}
+
+/**
+ * @host/api 的模块正文来自真实文件（可评审 / 可高亮 / 可单测），运行时只生成导出清单。
+ * 下一阶段的官方模块仿真（node:fs / node:path / …）延用同一模式：一个模块一个文件 + 白名单登记。
+ * 打包注意（P5 自包含 bundle）：该文件需随包分发（或构建期以 text loader 内联），
+ * 否则运行时会因读不到文件而启动失败。
+ */
+const HOST_API_SOURCE = readFileSync(new URL('./sandbox-modules/host-api.js', import.meta.url), 'utf8');
+const EXPORTS_MARKER = '// __SPC_EXPORTS__';
+
+/**
+ * 宿主错误信封：宿主桥**不**用 `vm.throw`（asyncify 下宿主函数抛出的异常会随正常返回值被吞掉，
+ * @experimental 路径不可靠），而是把错误当作返回值回传；模块包装层在沙箱内还原成
+ * 带 `code` / `params` 的 `Error`。插件因此总能按英文码分支：
+ *   catch (e) { if (e.code === 'SYMLINK_DANGLING') { … } }
+ */
+const HOST_ERROR_KEY = '__spcError';
+
+function hostErrorPayload(code: string, params?: Record<string, string>): string {
+  return JSON.stringify({
+    [HOST_ERROR_KEY]: params && Object.keys(params).length > 0 ? { code, params } : { code },
+  });
 }
 
 /** 宿主方法：声明所需权限点 + 实现（权限检查在宿主侧强制，D3） */
@@ -23,19 +48,30 @@ export interface SandboxOptions {
   tier: Tier;
 }
 
-/** 生成 @host/api 模块源码：按方法组分组导出（fs.write → fs = { write }） */
-function buildModuleSource(apiKeys: string[]): string {
+/** 生成 @host/api 的导出清单（模块正文来自 sandbox-modules/host-api.js，按方法组分组） */
+function exportLines(apiKeys: string[]): string {
   const groups = new Map<string, string[]>();
   for (const key of apiKeys) {
     const idx = key.indexOf('.');
     const g = idx === -1 ? key : key.slice(0, idx);
     const prop = idx === -1 ? key : key.slice(idx + 1);
     if (!groups.has(g)) groups.set(g, []);
-    groups.get(g)!.push(`  ${prop}: globalThis.__host[${JSON.stringify(key)}]`);
+    groups.get(g)!.push(`  ${prop}: __wrap(globalThis.__host[${JSON.stringify(key)}])`);
   }
   return [...groups.entries()]
     .map(([g, props]) => `export const ${g} = {\n${props.join(',\n')}\n};`)
     .join('\n\n');
+}
+
+/**
+ * 沙箱模块白名单：specifier → 源码。未登记一律拒绝（零环境权力的执行点）。
+ * P2 官方模块仿真在此登记：`node:fs` / `node:path` / `node:events` …（各自对应一个真实文件）。
+ */
+function moduleSource(moduleName: string, apiKeys: string[]): string | null {
+  if (moduleName === '@host/api') {
+    return HOST_API_SOURCE.replace(EXPORTS_MARKER, exportLines(apiKeys));
+  }
+  return null;
 }
 
 export async function createSandbox(api: HostApi, options: SandboxOptions): Promise<Sandbox> {
@@ -51,10 +87,11 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   // ESM 加载器（v0.32 API）：loader 返回模块"源码字符串"
   // 白名单外模块一律拒绝——零环境权力的执行点
   runtime.setModuleLoader((moduleName: string): string => {
-    if (moduleName !== '@host/api') {
+    const src = moduleSource(moduleName, Object.keys(api));
+    if (src === null) {
       throw new Error(`[sandbox] module not allowed: ${moduleName}`);
     }
-    return buildModuleSource(Object.keys(api));
+    return src;
   });
 
   const vm = runtime.newContext();
@@ -67,22 +104,30 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       vm.newFunction(`host.${name}`, (...args) => {
         const start = Date.now();
         const strings = args.map((h) => vm.getString(h)); // spike：仅处理字符串参数
+        const callDigest = digest(JSON.stringify(strings));
 
-        // ① 权限判定（宿主侧强制 + 审计）
+        // ① 权限判定（宿主侧强制 + 审计）；判定只记码与参数摘要，不记本地化文本
         const check = checkPermission(registry, method.permission, options.permissions, options.tier);
         if (check.decision === 'deny') {
           audit({
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
-            paramsDigest: digest(JSON.stringify(strings)),
+            paramsDigest: callDigest,
             result: 'denied',
-            permission: check,
+            permission: {
+              decision: 'deny',
+              code: check.code,
+              paramsDigest: digestParams(check.params),
+            },
             durationMs: Date.now() - start,
           });
-          // 注意：API 是 vm.throw（@experimental），不存在 throwError
-          vm.throw(new Error(`PERMISSION_DENIED: ${method.permission}`));
-          return vm.undefined;
+          return vm.newString(
+            hostErrorPayload('PERMISSION_DENIED', {
+              permission: method.permission,
+              reason: check.code,
+            }),
+          );
         }
 
         // ② 执行宿主实现
@@ -92,24 +137,34 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
-            paramsDigest: digest(JSON.stringify(strings)),
+            paramsDigest: callDigest,
             result: 'ok',
-            permission: check,
+            permission: {
+              decision: 'allow',
+              code: check.code,
+              paramsDigest: digestParams(check.params),
+            },
             durationMs: Date.now() - start,
           });
           return vm.newString(JSON.stringify(result ?? null));
         } catch (err) {
+          // 宿主错误 → 英文码 + 参数摘要入审计；插件面拿到 code/params（未分类错误记 INTERNAL）
+          const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
           audit({
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
-            paramsDigest: digest(JSON.stringify(strings)),
+            paramsDigest: callDigest,
             result: 'error',
-            permission: check,
+            permission: {
+              decision: 'allow',
+              code: check.code,
+              paramsDigest: digestParams(check.params),
+            },
+            error: { code: shape.code, paramsDigest: digestParams(shape.params) },
             durationMs: Date.now() - start,
           });
-          vm.throw(err instanceof Error ? err : new Error(String(err)));
-          return vm.undefined;
+          return vm.newString(hostErrorPayload(shape.code, shape.params));
         }
       }),
     );
@@ -131,12 +186,49 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   vm.setProp(vm.global, 'console', consoleObj);
 
   return {
-    async runModule(_name: string, source: string) {
+    async runModule(name: string, source: string) {
       // import 语句自动走 setModuleLoader；evalCodeAsync 返回 SuccessOrFail<QuickJSHandle>
+      const started = Date.now();
       const result = await vm.evalCodeAsync(source);
       if (isSuccess(result)) {
         result.value.dispose();
+        return;
       }
+
+      // 失败：先把错误内容取出来，**再释放 handle**。
+      // 漏释放会让该 JS 对象常驻，runtime 释放时命中 QuickJS 断言
+      // （JS_FreeRuntime: assert(list_empty(&rt->gc_obj_list))）→ 整个进程 Aborted。
+      let dumped: unknown;
+      try {
+        dumped = vm.dump(result.error);
+      } catch {
+        dumped = undefined;
+      } finally {
+        result.error.dispose();
+      }
+
+      const info = (dumped && typeof dumped === 'object' ? dumped : {}) as {
+        code?: unknown;
+        message?: unknown;
+      };
+      const cause = typeof info.code === 'string' ? info.code : 'PLUGIN_ERROR';
+      const message = typeof info.message === 'string' ? info.message : String(dumped);
+
+      // 判定为插件代码缺陷：终止本次加载 + 记账（是否禁用该插件由上层策略决定，核心不崩）
+      audit({
+        ts: Date.now(),
+        pluginId: options.pluginId,
+        method: 'lifecycle.load',
+        paramsDigest: digest(name),
+        result: 'error',
+        error: { code: 'PLUGIN_LOAD_FAILED', paramsDigest: digestParams({ cause }) },
+        durationMs: Date.now() - started,
+      });
+      throw new SpcError('PLUGIN_LOAD_FAILED', {
+        pluginId: options.pluginId,
+        cause,
+        message,
+      });
     },
     dispose() {
       scope.dispose(); // 先释放宿主侧 handle

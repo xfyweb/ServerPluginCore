@@ -16,7 +16,13 @@
 ## 2. 调用约定
 
 - 每个方法有 JSON Schema 参数校验（宿主侧执行，跨通道共用一份 schema）；
-- 错误码规范：`PERMISSION_DENIED` / `INVALID_ARGS` / `NOT_FOUND` / `TIMEOUT` / `INTERNAL` / `CONTRACT_MISMATCH`；
+- **错误模型（两层码，全英文，无本地化文本）**：
+  - **顶层码**（传输/契约层）：`PERMISSION_DENIED` / `INVALID_ARGS` / `NOT_FOUND` / `TIMEOUT` / `INTERNAL` / `CONTRACT_MISMATCH`；
+  - **领域码**（`detail.code` + `detail.params`）：如 `PATH_OUT_OF_SCOPE` / `SYMLINK_DANGLING` / `NOT_DECLARED` / `TIER_DENIED`；
+  - 响应形状：`{ "error": "<顶层码>", "detail": { "code": "<领域码>", "params": { … } } }`；
+  - **HTTP 不承载本地化文本**：CLI 用 `tError()` 渲染，面板自行请求 locale 文件在**前端渲染层**翻译；
+  - **插件面（沙箱）**：`@host/api` 抛出的 `Error` 携带 `code` / `params`（`message` = 码），插件按码分支而非匹配文案；
+  - **码是契约**：只增不改；新增码必须同步补 `locales/zh-CN.json` 的 `err.<code>`；
 - 超时与并发上限宿主侧强制（防失控，不防恶意）。
 
 ## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
@@ -181,7 +187,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 
 ## 8. 审计
 
-每条调用落：`{ts, pluginId, method, paramsDigest, result, permission: {decision, reason}}`——审计日志只增不改，插件不可达；权限拒绝单独告警。
+每条调用落：`{ts, pluginId, method, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。
 
 ## 9. manifest（schema 2）
 

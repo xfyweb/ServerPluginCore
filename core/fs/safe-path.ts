@@ -1,11 +1,24 @@
 // 路径收敛（interface-audit-exec-fs.md F1–F7）
 // 所有 fs 路径先过本模块校验，宿主才能使用——校验与打开分离点要防 TOCTOU。
+// 错误只携带机器可读的 { code, params }；本地化文本由边界层（CLI / 面板）渲染。
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { SpcError } from '../errors';
 
-export class PathError extends Error {
-  constructor(message: string) {
-    super(message);
+/** 路径收敛错误码（契约：只增不改） */
+export type PathErrorCode =
+  | 'PATH_OUT_OF_SCOPE'
+  | 'SYMLINK_DANGLING'
+  | 'SYMLINK_ESCAPE'
+  | 'PARENT_MISSING'
+  | 'PARENT_ESCAPE'
+  | 'SPECIAL_PATH_DENIED'
+  | 'INODE_PRECHECK_MISSING'
+  | 'INODE_MISMATCH';
+
+export class PathError extends SpcError {
+  constructor(code: PathErrorCode, params: Record<string, string> = {}) {
+    super(code, params);
     this.name = 'PathError';
   }
 }
@@ -48,7 +61,7 @@ export function validatePath(requested: string, roots: string[]): PathValidation
 
   // 1) 快速前缀检查（字符串级，先拦明显越界）
   if (!inRoot(abs)) {
-    throw new PathError(`路径不在允许的作用域内: ${abs}`);
+    throw new PathError('PATH_OUT_OF_SCOPE', { path: abs });
   }
 
   // 2) 逐级符号链接检查（F2）：从卷根开始，每级 lstat
@@ -71,10 +84,10 @@ export function validatePath(requested: string, roots: string[]): PathValidation
         target = realpathSync(current);
       } catch {
         // 悬空软链（目标不存在）：无法证明其在作用域内 → fail-closed
-        throw new PathError(`符号链接无法解析（目标不存在）: ${current}`);
+        throw new PathError('SYMLINK_DANGLING', { path: current });
       }
       if (!inRoot(target)) {
-        throw new PathError(`符号链接逃逸拦截: ${current} → ${target}`);
+        throw new PathError('SYMLINK_ESCAPE', { path: current, target });
       }
     }
   }
@@ -85,7 +98,7 @@ export function validatePath(requested: string, roots: string[]): PathValidation
   if (existsSync(abs)) {
     final = realpathSync(abs);
     if (!inRoot(final)) {
-      throw new PathError(`符号链接逃逸拦截: ${abs} → ${final}`);
+      throw new PathError('SYMLINK_ESCAPE', { path: abs, target: final });
     }
     const st = statSync(final);
     expected = { dev: st.dev, ino: st.ino };
@@ -97,17 +110,17 @@ export function validatePath(requested: string, roots: string[]): PathValidation
       realParent = realpathSync(parent);
     } catch {
       // 父目录不存在（或链中断）：明确报错，避免裸 ENOENT 冒泡
-      throw new PathError(`父目录不存在: ${parent}`);
+      throw new PathError('PARENT_MISSING', { path: parent });
     }
     if (!inRoot(realParent)) {
-      throw new PathError(`父目录逃逸拦截: ${parent}`);
+      throw new PathError('PARENT_ESCAPE', { path: parent });
     }
     final = join(realParent, basename(abs));
   }
 
   // 5) 特殊路径黑名单（F3）
   if (FORBIDDEN_PREFIXES.some((p) => final.startsWith(p))) {
-    throw new PathError(`特殊路径被拒: ${final}`);
+    throw new PathError('SPECIAL_PATH_DENIED', { path: final });
   }
 
   return { path: final, expected };
@@ -119,9 +132,9 @@ export function validatePath(requested: string, roots: string[]): PathValidation
  */
 export function assertInodeMatch(actual: { dev: number; ino: number }, expected: ExpectedInode | null): void {
   if (expected === null) {
-    throw new PathError('inode 校验缺少预检值（新文件场景不应调用）');
+    throw new PathError('INODE_PRECHECK_MISSING');
   }
   if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
-    throw new PathError('TOCTOU 检测：文件在校验后被替换');
+    throw new PathError('INODE_MISMATCH');
   }
 }

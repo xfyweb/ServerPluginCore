@@ -2,6 +2,7 @@
 // 匹配链：精确 > 前缀通配（fs.*）> 全通配（*）；未设置一律拒绝。
 // 等级矩阵（决策记录）：public/low 无需额外授权；sensitive/medium 需显式授权；
 // secret/high 仅官方。用户目录覆盖：effective = max(调用方声明, 用户配置)（只升不降）。
+// 判定结果只携带机器可读的 { decision, code, params }；本地化文本由边界层渲染。
 import {
   CONF_ORDER,
   EXEC_ORDER,
@@ -12,9 +13,21 @@ import {
   type Tier,
 } from './registry';
 
+/** 判定码（契约：只增不改） */
+export type CheckCode =
+  | 'ALLOWED'
+  | 'UNKNOWN_POINT'
+  | 'NOT_DECLARED'
+  | 'TIER_DENIED'
+  | 'LEVEL_OFFICIAL_ONLY'
+  | 'LEVEL_NEEDS_GRANT';
+
 export interface CheckResult {
   decision: Decision;
-  reason: string;
+  /** 机器可读判定码（英文契约） */
+  code: CheckCode;
+  /** 渲染用结构化参数（CLI / 面板按 locale 渲染） */
+  params?: Record<string, string>;
 }
 
 /** 调用时声明的等级（CallMeta）——不同目录/命令的敏感度由调用方声明，权限点等级为兜底 */
@@ -55,18 +68,18 @@ export function checkPermission(
   // 1) 未在注册表登记的权限点 → 拒绝（未知即拒绝）
   const point = registry.get(requested);
   if (!point) {
-    return { decision: 'deny', reason: `未知权限点: ${requested}` };
+    return { decision: 'deny', code: 'UNKNOWN_POINT', params: { permission: requested } };
   }
 
   // 2) 插件未声明 → 拒绝（无默认放行）
   if (!matchGrant(requested, granted)) {
-    return { decision: 'deny', reason: `插件未声明权限: ${requested}` };
+    return { decision: 'deny', code: 'NOT_DECLARED', params: { permission: requested } };
   }
 
   // 3) 双档默认值（thirdparty 降级在注册表 defaults 中体现）
   const d = point.defaults[tier];
   if (d === 'deny') {
-    return { decision: 'deny', reason: `${tier} 档默认拒绝: ${requested}` };
+    return { decision: 'deny', code: 'TIER_DENIED', params: { tier, permission: requested } };
   }
 
   // 4) 等级门槛（effective = max(调用方声明, 用户覆盖, 权限点默认)）
@@ -78,7 +91,14 @@ export function checkPermission(
 
   return {
     decision: 'allow',
-    reason: `${tier} 档允许: ${requested} (c=${level.confidentiality}, e=${level.executionLevel})`,
+    code: 'ALLOWED',
+    params: {
+      tier,
+      permission: requested,
+      confidentiality: level.confidentiality,
+      executionLevel: level.executionLevel,
+      via: 'tier',
+    },
   };
 }
 
@@ -119,26 +139,30 @@ export function checkLevelAccess(
   opts: CheckOptions,
 ): CheckResult {
   const rank = mode === 'read' ? CONF_ORDER[level as Confidentiality] : EXEC_ORDER[level as ExecutionLevel];
-  const levelName = `${mode === 'read' ? '保密' : '执行'}等级=${level}`;
   const grantedList =
     mode === 'read' ? opts.explicitGrants?.confidentiality : opts.explicitGrants?.executionLevel;
+  const params = { level, mode };
 
   if (rank >= 2) {
     // secret / high：仅官方
     if (tier !== 'official') {
-      return { decision: 'deny', reason: `${levelName}：仅官方插件可${mode === 'read' ? '订阅' : '裁决'}` };
+      return { decision: 'deny', code: 'LEVEL_OFFICIAL_ONLY', params };
     }
-    return { decision: 'allow', reason: `${levelName}：官方档` };
+    return { decision: 'allow', code: 'ALLOWED', params: { ...params, via: 'official' } };
   }
   if (rank >= 1) {
     // sensitive / medium：需显式授权
     if (tier !== 'official' && !(grantedList ?? []).includes(level as never)) {
-      return { decision: 'deny', reason: `${levelName}：需显式授权（thirdparty 未获授权）` };
+      return { decision: 'deny', code: 'LEVEL_NEEDS_GRANT', params };
     }
-    return { decision: 'allow', reason: `${levelName}：${tier === 'official' ? '官方档' : '已显式授权'}` };
+    return {
+      decision: 'allow',
+      code: 'ALLOWED',
+      params: { ...params, via: tier === 'official' ? 'official' : 'granted' },
+    };
   }
   // public / low：无需额外授权
-  return { decision: 'allow', reason: `${levelName}：无需额外授权` };
+  return { decision: 'allow', code: 'ALLOWED', params: { ...params, via: 'public' } };
 }
 
 /** 匹配链：精确 > 前缀通配（fs.*）> 全通配（*） */

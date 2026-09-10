@@ -72,14 +72,14 @@ test('checkPermission：未在注册表登记的权限点 → deny（未知即�
   const r = makeRegistry();
   const res = checkPermission(r, 'unknown.point', ['unknown.point'], 'official');
   assert.equal(res.decision, 'deny');
-  assert.match(res.reason, /未知权限点/);
+  assert.equal(res.code, 'UNKNOWN_POINT');
 });
 
 test('checkPermission：未声明 → deny（无默认放行）', () => {
   const r = makeRegistry();
   const res = checkPermission(r, 'fs.write.data', [], 'official');
   assert.equal(res.decision, 'deny');
-  assert.match(res.reason, /未声明/);
+  assert.equal(res.code, 'NOT_DECLARED');
 });
 
 test('checkPermission：official 档声明 + 默认 allow → allow', () => {
@@ -93,7 +93,7 @@ test('checkPermission：thirdparty 档对 dangerous 权限点 → deny（降级�
   // 即使声明了，thirdparty 档也按 defaults 降级拒绝
   const res = checkPermission(r, 'exec.template.nginx.reload', ['exec.template.nginx.reload'], 'thirdparty');
   assert.equal(res.decision, 'deny');
-  assert.match(res.reason, /默认拒绝/);
+  assert.equal(res.code, 'TIER_DENIED');
 });
 
 test('checkPermission：official 档对 dangerous 权限点 → allow', () => {
@@ -110,16 +110,18 @@ test('checkPermission：通配声明 + 精确请求', () => {
 
 test('registry：重复注册抛错', () => {
   const r = makeRegistry();
-  assert.throws(() =>
-    r.register({
-      name: 'fs.write.data',
-      group: 'fs',
-      description: 'dup',
-      protectionLevel: 'normal',
-      confidentiality: 'sensitive',
-      executionLevel: 'medium',
-      defaults: { official: 'allow', thirdparty: 'allow' },
-    }),
+  assert.throws(
+    () =>
+      r.register({
+        name: 'fs.write.data',
+        group: 'fs',
+        description: 'dup',
+        protectionLevel: 'normal',
+        confidentiality: 'sensitive',
+        executionLevel: 'medium',
+        defaults: { official: 'allow', thirdparty: 'allow' },
+      }),
+    /DUPLICATE_POINT/,
   );
 });
 
@@ -142,7 +144,7 @@ test('等级：sensitive/medium thirdparty 无显式授权 → deny', () => {
   const r = makeRegistry();
   const res = checkPermission(r, 'fs.write.data', ['fs.write.data'], 'thirdparty');
   assert.equal(res.decision, 'deny');
-  assert.match(res.reason, /显式授权/);
+  assert.equal(res.code, 'LEVEL_NEEDS_GRANT');
 });
 
 test('等级：sensitive/medium thirdparty + 显式授权 → allow', () => {
@@ -159,7 +161,7 @@ test('等级：secret/high 仅官方（thirdparty 声明也拒绝）', () => {
     explicitGrants: { confidentiality: ['secret'], executionLevel: ['high'] },
   });
   assert.equal(res.decision, 'deny');
-  assert.match(res.reason, /仅官方/);
+  assert.equal(res.code, 'LEVEL_OFFICIAL_ONLY');
 });
 
 test('等级：secret/high 官方允许', () => {
@@ -176,7 +178,7 @@ test('等级覆盖：用户配置高于调用方声明 → 升级（只升不降
     userOverride: { confidentiality: 'secret', executionLevel: 'high' },
   });
   assert.equal(res.decision, 'deny'); // 被用户配置升级到 secret → 仅官方
-  assert.match(res.reason, /仅官方/);
+  assert.equal(res.code, 'LEVEL_OFFICIAL_ONLY');
 });
 
 test('等级覆盖：用户配置低于调用方声明 → 尊重调用方（不降级）', () => {
@@ -211,7 +213,7 @@ test('一致性：register 时执行等级低于保密等级 → 抛错', () => 
       executionLevel: 'low',
       defaults: { official: 'allow', thirdparty: 'allow' },
     }),
-    /执行等级.*低于保密等级/,
+    /LEVEL_ORDER_INVALID/,
   );
 });
 

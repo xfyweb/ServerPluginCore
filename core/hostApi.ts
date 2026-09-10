@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { HostApi } from './sandbox';
 import { assertInodeMatch, validatePath } from './fs/safe-path';
+import { SpcError } from './errors';
 
 /** 展开 ~ 为用户主目录（路径收敛要求绝对路径输入） */
 function expandPath(p: string): string {
@@ -27,10 +28,10 @@ export const hostApi: HostApi = {
       // ② 大小限制（F4）：内容长度 + 目标文件现有大小
       const bytes = Buffer.byteLength(content);
       if (bytes > MAX_FILE_BYTES) {
-        throw new Error(`文件过大: ${bytes} > ${MAX_FILE_BYTES} bytes`);
+        throw new SpcError('FILE_TOO_LARGE', { bytes: String(bytes), limit: String(MAX_FILE_BYTES) });
       }
       if (existsSync(safe) && statSync(safe).size > MAX_FILE_BYTES) {
-        throw new Error(`目标文件过大（拒绝覆盖）: ${safe}`);
+        throw new SpcError('TARGET_TOO_LARGE', { path: safe, limit: String(MAX_FILE_BYTES) });
       }
 
       // ③ 打开 + inode 比对（F5 TOCTOU）+ 写入

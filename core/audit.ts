@@ -3,28 +3,50 @@
 //   1) 启动时探测可写（写测试文件），失败 → 进程退出（fail-closed at startup）
 //   2) 运行中写盘失败 → 内存缓冲暂存（容错，保证可用性）
 //   3) 内存缓冲超上限（10MB）→ 进程退出（fail-closed at buffer-full）
+// 记录内容只含机器可读的码与参数摘要：不落本地化文本（本地化只在 CLI / 面板渲染层）、
+// 不落明文参数（路径等敏感值一律摘要）。控制台提示走 t()（运维可见文本）。
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CheckResult } from './permissions/check';
+import { t } from './i18n';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-export const AUDIT_DIR = join(__dirname, '..', '.spc');
+/** 审计目录：默认 `<repo>/.spc`；SPC_AUDIT_DIR 可覆盖（测试用隔离目录，避免污染仓库） */
+export const AUDIT_DIR = process.env.SPC_AUDIT_DIR ?? join(__dirname, '..', '.spc');
 export const AUDIT_FILE = join(AUDIT_DIR, 'audit.jsonl');
 
 const BUFFER_LIMIT_BYTES = 10 * 1024 * 1024;
 let buffer: string[] = [];
 let bufferBytes = 0;
 
+/** 判定记录（机器可读；判定参数只留摘要） */
+export interface AuditDecision {
+  decision: 'allow' | 'deny';
+  /** 判定码（CheckCode，如 UNKNOWN_POINT / NOT_DECLARED / TIER_DENIED） */
+  code: string;
+  /** 判定参数摘要（可能含路径等敏感值，不落明文） */
+  paramsDigest?: string;
+}
+
+/** 错误记录（宿主错误码；错误参数只留摘要） */
+export interface AuditError {
+  /** 宿主错误码（SpcError.code；未分类错误记 INTERNAL） */
+  code: string;
+  paramsDigest?: string;
+}
+
 export interface AuditEntry {
   ts: number;
   pluginId: string;
   method: string;
-  /** 参数摘要（防敏感信息落明文） */
+  /** 入参摘要（防敏感信息落明文） */
   paramsDigest: string;
   result: 'ok' | 'denied' | 'error';
-  permission: CheckResult;
+  /** 权限判定记录；生命周期类条目（如 lifecycle.load）无判定，可省略 */
+  permission?: AuditDecision;
+  /** result=error 时携带宿主错误码 */
+  error?: AuditError;
   durationMs: number;
 }
 
@@ -37,7 +59,7 @@ export function initAudit(): void {
     rmSync(probe);
   } catch (err) {
     console.error(
-      `[audit] 审计目录不可写（${AUDIT_DIR}）：${err instanceof Error ? err.message : String(err)}`,
+      `[audit] ${t('audit.dir.not_writable', { dir: AUDIT_DIR })}: ${err instanceof Error ? err.message : String(err)}`,
     );
     process.exit(1);
   }
@@ -52,9 +74,7 @@ export function audit(entry: AuditEntry): void {
     buffer.push(line);
     bufferBytes += Buffer.byteLength(line);
     if (bufferBytes > BUFFER_LIMIT_BYTES) {
-      console.error(
-        `[audit] 审计缓冲超限（>${BUFFER_LIMIT_BYTES} bytes），审计链路失效，进程退出。`,
-      );
+      console.error(`[audit] ${t('audit.buffer.overflow', { limit: BUFFER_LIMIT_BYTES })}`);
       process.exit(1);
     }
   }
@@ -63,4 +83,10 @@ export function audit(entry: AuditEntry): void {
 /** 参数摘要：sha256 前 16 位（防敏感信息落明文） */
 export function digest(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 16);
+}
+
+/** 结构化参数 → 摘要（审计用；无参数返回 undefined） */
+export function digestParams(params?: Record<string, string>): string | undefined {
+  if (!params || Object.keys(params).length === 0) return undefined;
+  return digest(JSON.stringify(params));
 }
