@@ -132,12 +132,14 @@ test('非法：dependencies.npm.tier 枚举外', () => {
   assert.equal(r.ok, false);
 });
 
-test('非法：signature 存在但缺字段', () => {
+test('非法：manifest 里出现 signature 字段（v2 起签名属于交付信封）', () => {
   const r = validateManifest({
     ...validMinimal,
-    signature: { algorithm: 'ed25519', keyId: 'k' }, // 缺 digest/sig
+    // v2：签名不在 manifest 里（见 docs/plugin-signature-design.md）
+    signature: { algorithm: 'ed25519', keyId: 'k', digest: 'd', sig: 's' },
   });
   assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.includes('signature')));
 });
 
 test('非法：type 枚举外', () => {

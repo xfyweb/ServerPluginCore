@@ -23,6 +23,7 @@
   - **HTTP 不承载本地化文本**：CLI 用 `tError()` 渲染，面板自行请求 locale 文件在**前端渲染层**翻译；
   - **插件面（沙箱）**：`@host/api` 抛出的 `Error` 携带 `code` / `params`（`message` = 码），插件按码分支而非匹配文案；
   - **码是契约**：只增不改；新增码必须同步补 `locales/zh-CN.json` 的 `err.<code>`；
+  - **全量清单的单一事实源是代码**：`core/errors.ts`（`SpcError`）+ 各模块的 code 类型联合（`PathErrorCode` / `CheckCode` / …）+ locales 的 `err.*`；本节与 module-emulation-design §7 只列举常用码与映射，**不重复维护全量列表**；
 - 超时与并发上限宿主侧强制（防失控，不防恶意）。
 
 ## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
@@ -73,6 +74,8 @@ interface EventResult {
 ### 3.3 安全等级（三级矩阵）
 
 两个正交维度：**保密等级**（读门槛，管谁能订阅通知）与**执行等级**（写门槛，管谁能裁决）。
+
+> 与 §6 的 `protectionLevel` **正交**，勿混用：本节的 confidentiality / executionLevel 管"事件订阅与裁决"的门槛（插件调用时通过 `meta` 声明、用户目录覆盖兜底），`protectionLevel` 管"权限点"的保护级别（注册表定义；**基线由 `protectionLevel` 唯一决定**，与签名锚定状态无关）。
 
 | 等级 | 通知订阅（读） | 裁决修改（写） |
 |---|---|---|
@@ -168,22 +171,23 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
   "name": "docker.write",
   "group": "docker",
   "description": "修改容器配置",
-  "protectionLevel": "dangerous",   // normal | dangerous | signature
-  "defaults": { "official": "allow", "thirdparty": "deny" }
+  "protectionLevel": "dangerous"    // normal | dangerous | signature
 }
 ```
 
+> v2 修订：原先按信任档分档的 `defaults: { official, thirdparty }` 取消——**权限基线只由 `protectionLevel` 决定**，锚定状态不再改变权限基线（它只决定命名空间归属、更新资格、安装摩擦与 `signature` 级准入，见 plugin-signature-design.md §7）。
+
 - **protectionLevel**（Android 参考，manifest-design）：
-  - `normal`：官方档自动授予（docker.read、fs.read.data）；
-  - `dangerous`：第三方档需安装确认 + 降级映射（docker.write、exec 模板）；
-  - `signature`：仅官方签名插件可申请（任意 fs 读写、secrets），第三方声明即无效。
+  - `normal`：声明即批准（docker.read、fs.read.data）；
+  - `dangerous`：**默认拒绝**；安装时经管理员**显式授予**后，按"授权记录"对**具体权限点**放行（运行时把该点的 deny 提升为 allow，仍受等级矩阵、作用域与审计约束）——**默认 deny 是起点、不是终局**（P4 安装流落地；docker.write、exec 模板）；
+  - `signature`：仅 `anchored`（签名可归因）插件可申请（任意 fs 读写、secrets），未锚定声明即无效。
 - 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
 
 ## 7. 权限判定（三态 + 匹配算法）
 
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Velocity Tristate 模式，未设置 = 拒绝）；
 - 匹配：精确 > 前缀通配（`docker.*`）> `*`；**显式 DENY 优先于任何授予**；
-- 插件 manifest 声明的是"请求"（uses-permission），宿主双档画像才是"批准"（请求/批准分离，Android 模型）。
+- 插件 manifest 声明的是"请求"（uses-permission）；宿主按 `protectionLevel` 基线 + 管理员**显式授予**做出"批准"（请求/批准分离，Android 模型）。
 
 ## 8. 审计
 
@@ -191,7 +195,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 
 ## 9. manifest（schema 2）
 
-> `type` 声明插件类型（ability/panel/driver/hook），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005；type 目前不改变核心加载行为（tier 由 id 前缀判定），P2/P3 起按类型分派运行档与信任策略。
+> `type` 声明插件类型（ability/panel/driver/hook），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005；type 目前不改变核心加载行为（**现状**信任档仍由 id 前缀推导，**目标态**为由安装记录里的签名锚定状态推导，见 plugin-signature-design.md），P2/P3 起按类型分派运行档与信任策略。
 
 完整设计见 manifest-design.md，要点（与旧 schema 1 的差异）：
 
@@ -212,8 +216,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
       "subscribe": [ { "topic": "docker.container.crash", "mode": "notify" } ]
     }
   },
-  "dependencies": { "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ], "plugins": [] },
-  "signature": { "algorithm": "ed25519", "keyId": "official-2026", "digest": "...", "sig": "..." }
+  "dependencies": { "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ], "plugins": [] }
 }
 ```
 
@@ -229,7 +232,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query" }] }
 ```
 
-- 驱动插件必须：官方签名 + 特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
+- 驱动插件必须：**锚定**（签名可归因，见 plugin-signature-design.md §7）+ 特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
 - 驱动插件向面板注册**权限节点 + API 端点**暴露给沙箱：每个注册方法进权限注册表（D4）、过威胁建模评审、随核心一起审计；
 - **鉴权双层**：核心网关先强制检查"调用方（沙箱内能力插件）有没有该端点权限"（D3 单一强制点不放松）；驱动插件内部再按面板给的权限列表**自行鉴权**（参数是否越界等）——驱动插件是市场严审对象，第三方安装有严厉提醒；
 - 沙箱内的**能力插件**（ability）通过 `import { db } from '@host/api/db'` 调用，**与基础 API 无感知差异**。

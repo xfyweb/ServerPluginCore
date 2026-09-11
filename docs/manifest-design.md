@@ -1,6 +1,6 @@
 # 插件元数据清单设计（Android 权限系统参考）
 
-> 依据：ADR-001（信任双档）、api-contract.md（宿主 API 契约）。
+> 依据：ADR-001（信任模型 v2）、plugin-signature-design.md（签名与身份）、api-contract.md（宿主 API 契约）。
 > 参考：[AndroidManifest.xml 的 `<permission>`/`<uses-permission>` 元素](https://android.googlesource.com/platform/frameworks/base/+/3155825/docs/html/guide/topics/manifest/permission-element.jd)、[Android 权限与保护级别](https://github.com/apachecn/apachecn-sec-zh/blob/master/docs/android-app-sec-guidebook-zh/5.2.md)。
 
 ## 一、Android 概念 → 我们的对应（对照表）
@@ -12,9 +12,9 @@
 | `minSdkVersion` / `targetSdkVersion` | 兼容下限 / 针对版本 | `compat.minCore` / `compat.targetCore`（核心 API 版本） |
 | `<uses-permission>` | **声明"需要"，不是"拥有"** | `permissions[]`（请求） |
 | `<permission protectionLevel>` | 权限定义 + 保护级别 | 宿主权限注册表（D4）每项带 protectionLevel |
-| `protectionLevel=normal` | 安装时自动授予 | 官方档自动批准 |
-| `protectionLevel=dangerous` | 需用户同意、可随时撤销 | 第三方档安装确认 + 风险提示 + 降级；可撤销（D7） |
-| `protectionLevel=signature` | 仅同签名应用可用 | **仅官方签名插件可申请**（官方专属能力） |
+| `protectionLevel=normal` | 安装时自动授予 | 声明即批准 |
+| `protectionLevel=dangerous` | 需用户同意、可随时撤销 | 默认拒绝 + 安装确认 + 风险提示 + 对具体权限点**显式授予**（deny→allow）；可撤销（D7） |
+| `protectionLevel=signature` | 仅同签名应用可用 | **仅 `anchored`（签名可归因）插件可申请**——锚有多个（内置官方 / 自建市场 / 直锚开发者），不再区分官方与第三方 |
 | `protectionLevel=signatureOrSystem` | 同签名或系统应用 | ≈ 内置插件（面板本身） |
 | `android:exported` | 组件默认私有，显式导出才对外 | `exports` 块：Web API/路由/事件默认私有 |
 | `<queries>`（包可见性） | 默认看不到其他应用 | 插件间默认不可见，通信需显式声明 |
@@ -59,29 +59,24 @@
   "dependencies": {
     "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ],
     "plugins": [ { "id": "official:docker-driver", "version": ">=0.1.0" } ]
-  },
-
-  "signature": {
-    "algorithm": "ed25519",
-    "keyId": "official-2026",
-    "digest": "<sha256 of manifest+code>",
-    "sig": "<base64>"
   }
 }
 ```
 
+> **manifest 里没有签名块（v2 修订）**：签名属于交付信封，不属于插件自述——签名对象是 `plugin.meta.json`（规范化 JSON），它覆盖 manifest 与全部载荷文件的哈希，包内以 `plugin.meta.sig` 外挂。见 plugin-signature-design.md。
+
 ## 三、关键设计点
 
-1. **请求 / 批准分离（Android 最核心的洞见）**：`permissions[]` 只是插件的**请求**；批准与否由宿主按"双档画像 × protectionLevel"决定。Android 的 `uses-permission` 与系统最终授权是两回事——这是"manifest 声明权限"最成熟的工业先例，直接支撑 D5（manifest 声明是请求，宿主画像才是批准）。
+1. **请求 / 批准分离（Android 最核心的洞见）**：`permissions[]` 只是插件的**请求**；批准与否由宿主按"锚定状态 × protectionLevel × 管理员授予"决定。Android 的 `uses-permission` 与系统最终授权是两回事——这是"manifest 声明权限"最成熟的工业先例，直接支撑 D5（manifest 声明是请求，宿主判定才是批准）。
 
 2. **protectionLevel 三档（精简自 Android 的八档）**：
    | 档位 | 授予条件 | 例子 |
    |---|---|---|
-   | `normal` | 官方档自动授予 | `docker.read`、`fs.read.data` |
-   | `dangerous` | 第三方档需安装确认 + 降级映射（D5） | `docker.write`、exec 模板、`net.fetch.*` |
-   | `signature` | **仅官方签名插件可申请**，第三方声明即无效 | 任意 fs 读写、`net.listen`、secrets |
+   | `normal` | 声明即批准（无危险面） | `docker.read`、`fs.read.data` |
+   | `dangerous` | **默认拒绝**；安装时管理员对具体权限点**显式授予**（D5） | `docker.write`、exec 模板、`net.fetch.*` |
+   | `signature` | **仅 `anchored` 插件可申请**（签名可归因），未锚定声明即无效 | 任意 fs 读写、`net.listen`、secrets |
    - 内置插件（面板插件本身）≈ Android 的 `signatureOrSystem`（同源内置、可卸载，见 ADR-002 v2）。
-   - **signature 档是 Android 模型对我们最有价值的一点**：官方专属能力由签名链保证，第三方插件连"请求"都不会被受理——比我们在 manifest 里写死"官方插件才允许 X"更优雅、更可审计。
+   - **signature 档是 Android 模型对我们最有价值的一点**：高权限入口由"签名可归因"保证，未锚定插件连"请求"都不会被受理——比在 manifest 里写死"官方插件才允许 X"更优雅、更可审计。注意**锚 ≠ 权限**：`anchored` 只是受理的前置条件，实际授予仍由管理员逐点决定（plugin-signature-design §7）。
 
 3. **`exports` 显式导出（默认私有）**：插件对外的一切（Web API、前端路由、事件 topic）默认不对外；必须显式声明且经宿主网关登记后才可路由（对应 Android `android:exported` 默认 false）。比 AstrBot/Bukkit 的"注册即对外"更严，与"插件 Web API/页面纳入宿主网关鉴权"（AstrBot 研究结论 5）一致。
 
@@ -91,7 +86,7 @@
 
 6. **插件间可见性（对应 Android 11+ `<queries>`）**：插件默认看不见其他插件；要订阅他人事件或调用他人 Web API，必须在 `dependencies.plugins` 显式声明。顺带解决 api-contract §7 的待定项"事件总线 topic 授权模型（通配 vs 枚举）"——用显式声明替代通配。
 
-7. **`reason` 字段**：每个权限请求附一行"为什么需要"，安装时展示给用户——第三方档风险提示的实体内容（对应 Android 安装时的权限用途说明），也是审核时的评审材料（ADR-001 双档审核）。
+7. **`reason` 字段**：每个权限请求附一行"为什么需要"，安装时展示给用户——安装风险提示的实体内容（对应 Android 安装时的权限用途说明），也是审核时的评审材料（ADR-001 v2 审核）。
 
 8. **`dependencies.npm`（D8 载体）**：每项带 `tier`——`whitelist`（L1 平台托管，构建层锁定版本+签名）/ `user-opt-in`（L2 用户显式放行）；原生模块与重型二进制不进此表（L3 禁区，ADR-005 §7）。装依赖与插件安装分离，需显式授权。manifest 里声明的是"意图"，宿主侧白名单才是"批准"——与权限同一哲学。
 

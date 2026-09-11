@@ -307,36 +307,6 @@
           }
         }
       }
-    },
-    "signature": {
-      "description": "P4 签名落地前整体可选；存在时必须完整",
-      "type": "object",
-      "required": [
-        "algorithm",
-        "keyId",
-        "digest",
-        "sig"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "algorithm": {
-          "enum": [
-            "ed25519"
-          ]
-        },
-        "keyId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "digest": {
-          "type": "string",
-          "minLength": 1
-        },
-        "sig": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
     }
   }
 }

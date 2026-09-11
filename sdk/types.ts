@@ -81,14 +81,9 @@ export interface Manifest {
       version?: string;
     }[];
   };
-  /** P4 签名落地前可选；存在时必须完整 */
-  signature?: {
-    algorithm: 'ed25519';
-    keyId: string;
-    digest: string;
-    sig: string;
-  };
 }
+// v2：manifest 里没有签名块——签名属于交付信封（plugin.meta.json + plugin.meta.sig），
+// 见 docs/plugin-signature-design.md §2–§3。
 
 /** 校验结果 */
 export interface ManifestValidationResult {

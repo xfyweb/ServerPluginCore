@@ -2,7 +2,7 @@
 
 - 状态:**已接受(设计)**
 - 日期:2026-09
-- 关联:ADR-001(信任模型)、ADR-003(市场开源)、api-contract.md(manifest schema 2)、manifest-design.md(signature 字段)、ROADMAP(P4 签名与市场)
+- 关联:ADR-001(信任模型)、ADR-003(市场开源)、api-contract.md(manifest schema 2)、plugin-signature-design.md(签名与身份)、ROADMAP(P4 签名与市场)
 - 实现阶段:P4-A(下载控制面)+ P4-B(授权模型)
 
 ## 1. 目标与设计前提
@@ -43,8 +43,8 @@
   "pluginId": "official:example",
   "version": { "code": 12, "name": "1.2.0" },
   "releasedAt": "2026-09-01T00:00:00Z",   // 发布时间(授权判定锚点)
-  "bundleSha256": "...",                   // 代码哈希(签名对象的一部分)
-  "signature": { /* manifest+代码签名,见 manifest-design */ }
+  "bundleSha256": "...",                   // 载荷哈希(签名覆盖全部载荷,见 plugin-signature-design.md)
+  "signature": { /* 开发者对元数据的签名(规范化 JSON) */ }
 }
 
 // registry license(一次购买一条)
@@ -106,7 +106,7 @@
 ## 7. 与核心的集成
 
 - **registry 客户端是核心侧模块**,不在沙箱内——授权判断与签名验签必须在核心侧执行,沙箱插件不可自验签(可被改写);
-- 插件启动前,核心校验:manifest 签名合法(防篡改)+ bundle 哈希匹配;付费插件另查本地 license 缓存,未激活 → 拒绝加载并提示 `LICENSE_REQUIRED`;
+- 插件启动前,核心校验:元数据签名合法(防篡改)+ 逐文件哈希匹配(plugin-signature-design.md);付费插件另查本地 license 缓存,未激活 → 拒绝加载并提示 `LICENSE_REQUIRED`;
 - license 缓存(本地文件)用于离线重装场景:已获版本的重下不要求在线激活,仅 download-token 换发需在线。
 
 ## 8. 阶段划分
@@ -128,4 +128,4 @@
 1. 付款/退款流程与 license 生成(支付网关未选型;退款 → 立即关闭维护窗口,已购版本保留);
 2. 维护窗口定价与续费(窗口可叠加?续费从到期日顺延还是购买日顺延);
 3. 订单水印的落地形态(若做追责,注入点与格式);
-4. 免费插件与付费插件在 registry 上的可见性/徽标策略(与 ADR-003 双档一致)。
+4. 免费插件与付费插件在 registry 上的可见性/徽标策略(与 ADR-003 市场开源一致)。

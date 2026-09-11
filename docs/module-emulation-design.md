@@ -48,7 +48,7 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | **P2-B** | `node:fs` + `node:fs/promises` | `fs.read.data` / `fs.write.data` | 作用域 = 插件数据目录（+ 显式授予的额外目录）；errno 映射见 §7 |
 | P2-B | `node:process` | 只读 | 冻结子集：`platform` / `arch` / `version` / `versions`（仿真值）/ `nextTick` / `env`（默认空，§13-1） |
 | P2-B | `node:os` | 只读 | `platform` / `arch` / `EOL` / `tmpdir`（宿主值） |
-| **P2-C** | `node:buffer` | 无 | 最小 `Buffer`：`from` / `alloc` / `concat` / `toString(enc)` / `write`；编码 `utf8`/`base64`/`hex` |
+| **P2-C** | `node:buffer` | 无 | 最小 `Buffer`：`from` / `alloc` / `concat` / `toString(enc)` / `write`；编码 `utf8`/`base64`/`hex`（**注：不少纯 JS 依赖在加载期即使用 `Buffer`，若真实需求提前出现，可把 Buffer 提前到 P2-A/P2-B**） |
 | P2-C | `node:crypto` | `crypto.hash`（待注册） | 只做摘要（sha256/md5）与 `randomUUID`；加密原语走宿主，不在沙箱内自实现 |
 | 后置 | `node:stream` / `node:zlib` / `node:string_decoder` … | 视需求 | 按真实插件需求逐块评估，一律"先登记后可用" |
 
