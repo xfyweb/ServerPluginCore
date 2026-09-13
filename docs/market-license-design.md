@@ -40,7 +40,8 @@
 ```jsonc
 // registry release(每个版本一条,不可变快照)
 {
-  "pluginId": "official:example",
+  "origin": "market.spc.xfyweb.cn",
+  "pluginId": "@xfy2412/example",
   "version": { "code": 12, "name": "1.2.0" },
   "releasedAt": "2026-09-01T00:00:00Z",   // 发布时间(授权判定锚点)
   "bundleSha256": "...",                   // 载荷哈希(签名覆盖全部载荷,见 plugin-signature-design.md)
@@ -50,7 +51,7 @@
 // registry license(一次购买一条)
 {
   "orderId": "ORD-20260901-0001",
-  "pluginId": "official:example",
+  "pluginId": "@xfy2412/example",
   "purchasedAt": "2026-09-01T00:00:00Z",
   "maintenanceUntil": "2027-09-01T00:00:00Z"   // 维护窗口截止
 }
@@ -84,8 +85,8 @@
      → 签发 download-token(短时、绑 order)
 用户 → GET /download?version=v1.2 + token
      → registry 判定:license 有效 ∧ version.releasedAt ≤ maintenanceUntil
-     → 返回 bundle + manifest + 签名(验签后安装)
-运行 → 零联网:核心启动时本地验签 bundle 完整性(防篡改,内置官方公钥)
+     → 返回包 + 市场签名(核心侧验签后安装,见 plugin-signature-design.md)
+运行 → 零联网:核心启动时本地校验文件哈希(对照安装记录里已验签的 meta;**不重验市场签名**,见 plugin-signature-design.md §9)
      → 沙箱内插件只读注入 license 上下文({orderId, pluginId, maintenanceUntil}),无网络授权路径
 ```
 

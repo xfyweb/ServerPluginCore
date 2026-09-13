@@ -19,7 +19,7 @@
 | P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 审计 | M | P0 |
 | P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | L | P1 |
 | P3 | 面板插件 + 前端运行时加载 | L | P1（可与 P2 并行） |
-| P4 | 签名与身份锚定 + 市场 | M | P1 + P3 |
+| P4 | 市场签名与源管理 + 市场 | M | P1 + P3 |
 | P5 | 核心插件集 + 加固 + 发布 | L | P2 + P3 |
 
 ---
@@ -29,7 +29,7 @@
 - api-contract v0.2 定稿：
   - 双通道传输（进程内 @host/api 注入为主 + stdio JSON-RPC 次通道）定死，含版本协商（`lifecycle.version`）；
   - 方法组最小集：exec（模板）、fs（受限）、kv、timers、events、lifecycle、audit（api-contract §4）；
-  - 权限注册表 + protectionLevel（normal/dangerous/signature）+ 三态判定（§6/§7）；
+  - 权限注册表（`scope` + 等级）+ 三态判定（§6/§7）；
   - manifest schema 2 编译成 JSON Schema（sdk/schema/manifest.schema.json）。
 - **明确不做**：db/ssh/网络能力（驱动插件，P2+）；事件总线细化授权（v0.3）。
 - 交付：api-contract.md v0.2 + manifest JSON Schema + interface-audit-exec-fs.md 评审通过。
@@ -66,12 +66,13 @@
 - **面板插件**（panel，默认内置、可卸载）：构建 Web 壳 + 组件库，其他插件按统一规范挂载页面；承载登录/auth、仪表盘、插件管理页、审计查看、市场页（P4 后接入）。
 - 验收：卸载/禁用 panel → Web 不可用、CLI 全可用；第三方插件前端无需重编译。
 
-## P4：签名与身份锚定 + 市场
+## P4：市场签名与源管理 + 市场
 
-- 签名工具链（ed25519；签名对象 = 规范化元数据，覆盖 manifest 与逐文件哈希，见 **plugin-signature-design.md**）；registry 服务（market/，列表/上传/下载）；客户端安装流（清单校验 + 签名失败拒绝）；
-- 身份层：keyring（管理员别名 + `market`/`developer` 两类）+ 市场签发的身份文档 + 宿主身份表（按开发者公钥指纹去重）；锚定两档（`anchored` / `unanchored`）+ 风险提示 UI + 签名者/锚变更的人工确认；
-- **不做**：CRL/OCSP、在线吊销检查、证书随包分发、身份文档里的能力约束；
-- 密钥管理文档（离线保管 / 轮换 / 失效，密钥永不进仓库）。
+- 签名工具链（ed25519；签名对象 = 规范化元数据，覆盖 manifest 与逐文件哈希，**由市场私钥签名**，见 **plugin-signature-design.md**）；registry 服务（market/，列表 / 上传 / 下载）；客户端安装流（清单校验 + 验签失败拒绝 + **本地安装不验签**）；
+- 源管理：keyring（域名主键 + 可选公钥 + `firstTrust` + `suspended` + 防回滚高水位）、添加源（TOFU 拉公钥 / 离线手填公钥）、状态文档拉取与**链式密钥轮换验证**、`revoked[]` 吊销信息（累计展示与审计，**不参与判定**）、暂停与管理员确认流程、**源信息展示**（含已吊销密钥与原因码）；
+- 安装界面：驱动插件的**独立界面与最高强度提示**；无源（本地安装）插件的额外确认；
+- **不做**：CRL/OCSP、在线吊销检查、镜像、域名组、证书随包分发、开发者签名、"紧急模式"开关；
+- 密钥管理文档（每个市场一套密钥；离线保管 / 轮换 / 泄露应急；密钥永不进仓库）。
 - 下载控制面与授权模型（download-token 配额防滥用 + 永久授权/维护窗口判定）见 **market-license-design.md**：P4-A（下载控制面，免费/付费双通道）与 P4-B（license 授权模型）在此阶段落地。
 
 ## P5：核心插件集 + 加固 + 发布

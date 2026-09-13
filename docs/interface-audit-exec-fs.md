@@ -23,7 +23,7 @@
 | 来源 | 命名空间 | 定义方 | 谁能调用 |
 |---|---|---|---|
 | 核心内置 | `core:nginx.reload` | 核心 | 按权限点 |
-| **插件声明** | `<pluginId>:mc.start` | 插件（manifest `execTemplates`） | 声明插件 + 管理员授予的 |
+| **插件声明** | `<pluginId>:mc.start`（如 `@xfy2412/docker:mc.start`） | 插件（manifest `execTemplates`） | 声明插件 + 管理员授予的 |
 | 管理员自定义 | `admin:backup-site` | 管理员 | 管理员显式授予的 |
 
 模板定义示例（核心内置 nginx.reload）：
@@ -143,4 +143,4 @@
   - E9 路径类参数 → validatePath + scope 白名单（**声明层，UX/提前报错，不是安全边界**）；
   - E10 可执行文件路径 ∈ 系统目录白名单（防"插件先写脚本再执行"旁路）；
   - 强制层 = 系统级沙箱（Linux Landlock 5.13+ / Windows AppContainer，Rust helper，P2/P5 落地）；
-  - 命令执行能力分层：内置模板 → 插件声明模板（注册制）→ 自由命令（signature）→ 特权模板（root）。
+  - 命令执行能力分层：内置模板 → 插件声明模板（注册制）→ 自由命令（需显式授予 + 二次确认）→ 特权模板（root）。

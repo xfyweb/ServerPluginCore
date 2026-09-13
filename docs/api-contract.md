@@ -75,13 +75,13 @@ interface EventResult {
 
 两个正交维度：**保密等级**（读门槛，管谁能订阅通知）与**执行等级**（写门槛，管谁能裁决）。
 
-> 与 §6 的 `protectionLevel` **正交**，勿混用：本节的 confidentiality / executionLevel 管"事件订阅与裁决"的门槛（插件调用时通过 `meta` 声明、用户目录覆盖兜底），`protectionLevel` 管"权限点"的保护级别（注册表定义；**基线由 `protectionLevel` 唯一决定**，与签名锚定状态无关）。
+> 与 §6 **同一套等级、两处门槛**：本节的 confidentiality / executionLevel 管"事件订阅与裁决"的门槛（插件调用时通过 `meta` 声明、用户目录覆盖兜底）；§6 的同名字段是**权限点的默认等级**。两处不是两个维度——判定时按 `effective = max(...)` 合成，只取最高。
 
 | 等级 | 通知订阅（读） | 裁决修改（写） |
 |---|---|---|
 | `public` / `low` | 无需额外授权 | 无需额外授权 |
 | `sensitive` / `medium` | 显式授权（安装时确认） | 显式授权 |
-| `secret` / `high` | **仅官方** | **仅官方** |
+| `secret` / `high` | 显式授予 + 二次确认 | 显式授予 + 二次确认 |
 
 - **调用时声明**：插件每次调用宿主 API 时通过 `meta` 声明本次操作的等级（不同目录/命令敏感度不同）；权限点的 `confidentiality/executionLevel` 是**默认值**（未声明时兜底）；
 - **用户目录覆盖（只升不降）**：管理员可配置目录 → 等级映射（`pathLevels`，P2 进配置中心），涉及指定目录时 `effective = max(调用方声明, 用户配置)`——用户设置高于调用方时升级，低于时尊重调用方；
@@ -171,23 +171,39 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
   "name": "docker.write",
   "group": "docker",
   "description": "修改容器配置",
-  "protectionLevel": "dangerous"    // normal | dangerous | signature
+  "scope": "host",                  // self | host
+  "confidentiality": "sensitive",   // 读门槛
+  "executionLevel": "medium"        // 写门槛
 }
 ```
 
-> v2 修订：原先按信任档分档的 `defaults: { official, thirdparty }` 取消——**权限基线只由 `protectionLevel` 决定**，锚定状态不再改变权限基线（它只决定命名空间归属、更新资格、安装摩擦与 `signature` 级准入，见 plugin-signature-design.md §7）。
+两个维度，各管一件事：
 
-- **protectionLevel**（Android 参考，manifest-design）：
-  - `normal`：声明即批准（docker.read、fs.read.data）；
-  - `dangerous`：**默认拒绝**；安装时经管理员**显式授予**后，按"授权记录"对**具体权限点**放行（运行时把该点的 deny 提升为 allow，仍受等级矩阵、作用域与审计约束）——**默认 deny 是起点、不是终局**（P4 安装流落地；docker.write、exec 模板）；
-  - `signature`：仅 `anchored`（签名可归因）插件可申请（任意 fs 读写、secrets），未锚定声明即无效。
+| 字段 | 管什么 | 规则 |
+|---|---|---|
+| `scope` | **要不要管理员授予** | `self`（只碰插件自身：自己的数据目录 / kv / 定时器）→ 不需要授予；`host`（碰宿主管理的资源）→ **必须逐点授予** |
+| `confidentiality` / `executionLevel` | 授予时的**提示强度**、审计分级与 `effective` 合成 | `effective = max(调用方声明, 用户目录覆盖, 权限点默认)`，**只升不降**；不变式 `executionLevel ≥ confidentiality`（封死仲裁旁路） |
+
+> v3 修订：**删除 `protectionLevel`**（Android 的"授予仪式"枚举：normal / dangerous / signature）。理由：(1) 它在本仓库里从未被判定逻辑读取，是装饰性字段；(2) 其中 `signature`（仅同签名可申请）把身份塞进权限定义，与"来源不参与权限判定"冲突；(3) `normal` 真正表达的是"这个能力够不着别人"，用 `scope: self` 表达更准确。按信任档分档的 `defaults` 同时删除。
+
+- **权限点不设 identity / trust 类字段**：它只描述"这个能力是什么、有多敏感"，不描述"谁有资格申请"。
 - 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
 
 ## 7. 权限判定（三态 + 匹配算法）
 
-- 判定结果：`ALLOW / DENY / UNSET→DENY`（Velocity Tristate 模式，未设置 = 拒绝）；
-- 匹配：精确 > 前缀通配（`docker.*`）> `*`；**显式 DENY 优先于任何授予**；
-- 插件 manifest 声明的是"请求"（uses-permission）；宿主按 `protectionLevel` 基线 + 管理员**显式授予**做出"批准"（请求/批准分离，Android 模型）。
+判定链（宿主侧强制，D3 单一强制点）：
+
+```
+1  权限点未在注册表登记            → UNKNOWN_POINT（未知即拒绝）
+2  manifest 未声明该点             → NOT_DECLARED（无默认放行）
+3  scope = host 且管理员未授予     → NOT_GRANTED
+4  通过 → 作用域与参数校验在各方法内层
+```
+
+- 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；
+- **声明可用通配，授予不可**：manifest 声明可写 `docker.*` / `*` 图省事；**管理员的授予必须是具体权限点**（不允许通配，防止一次点击等于全授）；
+- 插件 manifest 声明的是"请求"（uses-permission）；宿主按"`scope` 规则 + 管理员逐点授予"做出"批准"（请求/批准分离，Android 模型）；
+- **来源（签名 / 市场 / 本地安装）不参与判定**：有源与无源插件在权限面前完全平等（ADR-001 v3）。
 
 ## 8. 审计
 
@@ -195,15 +211,16 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 
 ## 9. manifest（schema 2）
 
-> `type` 声明插件类型（ability/panel/driver/hook），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005；type 目前不改变核心加载行为（**现状**信任档仍由 id 前缀推导，**目标态**为由安装记录里的签名锚定状态推导，见 plugin-signature-design.md），P2/P3 起按类型分派运行档与信任策略。
+> `type` 声明插件类型（ability/panel/driver/hook），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005；type 目前不改变核心加载行为（**现状**档位仍由 id 前缀推导；**目标态**：**来源只决定更新渠道与安装界面，与加载和权限无关**，见 plugin-signature-design.md），P2/P3 起按类型分派运行档与安装流程。
 
 完整设计见 manifest-design.md，要点（与旧 schema 1 的差异）：
 
 ```json
 {
   "schema": 2,
-  "id": "official:docker",
+  "id": "@xfy2412/docker",
   "name": "Docker Management",
+  "author": { "id": "xfy2412@market.spc.xfyweb.cn", "name": "xfy2412" },
   "version": { "code": 12, "name": "1.2.0" },
   "compat": { "minCore": "0.1.0", "targetCore": "0.3.0" },
   "runtime": { "type": "quickjs", "esm": true },
@@ -221,6 +238,9 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 ```
 
 - `permissions` 必填（无默认放行）；
+- `id` 为**市场内唯一**的发布者命名空间 `@<username>/<name>`；跨市场全局唯一性由完整引用 `<origin>/@<username>/<name>` 提供（plugin-signature-design.md §8）；
+- `author.id`（可选）= `<username>@<源域名>`；填写时须与 `id` 的命名空间和源域名一致，否则 `AUTHOR_MISMATCH`；
+- `dependencies.plugins[]`：`{ id, origin?, version? }`——同源依赖省略 `origin`，跨源依赖必须写明；缺少的源**不会自动添加**，只会提示管理员（plugin-signature-design.md §7.1）；
 - `dependencies.npm.tier`：`whitelist`（L1，平台托管）/ `user-opt-in`（L2，需用户放行）；原生模块与重型二进制不进此表（L3 禁区）；
 - `runtime.type`：`quickjs`（默认）| `node-child`（子进程档）；ESM-only 全后端统一。
 
@@ -232,7 +252,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query" }] }
 ```
 
-- 驱动插件必须：**锚定**（签名可归因，见 plugin-signature-design.md §7）+ 特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
+- 驱动插件**不限制来源**（自建市场与官方市场等价），安装走**独立界面与最高强度提示**（ADR-005 §3）；必须：特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
 - 驱动插件向面板注册**权限节点 + API 端点**暴露给沙箱：每个注册方法进权限注册表（D4）、过威胁建模评审、随核心一起审计；
 - **鉴权双层**：核心网关先强制检查"调用方（沙箱内能力插件）有没有该端点权限"（D3 单一强制点不放松）；驱动插件内部再按面板给的权限列表**自行鉴权**（参数是否越界等）——驱动插件是市场严审对象，第三方安装有严厉提醒；
 - 沙箱内的**能力插件**（ability）通过 `import { db } from '@host/api/db'` 调用，**与基础 API 无感知差异**。

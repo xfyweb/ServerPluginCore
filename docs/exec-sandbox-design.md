@@ -25,6 +25,8 @@ exec 模板（命令固定 + 参数白名单）无法覆盖全部场景（MC 启
 | **插件声明** | `<pluginId>:mc.start` | 插件（manifest） | 声明插件 + 管理员授予的 |
 | 管理员自定义 | `admin:backup-site` | 管理员 | 管理员显式授予的 |
 
+> 插件命名空间 = **插件 ID 原样**（如 `@xfy2412/docker:mc.start`，见 plugin-signature-design.md §8）。插件 ID 中不含 `:`，因此按**第一个 `:`** 切分命名空间即可；`core:` / `admin:` 是保留命名空间，插件 ID 的命名空间部分不得取这两个值。
+
 ### 2.3 插件声明模板流程
 
 ```
@@ -138,7 +140,7 @@ interface SandboxProfile {
 ```
 ① 内置模板（spc 用户，命令固定+参数校验）          —— 普通插件
 ② 自定义/插件声明模板（注册制 + 管理员批准）        —— 按授权
-③ 自由命令 exec.command.free（spc 用户，任意数组）  —— signature 级 + 显式授权
+③ 自由命令 exec.command.free（spc 用户，任意数组）  —— 需显式授予 + 二次确认（secret/high）
 ④ 特权模板（root 白名单，P5 特权执行器）            —— 仅特权路径
 ```
 

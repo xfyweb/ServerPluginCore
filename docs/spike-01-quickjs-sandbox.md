@@ -27,6 +27,8 @@ $ pnpm spike
 HelloWorld
 ```
 
+> 注：该日志是 v3 之前的 spike 运行记录，示例 id 当时为 `official:sample`；现行为 `@xfy2412/sample`（见 plugin-signature-design.md §8）。
+
 - 插件（ESM）在 QuickJS 沙箱内执行，`import { write } from '@host/api'` 经 `runtime.setModuleLoader` 解析；
 - 宿主函数写入 `~/test.txt`，内容 `HelloWorld`；
 - 最终形态采用 **asyncify 变体**（宿主 API 可返回 Promise，exec/网络必须异步）。

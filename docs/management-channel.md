@@ -56,7 +56,7 @@ CLI:
   ④ 后续请求：Authorization: Bearer <session-token>
 ```
 
-- 算法：**ed25519**（非 RSA——生成微秒级、密钥 32B、与 manifest 签名体系一致）；
+- 算法：**ed25519**（非 RSA——生成微秒级、密钥 32B、与插件市场签名体系一致，见 plugin-signature-design.md）；
 - 会话 token：短时（如 5 分钟）+ 重启失效；daemon 重启后所有旧 token/challenge 作废；
 - 防重放：challenge 一次性（daemon 记录已用 nonce，重启清空）。
 
@@ -87,7 +87,7 @@ CLI:
 ### 4.2 locale 分发（P3）
 
 - 核心把 locale 作为静态资源暴露（如 `GET /i18n/<locale>.json`，随核心构建产物版本化）；
-- 命名空间：`core.*`（核心错误码 `err.<code>` 与通用文案）/ `<pluginId>.*`（插件自带文案，随插件包分发）；
+- 命名空间：`core.*`（核心错误码 `err.<code>` 与通用文案）/ `<pluginId>.*`（插件自带文案，随插件包分发；键前缀就是插件 ID 原样，如 `@xfy2412/docker.*`）；
 - 面板启动时按 `SPC_LANG` 或浏览器语言拉取并缓存；缺 key 时回退到英文码（不回退到空文案）。
 
 ## 5. 运行目录与配置
