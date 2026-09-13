@@ -6,7 +6,6 @@ import type { Manifest } from '../sdk/types';
 import { initAudit } from './audit';
 import { hostApi } from './hostApi';
 import { createSandbox } from './sandbox';
-import type { Tier } from './permissions/registry';
 
 const pluginDir = join(import.meta.dirname, '..', 'plugin', 'sample');
 
@@ -32,18 +31,18 @@ async function main() {
     target: 'es2022',
   });
 
-  // 2) 插件上下文：档位（official 前缀）+ manifest 权限请求 → 权限检查 + 审计
-  const tier: Tier = manifest.id.startsWith('official:') ? 'official' : 'thirdparty';
+  // 2) 插件上下文：manifest 权限请求 + 管理员授予 → 权限检查 + 审计
+  //    spike：授予写死在这里；正式版由安装流写入安装记录（plugin-signature-design.md §9）
   const sandbox = await createSandbox(hostApi, {
     pluginId: manifest.id,
     permissions: manifest.permissions.map((p) => p.name),
-    tier,
+    grants: ['fs.write.home', 'exec.template.git.version'],
   });
 
   try {
     // 3) 加载并执行插件（ESM）
     await sandbox.runModule(manifest.id, code);
-    console.log(`[core] plugin "${manifest.id}" executed (tier=${tier}).`);
+    console.log(`[core] plugin "${manifest.id}" executed.`);
   } finally {
     sandbox.dispose();
   }

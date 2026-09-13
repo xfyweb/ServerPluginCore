@@ -8,11 +8,11 @@ import { validateManifest } from '../validate.ts';
 const validFull = {
   schema: 2,
   type: 'ability',
-  id: 'official:docker',
+  id: '@xfy2412/docker',
   name: 'Docker Management',
   version: { code: 12, name: '1.2.0' },
   compat: { minCore: '0.1.0', targetCore: '0.3.0' },
-  author: { name: 'SPC Team', homepage: 'https://spc.xfyweb.cn' },
+  author: { id: 'xfy2412@market.spc.xfyweb.cn', name: 'SPC Team', homepage: 'https://spc.xfyweb.cn' },
   description: 'Docker 容器/镜像/网络/卷管理（薄适配器）',
   runtime: { type: 'quickjs', esm: true },
   permissions: [
@@ -29,14 +29,14 @@ const validFull = {
   },
   dependencies: {
     npm: [{ name: 'zod', version: '3.x', tier: 'whitelist' }],
-    plugins: [{ id: 'official:panel', version: '>=0.1.0' }],
+    plugins: [{ id: '@xfy2412/panel', version: '>=0.1.0' }],
   },
 };
 
 /** 最小合法清单（仅必填字段，spike 插件形态） */
 const validMinimal = {
   schema: 2,
-  id: 'official:sample',
+  id: '@xfy2412/sample',
   name: 'Sample Plugin',
   version: { code: 1, name: '0.0.1' },
   runtime: { type: 'quickjs' },
@@ -104,7 +104,7 @@ test('非法：id 无命名空间', () => {
 });
 
 test('非法：id 含大写', () => {
-  const r = validateManifest({ ...validMinimal, id: 'official:Docker' });
+  const r = validateManifest({ ...validMinimal, id: '@xfy2412/Docker' });
   assert.equal(r.ok, false);
 });
 

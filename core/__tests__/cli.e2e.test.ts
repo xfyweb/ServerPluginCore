@@ -71,7 +71,7 @@ test('CLI status：握手 + 会话 + 状态查询 全链路', async () => {
 test('CLI plugin list：复用 schema 校验器返回插件列表', async () => {
   const r = await run(['core/cli.ts', 'plugin', 'list'], { SPC_PORT: String(port) });
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /official:sample@0\.0\.1/);
+  assert.match(r.stdout, /@xfy2412\/sample@0\.0\.1/);
 });
 
 

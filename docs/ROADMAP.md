@@ -42,7 +42,7 @@
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/sample/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
 - **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（JSON/正则/API 往返，验证"薄适配器无感"）；
-- **基础宿主 API**：exec 模板（nginx/git 起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 三态判定 + 审计**（interface-audit-exec-fs E1–E8/F1–F7 全部测试用例）；
+- **基础宿主 API**：exec 模板（nginx + git 一族起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 判定 + 审计**（F1–F7 已覆盖；E1–E8 的注册/参数/执行三类已覆盖）。**已落地**：模板注册表 + `exec.run`（阻塞，支持**模板 ID 与原生写法**两种调用，原生写法匹配不到即拒绝）+ 参数校验（enum/pattern/whitelist/path）+ env 白名单 + 超时 + 输出截断 + 动态权限点 `exec.template.<action>.<op>`（`scope: host`，需逐点授予）+ 审计 `target`/`resultBytes` 字段 + 跨平台可执行解析（E10）+ 内置 git 模板集（version/status/log/rev-parse/branch/fetch/pull）与 `SPC_REPO_ROOTS`；样板插件已示范 `exec.run` 调用；**待补**：kv / timers / lifecycle、`exec.spawn` 任务模型（P2）；
 - **exec 基线与沙箱设计**（docs/exec-sandbox-design.md）：P1 落地"降权（spc）+ env 白名单 + 超时/输出截断"基线，声明层为过渡期唯一防线；注册制与系统级沙箱见 P2/P5；
 - **CLI**：`plugin list / install <dir> / enable / disable`、`panel status`、`audit tail`；
 - **sdk**：`@host/api` 类型声明、esbuild 构建模板（ESM-only）、manifest 校验器；
@@ -55,7 +55,7 @@
 2. **构建流水线**：依赖图静态解析 → 白名单校验（禁原生模块/禁用模块）→ esbuild ESM bundle → 生成元数据 + 签名（plugin-signature-design.md §2–§5）；依赖三层（L1 平台托管 / L2 用户放行 / L3 禁区）落地；
 3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，协作插件地基）；
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
-5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（三方来源 + 命名空间，静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
+5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
 6. **官方模块仿真**（docs/module-emulation-design.md）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖——P2-A 纯计算模块（path/util/events/assert/url）+ 桥契约（信封/对象化/异步 await）+ 构建期 builtin 校验；P2-B `node:fs`/`fs/promises`/`process`/`os`（作用域=数据目录 + errno 映射）；P2-C 最小 `buffer`/`crypto` 摘要。**交付物**：`core/sandbox-modules/<name>.js`（一模块一文件）+ `core/sandbox.ts` 的 loader 注册表（骨架已在 P1 落成）+ 各模块行为对齐测试；
 7. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
 - 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）。

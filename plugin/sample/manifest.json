@@ -1,9 +1,12 @@
 {
   "schema": 2,
-  "id": "official:sample",
+  "id": "@xfy2412/sample",
   "name": "Sample Plugin",
   "version": { "code": 1, "name": "0.0.1" },
   "runtime": { "type": "quickjs", "esm": true },
-  "permissions": [{ "name": "fs.write.home", "reason": "spike：向用户主目录写入 test.txt" }],
+  "permissions": [
+    { "name": "fs.write.home", "reason": "spike：向用户主目录写入 test.txt" },
+    { "name": "exec.template.git.version", "reason": "spike：演示调用已注册模板（只读、无参数）" }
+  ],
   "entry": "main.ts"
 }

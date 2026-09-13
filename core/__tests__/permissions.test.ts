@@ -1,112 +1,139 @@
-// 权限注册表 + 三态判定测试
+// 权限注册表 + 三态判定测试（v3：scope + 逐点授予；来源与等级都不参与 allow/deny）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PermissionRegistry } from '../permissions/registry';
-import { checkPermission, effectiveLevel, matchGrant } from '../permissions/check';
+import {
+  checkPermission,
+  effectiveLevel,
+  isValidGrantPoint,
+  matchDeclaration,
+} from '../permissions/check';
 
 function makeRegistry() {
   const r = new PermissionRegistry();
   r.register({
     name: 'fs.write.data',
     group: 'fs',
-    description: 'test',
-    protectionLevel: 'normal',
+    description: 'self 作用域',
+    scope: 'self',
     confidentiality: 'sensitive',
     executionLevel: 'medium',
-    defaults: { official: 'allow', thirdparty: 'allow' },
   });
   r.register({
     name: 'exec.template.nginx.reload',
     group: 'exec',
-    description: 'test',
-    protectionLevel: 'dangerous',
+    description: 'host 作用域 + secret/high',
+    scope: 'host',
     confidentiality: 'secret',
     executionLevel: 'high',
-    defaults: { official: 'allow', thirdparty: 'deny' },
-  });
-  r.register({
-    name: 'exec.template.mc.start',
-    group: 'exec',
-    description: 'test secret-but-declared',
-    protectionLevel: 'dangerous',
-    confidentiality: 'secret',
-    executionLevel: 'high',
-    defaults: { official: 'allow', thirdparty: 'allow' }, // 声明允许，但等级仅官方
   });
   r.register({
     name: 'fs.read.public',
     group: 'fs',
-    description: 'test public',
-    protectionLevel: 'normal',
+    description: 'self + public/low',
+    scope: 'self',
     confidentiality: 'public',
     executionLevel: 'low',
-    defaults: { official: 'allow', thirdparty: 'allow' },
   });
   return r;
 }
 
-// ---- 匹配链（D2）----
+// ---- 声明匹配链（D2）----
 
-test('matchGrant：精确匹配', () => {
-  assert.equal(matchGrant('fs.write.data', ['fs.write.data']), true);
-  assert.equal(matchGrant('fs.write.data', ['fs.read.data']), false);
+test('matchDeclaration：精确匹配', () => {
+  assert.equal(matchDeclaration('fs.write.data', ['fs.write.data']), true);
+  assert.equal(matchDeclaration('fs.write.data', ['fs.read.data']), false);
 });
 
-test('matchGrant：前缀通配（fs.* 覆盖 fs.write.data）', () => {
-  assert.equal(matchGrant('fs.write.data', ['fs.*']), true);
-  assert.equal(matchGrant('fs.write.data', ['exec.*']), false);
+test('matchDeclaration：前缀通配（fs.* 覆盖 fs.write.data）', () => {
+  assert.equal(matchDeclaration('fs.write.data', ['fs.*']), true);
+  assert.equal(matchDeclaration('fs.write.data', ['exec.*']), false);
 });
 
-test('matchGrant：全通配（*）', () => {
-  assert.equal(matchGrant('anything.any', ['*']), true);
+test('matchDeclaration：全通配（*）', () => {
+  assert.equal(matchDeclaration('anything.any', ['*']), true);
 });
 
-test('matchGrant：未声明 → false（无默认放行）', () => {
-  assert.equal(matchGrant('docker.read', []), false);
-  assert.equal(matchGrant('docker.read', ['fs.*']), false);
+test('matchDeclaration：未声明 → false（无默认放行）', () => {
+  assert.equal(matchDeclaration('docker.read', []), false);
+  assert.equal(matchDeclaration('docker.read', ['fs.*']), false);
 });
 
-// ---- 三态判定（D1）----
+// ---- 判定链（D1：未登记 / 未声明 / 未授予 / 通过）----
 
-test('checkPermission：未在注册表登记的权限点 → deny（未知即拒绝）', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'unknown.point', ['unknown.point'], 'official');
+test('未在注册表登记 → UNKNOWN_POINT', () => {
+  const res = checkPermission(makeRegistry(), 'unknown.point', ['unknown.point'], []);
   assert.equal(res.decision, 'deny');
   assert.equal(res.code, 'UNKNOWN_POINT');
 });
 
-test('checkPermission：未声明 → deny（无默认放行）', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.write.data', [], 'official');
+test('manifest 未声明 → NOT_DECLARED', () => {
+  const res = checkPermission(makeRegistry(), 'fs.write.data', [], []);
   assert.equal(res.decision, 'deny');
   assert.equal(res.code, 'NOT_DECLARED');
 });
 
-test('checkPermission：official 档声明 + 默认 allow → allow', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.write.data', ['fs.write.data'], 'official');
+test('self 作用域：声明即批准，不需要授予', () => {
+  const res = checkPermission(makeRegistry(), 'fs.write.data', ['fs.write.data']);
   assert.equal(res.decision, 'allow');
+  assert.equal(res.code, 'ALLOWED');
+  assert.equal(res.params?.scope, 'self');
 });
 
-test('checkPermission：thirdparty 档对 dangerous 权限点 → deny（降级）', () => {
-  const r = makeRegistry();
-  // 即使声明了，thirdparty 档也按 defaults 降级拒绝
-  const res = checkPermission(r, 'exec.template.nginx.reload', ['exec.template.nginx.reload'], 'thirdparty');
+test('host 作用域：未授予 → NOT_GRANTED', () => {
+  const res = checkPermission(makeRegistry(), 'exec.template.nginx.reload', ['exec.template.nginx.reload'], []);
   assert.equal(res.decision, 'deny');
-  assert.equal(res.code, 'TIER_DENIED');
+  assert.equal(res.code, 'NOT_GRANTED');
+  assert.equal(res.params?.scope, 'host');
 });
 
-test('checkPermission：official 档对 dangerous 权限点 → allow', () => {
+test('host 作用域：管理员逐点授予 → ALLOWED', () => {
+  const res = checkPermission(
+    makeRegistry(),
+    'exec.template.nginx.reload',
+    ['exec.template.nginx.reload'],
+    ['exec.template.nginx.reload'],
+  );
+  assert.equal(res.decision, 'allow');
+  assert.equal(res.code, 'ALLOWED');
+});
+
+test('授权必须精确：通配授予（* / exec.*）一律无效', () => {
   const r = makeRegistry();
-  const res = checkPermission(r, 'exec.template.nginx.reload', ['exec.template.nginx.reload'], 'official');
+  for (const grants of [['*'], ['exec.*'], ['exec.template.*']]) {
+    const res = checkPermission(r, 'exec.template.nginx.reload', ['exec.template.nginx.reload'], grants);
+    assert.equal(res.decision, 'deny', `grants=${JSON.stringify(grants)} 不应放行`);
+    assert.equal(res.code, 'NOT_GRANTED');
+  }
+});
+
+test('通配声明 + 精确请求（self）→ allow', () => {
+  const res = checkPermission(makeRegistry(), 'fs.write.data', ['fs.*']);
   assert.equal(res.decision, 'allow');
 });
 
-test('checkPermission：通配声明 + 精确请求', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.write.data', ['fs.*'], 'official');
+test('等级不参与判定：secret/high 只要被授予即可用（来源与等级都不决定 deny/allow）', () => {
+  const res = checkPermission(
+    makeRegistry(),
+    'exec.template.nginx.reload',
+    ['exec.template.nginx.reload'],
+    ['exec.template.nginx.reload'],
+    { meta: { confidentiality: 'secret', executionLevel: 'high' } },
+  );
   assert.equal(res.decision, 'allow');
+  assert.equal(res.params?.confidentiality, 'secret');
 });
+
+test('判定结果携带 scope 与 effective 等级（供审计与渲染）', () => {
+  const res = checkPermission(makeRegistry(), 'fs.write.data', ['fs.write.data'], [], {
+    meta: { confidentiality: 'secret' },
+  });
+  assert.equal(res.params?.scope, 'self');
+  assert.equal(res.params?.confidentiality, 'secret'); // 调用方声明高于默认
+  assert.equal(res.params?.executionLevel, 'high');    // e < c → 自动校正
+});
+
+// ---- 注册表一致性 ----
 
 test('registry：重复注册抛错', () => {
   const r = makeRegistry();
@@ -116,121 +143,71 @@ test('registry：重复注册抛错', () => {
         name: 'fs.write.data',
         group: 'fs',
         description: 'dup',
-        protectionLevel: 'normal',
+        scope: 'self',
         confidentiality: 'sensitive',
         executionLevel: 'medium',
-        defaults: { official: 'allow', thirdparty: 'allow' },
       }),
     /DUPLICATE_POINT/,
   );
 });
 
-
-// ---- 安全等级矩阵 ----
-
-test('等级：public/low 无需额外授权（thirdparty 也可）', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.read.public', ['fs.read.public'], 'thirdparty');
-  assert.equal(res.decision, 'allow');
-});
-
-test('等级：sensitive/medium 官方直接允许', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.write.data', ['fs.write.data'], 'official');
-  assert.equal(res.decision, 'allow');
-});
-
-test('等级：sensitive/medium thirdparty 无显式授权 → deny', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.write.data', ['fs.write.data'], 'thirdparty');
-  assert.equal(res.decision, 'deny');
-  assert.equal(res.code, 'LEVEL_NEEDS_GRANT');
-});
-
-test('等级：sensitive/medium thirdparty + 显式授权 → allow', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'fs.write.data', ['fs.write.data'], 'thirdparty', {
-    explicitGrants: { confidentiality: ['sensitive'], executionLevel: ['medium'] },
-  });
-  assert.equal(res.decision, 'allow');
-});
-
-test('等级：secret/high 仅官方（thirdparty 声明也拒绝）', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'exec.template.mc.start', ['exec.template.mc.start'], 'thirdparty', {
-    explicitGrants: { confidentiality: ['secret'], executionLevel: ['high'] },
-  });
-  assert.equal(res.decision, 'deny');
-  assert.equal(res.code, 'LEVEL_OFFICIAL_ONLY');
-});
-
-test('等级：secret/high 官方允许', () => {
-  const r = makeRegistry();
-  const res = checkPermission(r, 'exec.template.nginx.reload', ['exec.template.nginx.reload'], 'official');
-  assert.equal(res.decision, 'allow');
-});
-
-test('等级覆盖：用户配置高于调用方声明 → 升级（只升不降）', () => {
-  const r = makeRegistry();
-  // 调用方声明 public，但用户对目录配置了 secret → effective = secret
-  const res = checkPermission(r, 'fs.read.public', ['fs.read.public'], 'thirdparty', {
-    meta: { confidentiality: 'public', executionLevel: 'low' },
-    userOverride: { confidentiality: 'secret', executionLevel: 'high' },
-  });
-  assert.equal(res.decision, 'deny'); // 被用户配置升级到 secret → 仅官方
-  assert.equal(res.code, 'LEVEL_OFFICIAL_ONLY');
-});
-
-test('等级覆盖：用户配置低于调用方声明 → 尊重调用方（不降级）', () => {
-  const r = makeRegistry();
-  // 调用方声明 secret，用户配置 public → effective 仍为 secret
-  const res = checkPermission(r, 'fs.read.public', ['fs.read.public'], 'official', {
-    meta: { confidentiality: 'secret', executionLevel: 'high' },
-    userOverride: { confidentiality: 'public', executionLevel: 'low' },
-  });
-  assert.equal(res.decision, 'allow'); // official + secret 允许
-});
-
-test('effectiveLevel：三者取最高（调用方 > 权限点默认）', () => {
-  const r = makeRegistry();
-  const point = r.get('fs.write.data')!;
-  const level = effectiveLevel(point, { meta: { confidentiality: 'secret' } });
-  assert.equal(level.confidentiality, 'secret'); // 调用方 secret > 默认 sensitive
-});
-
-
-// ---- 一致性约束（executionLevel >= confidentiality）----
-
 test('一致性：register 时执行等级低于保密等级 → 抛错', () => {
   const r = new PermissionRegistry();
-  assert.throws(() =>
-    r.register({
-      name: 'bad.point',
-      group: 'bad',
-      description: 'e < c',
-      protectionLevel: 'normal',
-      confidentiality: 'secret',
-      executionLevel: 'low',
-      defaults: { official: 'allow', thirdparty: 'allow' },
-    }),
+  assert.throws(
+    () =>
+      r.register({
+        name: 'bad.point',
+        group: 'bad',
+        description: 'e < c',
+        scope: 'host',
+        confidentiality: 'secret',
+        executionLevel: 'low',
+      }),
     /LEVEL_ORDER_INVALID/,
   );
 });
 
+// ---- 授权记录校验（安装流写入前）----
+
+test('isValidGrantPoint：精确权限点通过；通配与空串不通过', () => {
+  assert.equal(isValidGrantPoint('docker.write'), true);
+  assert.equal(isValidGrantPoint('exec.template.nginx.reload'), true);
+  assert.equal(isValidGrantPoint('*'), false);
+  assert.equal(isValidGrantPoint('docker.*'), false);
+  assert.equal(isValidGrantPoint(''), false);
+});
+
+// ---- 等级合成（effective）----
+
+test('effectiveLevel：取三者最高（调用方 > 权限点默认）', () => {
+  const point = makeRegistry().get('fs.write.data')!;
+  const level = effectiveLevel(point, { meta: { confidentiality: 'secret' } });
+  assert.equal(level.confidentiality, 'secret');
+});
+
 test('一致性：调用声明 e < c → 自动校正提升 e', () => {
-  const r = makeRegistry();
-  const point = r.get('fs.read.public')!;
-  // 调用方声明 secret 保密 + low 执行（e < c）→ 校正后 e 提升到与 c 同级
+  const point = makeRegistry().get('fs.read.public')!;
   const level = effectiveLevel(point, { meta: { confidentiality: 'secret', executionLevel: 'low' } });
   assert.equal(level.confidentiality, 'secret');
   assert.ok(['medium', 'high'].includes(level.executionLevel));
 });
 
-test('一致性：校正后的判定（secret 信息 → 裁决门槛被提升）', () => {
-  const r = makeRegistry();
-  // thirdparty 想用 low 裁决权订阅 secret 事件 → 校正后执行门槛提升 → 拒绝
-  const res = checkPermission(r, 'fs.read.public', ['fs.read.public'], 'thirdparty', {
-    meta: { confidentiality: 'secret', executionLevel: 'low' },
+test('等级覆盖：用户配置高于调用方声明 → 只升不降', () => {
+  const point = makeRegistry().get('fs.read.public')!;
+  const level = effectiveLevel(point, {
+    meta: { confidentiality: 'public', executionLevel: 'low' },
+    userOverride: { confidentiality: 'secret', executionLevel: 'high' },
   });
-  assert.equal(res.decision, 'deny');
+  assert.equal(level.confidentiality, 'secret');
+  assert.equal(level.executionLevel, 'high');
+});
+
+test('等级覆盖：用户配置低于调用方声明 → 尊重调用方（不降级）', () => {
+  const point = makeRegistry().get('fs.read.public')!;
+  const level = effectiveLevel(point, {
+    meta: { confidentiality: 'secret', executionLevel: 'high' },
+    userOverride: { confidentiality: 'public', executionLevel: 'low' },
+  });
+  assert.equal(level.confidentiality, 'secret');
+  assert.equal(level.executionLevel, 'high');
 });

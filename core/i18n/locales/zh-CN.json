@@ -42,10 +42,48 @@
 
   "err.UNKNOWN_POINT": "未知权限点：{permission}",
   "err.NOT_DECLARED": "插件未声明权限：{permission}",
-  "err.TIER_DENIED": "{tier} 档默认拒绝：{permission}",
-  "err.LEVEL_OFFICIAL_ONLY": "{mode}等级={level}：仅官方插件可用",
-  "err.LEVEL_NEEDS_GRANT": "{mode}等级={level}：需显式授权（thirdparty 未获授权）",
+  "err.NOT_GRANTED": "未授予权限：{permission}（scope=host 的能力需管理员逐点授予）",
 
   "err.DUPLICATE_POINT": "权限点重复注册：{permission}",
-  "err.LEVEL_ORDER_INVALID": "权限点 {permission} 定义错误：执行等级({executionLevel}) 低于保密等级({confidentiality})"
+  "err.LEVEL_ORDER_INVALID": "权限点 {permission} 定义错误：执行等级({executionLevel}) 低于保密等级({confidentiality})",
+
+  "err.SOURCE_NOT_CONFIGURED": "源未配置或不可用：{origin}（{reason}）",
+  "err.SOURCE_DISABLED": "源已停用：{origin}",
+  "err.SOURCE_SUSPENDED": "源被暂停，请管理员确认：{origin}",
+  "err.SOURCE_ORIGIN_INVALID": "源域名非法：{origin}",
+  "err.SOURCE_ALREADY_EXISTS": "源已存在：{origin}",
+
+  "err.KEY_FORMAT_INVALID": "公钥格式非法：{reason}",
+  "err.KEY_FINGERPRINT_MISMATCH": "公钥指纹不一致：{fingerprint}",
+  "err.KEY_CHAIN_INVALID": "密钥链验证失败：{fingerprint}",
+  "err.KEY_ROTATION_UNVERIFIABLE": "本端信任的密钥已不在列表中（可能已被吊销），请管理员确认：{fingerprint}",
+  "err.KEY_STATUS_ROLLBACK": "密钥状态文档早于本地记录，拒绝回滚：{rotatedAt}",
+  "err.KEY_STATUS_MALFORMED": "密钥状态文档结构非法",
+
+  "err.PACKAGE_META_MISSING": "分发包缺少元数据或签名文件",
+  "err.PACKAGE_META_MALFORMED": "元数据非法：{reason}",
+  "err.META_SIGNATURE_INVALID": "包签名验证失败（来源：{origin}）",
+  "err.PLUGIN_ID_INVALID": "插件 ID 非法：{id}",
+  "err.PACKAGE_FILE_MISSING": "清单中的文件缺失：{path}",
+  "err.PACKAGE_FILE_MISMATCH": "文件与清单不符：{path}",
+  "err.PACKAGE_EXTRA_FILE": "存在清单外的文件：{path}",
+  "err.DUPLICATE_ENTRY": "清单中存在重复条目：{path}",
+  "err.META_MANIFEST_MISMATCH": "元数据与 manifest 不一致",
+  "err.AUTHOR_MISMATCH": "作者 ID 与命名空间或源域名不一致：{author}",
+
+  "err.TEMPLATE_ID_INVALID": "模板 ID 非法：{id}",
+  "err.TEMPLATE_DUPLICATE": "模板重复或 action.op 已被占用：{id}",
+  "err.TEMPLATE_PRIVILEGED_UNSUPPORTED": "特权模板尚未支持（P5）：{id}",
+  "err.TEMPLATE_COMMAND_INVALID": "模板命令数组非法：{id}",
+  "err.TEMPLATE_COMMAND_NOT_ALLOWED": "可执行文件不在系统目录白名单内：{command}",
+  "err.TEMPLATE_CWD_INVALID": "模板工作目录必须是绝对路径：{cwd}",
+  "err.TEMPLATE_TIMEOUT_INVALID": "模板超时值非法：{timeoutMs}",
+  "err.TEMPLATE_OUTPUT_LIMIT_INVALID": "模板输出上限非法：{maxOutputBytes}",
+  "err.TEMPLATE_PARAM_SPEC_INVALID": "模板参数定义非法：{param}",
+  "err.TEMPLATE_NOT_FOUND": "模板未注册：{templateId}",
+  "err.TEMPLATE_PARAM_INVALID": "模板参数非法：{param}",
+  "err.TEMPLATE_PARAM_UNKNOWN": "模板不存在的参数：{param}",
+  "err.TEMPLATE_PARAM_MISSING": "模板缺少参数：{param}",
+  "err.EXEC_TIMEOUT": "模板执行超时：{templateId}（{timeoutMs}ms）",
+  "err.EXEC_FAILED": "模板执行失败：{templateId}"
 }

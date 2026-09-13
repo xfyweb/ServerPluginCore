@@ -152,10 +152,16 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 ## 5. 危险原语策略
 
 **exec 模板**（核心第一版审计焦点，详细规范见 interface-audit-exec-fs.md，沙箱与注册制见 exec-sandbox-design.md）：
-- 模板注册表（**注册制**，三方来源 + 命名空间 `core:` / `<pluginId>:` / `admin:`）：插件在 manifest `execTemplates` 声明 → 核心静态校验（E1–E10）→ 管理员批准 → 进注册表；参数用枚举/正则/白名单校验；
+- 模板注册表（**注册制**，两方来源 + 命名空间 `core:` / `<pluginId>:`）：插件在 manifest `execTemplates` 声明 → 核心静态校验（E1–E10）→ 管理员批准 → 进注册表；参数用枚举/正则/白名单校验；**管理员是审批方，不定义模板**（他定义的模板插件开发时看不见）；
+- 调用写法：模板 ID 形式（`exec.run('core:git.status', {repo})`）与**原生写法**（`exec.run('git -C /srv/demo status …')`）等价——原生写法只用于**匹配模板**，执行的永远是模板的 argv，匹配不到即 `TEMPLATE_NOT_FOUND`；匹配时**字面量优先**，命令形状全局唯一（详见 interface-audit-exec-fs.md §2）；
 - 命令构造禁止字符串拼接用户输入（数组传参）；凭据禁明文 `-p`，走 `MYSQL_PWD`/`--defaults-extra-file`（chmod 600，用完即删）；
 - 输出大小限制、超时、工作目录固定、环境变量白名单；
-- 第一版模板：nginx（reload/test）、git（pull，repo 白名单）、psql/mysql（凭据走环境）。
+- 第一版内置模板（**无自由命令**；命令固定 + 参数校验，见 interface-audit-exec-fs §2）：
+  - **git**：`core:git.version`（诊断，无参数）、`core:git.status`、`core:git.log`（`count` 限 1–3 位数字）、`core:git.rev-parse`、`core:git.branch`（只读）、`core:git.fetch`、`core:git.pull --ff-only`（动仓库 / 走网络）；除 `version` 外都以 `repo`（path，**白名单作用域**）为参数；
+  - **nginx**：`core:nginx.test`、`core:nginx.reload`（找得到 nginx 才注册）；
+  - psql/mysql（凭据走 env）待补。
+  - 仓库白名单根默认按平台取（Windows `%ProgramData%\spc\repos`；Linux `/srv`、`/var/lib/spc/repos`），可用 `SPC_REPO_ROOTS`（平台分隔符）覆盖——"哪些目录里的仓库允许被模板操作"由管理员决定；
+  - 可执行文件解析跨平台（Windows 常见 `%ProgramFiles%\Git\cmd\git.exe`），但解析结果仍要过 E10 白名单；单个内置模板注册失败只告警，不影响核心启动。
 
 **fs 路径收敛**：
 - 所有路径 `realpath` 规范化后校验前缀；拒绝符号链接逃逸、`..`、特殊文件（/dev、/proc、socket）；
@@ -207,7 +213,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 
 ## 8. 审计
 
-每条调用落：`{ts, pluginId, method, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。
+每条调用落：`{ts, pluginId, method, target?, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, resultBytes?, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。`target` 是动态权限点的解析结果（如 `exec.template.nginx.reload`），`resultBytes` 是结果序列化字节数（exec 的命令输出量），两者都非敏感，便于排障与统计。
 
 ## 9. manifest（schema 2）
 

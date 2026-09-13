@@ -93,7 +93,7 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 > ⚠️ 项目处于**核心链路验证完成（spike）、P1 待开工**阶段。当前可运行：
 > ```bash
 > pnpm install
-> pnpm spike              # 运行样板插件（沙箱 → @host/api → 写入 ~/test.txt）
+> pnpm spike              # 运行样板插件（沙箱 → @host/api → 写文件 + 调 core:git.version 模板）
 > pnpm verify:sandbox     # 验证 quickjs-emscripten 补丁有效性（8/8 用例）
 > ```
 > 注意：本项目使用 **pnpm** 作为包管理器（patchedDependencies 依赖 pnpm 机制）。

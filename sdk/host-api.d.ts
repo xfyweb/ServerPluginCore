@@ -25,10 +25,48 @@ declare module '@host/api' {
     bytes: number;
   }
 
+  export interface ExecResult {
+    exitCode: number | null;
+    signal: string | null;
+    stdout: string;
+    stderr: string;
+    /** 输出达到模板上限被截断 */
+    truncated: boolean;
+    durationMs: number;
+  }
+
   // 注意（P1 待办）：宿主方法的返回值目前以 **JSON 文本**回传（spike 约定），
   // 与下方声明中的对象形态尚未对齐；SDK 层将在 P1 统一为对象（ROADMAP P1 sdk 条目）。
   export const fs: {
     /** 写入文件（spike：fs.write.home 权限点；正式版走 fs 受限 + 路径收敛） */
     write(path: string, content: string): WriteResult;
+  };
+
+  export const exec: {
+    /**
+     * 执行**已注册模板**（没有自由命令，`docs/interface-audit-exec-fs.md` §1）。
+     *
+     * 两种写法都接受：
+     * - **模板 ID 形式**（精确）：`exec.run('core:git.status', JSON.stringify({ repo: '/srv/demo' }))`；
+     * - **原生写法**：`exec.run('git -C /srv/demo status --porcelain=v1 --branch')`、
+     *   `exec.run('git', ['-C', '/srv/demo', 'status'])`、`exec.run(['git', '-C', '/srv/demo', 'status'])`。
+     *
+     * 原生写法**只用于匹配模板**：宿主把命令与每个模板的固定命令按"字面量 / 占位符"逐位对齐
+     * （`argv[0]` 只比 basename），**字面量优先**（占位符更少的模板先命中），匹配到才执行，
+     * 而且**执行的永远是模板里的固定 argv**；匹配不到 → `TEMPLATE_NOT_FOUND`（拒绝执行）。
+     * 参数照样逐个过模板校验（path 收敛等），权限点也仍是模板的 `exec.template.<action>.<op>`
+     * ——因此原生写法**绕不过授权**，也变不出新命令。
+     *
+     * @throws `TEMPLATE_NOT_FOUND`（模板未注册 / 原生写法匹配不到）、
+     *         `TEMPLATE_PARAM_*`（参数缺失/未知/非法）、`PERMISSION_DENIED`（未授予该模板权限点）、
+     *         `EXEC_TIMEOUT` / `EXEC_FAILED`
+     */
+    run(templateId: string, paramsJson?: string): ExecResult;
+    /** 原生写法：整条命令字符串（按空白/引号分词后匹配模板） */
+    run(command: string): ExecResult;
+    /** 原生写法：命令名 + 参数数组 */
+    run(command: string, argv: readonly string[]): ExecResult;
+    /** 原生写法：完整 argv 数组 */
+    run(argv: readonly string[]): ExecResult;
   };
 }

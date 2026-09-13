@@ -28,9 +28,9 @@
       "default": "ability"
     },
     "id": {
-      "description": "命名空间 id：official:<name> / thirdparty:<name>，小写字母数字连字符",
+      "description": "发布者命名空间 id：@<username>/<name>（市场内唯一；跨市场全局唯一性由完整引用 <origin>/@<username>/<name> 提供）",
       "type": "string",
-      "pattern": "^(official|thirdparty):[a-z0-9][a-z0-9_-]{0,62}$"
+      "pattern": "^@[a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$"
     },
     "name": {
       "type": "string",
@@ -79,6 +79,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "id": {
+          "description": "作者 ID：<username>@<源域名>（可选；填写时须与 id 的命名空间、源域名一致，否则 AUTHOR_MISMATCH）",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,62}@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\\d{1,5})?$"
+        },
         "name": {
           "type": "string",
           "maxLength": 64
@@ -297,7 +302,12 @@
             "properties": {
               "id": {
                 "type": "string",
-                "pattern": "^(official|thirdparty):[a-z0-9][a-z0-9_-]{0,62}$"
+                "pattern": "^@[a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$"
+              },
+              "origin": {
+                "description": "跨源依赖：源域名（同源依赖省略；本机开发市场用 localhost 或 localhost:port）。缺少的源不会自动添加，只提示管理员",
+                "type": "string",
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\\d{1,5})?$"
               },
               "version": {
                 "type": "string",

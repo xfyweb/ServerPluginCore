@@ -16,15 +16,33 @@
 
 ## 2. exec 模板规范
 
-### 2.1 模板定义（注册制：三方来源 + 命名空间）
+### 2.1 模板定义（注册制：两方来源 + 命名空间）
 
 模板来源三方，统一进注册表并带命名空间（详 docs/exec-sandbox-design.md §2）：
 
 | 来源 | 命名空间 | 定义方 | 谁能调用 |
 |---|---|---|---|
-| 核心内置 | `core:nginx.reload` | 核心 | 按权限点 |
-| **插件声明** | `<pluginId>:mc.start`（如 `@xfy2412/docker:mc.start`） | 插件（manifest `execTemplates`） | 声明插件 + 管理员授予的 |
-| 管理员自定义 | `admin:backup-site` | 管理员 | 管理员显式授予的 |
+| 核心内置 | `core:nginx.reload` | 核心 | 按该模板自动生成的权限点 |
+| **插件声明** | `<pluginId>:mc.start`（如 `@xfy2412/docker:mc.start`） | 插件（manifest `execTemplates`） | 声明插件 + 管理员逐点授予 |
+
+> 模板只有两方来源：管理员是**审批方**，不定义模板（他定义的模板插件开发时看不见，等于没有调用方，见 exec-sandbox-design §2.1/§2.2）。
+
+**两种调用写法都接受**（兼容开发者原生写法，但**执行的一定是模板的 argv**）：
+
+```js
+exec.run('core:git.status', { repo: '/srv/demo' })                     // ① 模板 ID（精确）
+exec.run('git -C /srv/demo status --porcelain=v1 --branch')            // ② 原生写法：整条命令字符串
+exec.run('git', ['-C', '/srv/demo', 'status'])                         // ② 原生写法：命令名 + argv
+exec.run(['git', '-C', '/srv/demo', 'status'])                         // ② 原生写法：完整 argv
+```
+
+匹配规则（原生写法只用于**匹配**，绝不把开发者字符串直接交给 spawn）：
+
+1. 把命令与每个模板的固定命令按"字面量 / 占位符"逐位对齐（`argv[0]` 只比 basename，所以 `git` 能对上 `/usr/bin/git`）；
+2. **字面量优先**：占位符更少（更具体）的模板优先命中——否则 `… echo noargs` 会被 `… echo {msg}` 抢走；
+3. **命令形状全局唯一**：字面量与占位符布局完全相同的两个模板禁止注册（否则匹配歧义）；
+4. **匹配不到 → 拒绝执行**（`TEMPLATE_NOT_FOUND`），没有"退回自由命令"这条路；
+5. 参数照旧逐个过模板校验（path 收敛等），**权限点也仍是模板的**——原生写法绕不过授权，也变不出新命令。
 
 模板定义示例（核心内置 nginx.reload）：
 
@@ -64,7 +82,7 @@
 | mysql | query-file | `mysql --defaults-extra-file=<tmp> --batch --raw < <sql文件>` | sql 文件由插件先经 fs.write 写入数据目录 | defaults-extra-file（600，用完删） |
 | psql | query-file | 同上（psql -f） | 同上 | 同上 |
 
-**新增模板的流程**：插件在 manifest 声明 `execTemplates`（管理员自定义走 `admin:` 命名空间）→ 核心做静态威胁建模校验（E1–E10，本文件清单）→ 管理员批准 → 进注册表（带来源标记）→ 权限点 `exec.template.<action>.<op>` 自动生成。调用方式 `exec.run('<namespace>:<action>.<op>', params)`；**未注册模板一律报错**。
+**新增模板的流程**：插件在 manifest 声明 `execTemplates` → 核心做静态威胁建模校验（E1–E10，本文件清单）→ 管理员批准 → 进注册表（带来源标记）→ 权限点 `exec.template.<action>.<op>` 自动生成（`action.op` 全局唯一，撞名即注册失败）。调用方式 `exec.run('<namespace>:<action>.<op>', params)`；**未注册模板一律报错**。
 
 ### 2.4 exec 威胁建模清单（评审模板时逐条过）
 
@@ -79,7 +97,7 @@
 | E7 | 写路径逃逸：命令写任意文件 | 命令固定无用户输入；确需写 → 经 fs 接口（受 §3 约束） | 模板命令无法被插件改写 |
 | E8 | TOCTOU：模板执行期间配置被换 | cwd 固定 + 命令路径用绝对路径 | — |
 | **E9** | 路径类参数绕过 fs 直接读写（如 git repo、sql 文件） | `validatePath` + scope 白名单（**声明层**：UX/提前报错，非安全边界） | 白名单外路径被拒；越界由系统级沙箱兜底 |
-| **E10** | 插件"先写脚本再执行"（任意代码执行旁路） | 可执行文件路径 ∈ 系统目录白名单（/bin /sbin /usr/bin /usr/sbin）+ 存在 + 可执行 | 指向插件数据目录的可执行文件被拒 |
+| **E10** | 插件"先写脚本再执行"（任意代码执行旁路） | 可执行文件路径 ∈ 系统/管理员目录白名单 + realpath 后仍在内 + 存在 + 可执行 | 指向插件数据目录的可执行文件被拒 |
 
 ---
 
@@ -119,17 +137,20 @@
 ## 4. 审计字段（exec 与 fs 通用）
 
 ```
-{ts, pluginId, method, templateAction/op 或 fsPath(摘要), paramsDigest,
- result(ok|denied|timeout|error), permission:{decision, reason},
- durationMs, outputBytes}
+{ts, pluginId, method, target?, paramsDigest, result(ok|denied|error),
+ permission:{decision, code, paramsDigest?}, error?:{code, paramsDigest?},
+ durationMs, resultBytes?}
 ```
 
+- exec 的模板 `action/op` 落在 `target`（如 `exec.template.nginx.reload`）；
+- **超时与执行失败不另设结果值**，统一落 `error.code`（`EXEC_TIMEOUT` / `EXEC_FAILED`）；
+- 命令输出量体现在 `resultBytes`（结果序列化字节数），输出上限由模板 `maxOutputBytes` 约束；
 - 路径类参数落**摘要/哈希**（完整路径可能含敏感信息）；
 - 凭据相关操作（defaults-extra-file 生命周期）单独审计（创建/删除时间戳）。
 
 ## 5. 测试清单（P1 验收用）
 
-- [ ] E1–E10、F1–F7 全部有自动化测试用例；
+- [ ] E1–E10、F1–F7 全部有自动化测试用例 —— **exec 侧已覆盖**：E1（占位符只能整元素 / 参数注入）、E2/E9（路径类参数收敛）、E4（输出截断）、E5（超时）、E6（env 白名单）、E7（固定数组 + 永不经 shell）、E8（cwd 绝对路径 / argv[0] 不可由参数决定）、E10（可执行文件白名单 + realpath）；**待补**：E3（凭据走 env 的完整链路，随 psql/mysql 模板）、E1–E10 的 fuzz 语料；
 - [ ] 恶意参数语料（注入串、穿越串、超长输入）通过 fuzz 框架跑；
 - [ ] 并发测试：同插件并发调 exec/fs，权限判定无竞态；
 - [ ] 审计日志完整性：每个调用一条记录，无丢失；
@@ -141,6 +162,6 @@
 - 模板注册表与权限注册表联动：新增模板自动生成权限点（api-contract §6）；
 - **E9/E10 补充**（模板注册制 + 系统级沙箱，详见 docs/exec-sandbox-design.md）：
   - E9 路径类参数 → validatePath + scope 白名单（**声明层，UX/提前报错，不是安全边界**）；
-  - E10 可执行文件路径 ∈ 系统目录白名单（防"插件先写脚本再执行"旁路）；
+  - E10 可执行文件路径 ∈ 系统/管理员目录白名单（防"插件先写脚本再执行"旁路）；白名单按平台给（Linux: `/bin` `/sbin` `/usr/bin` `/usr/sbin` `/usr/local/bin`；Windows: `%SystemRoot%\System32`、`%ProgramFiles%`、`%ProgramFiles(x86)%`、`%LOCALAPPDATA%\Programs`），且必须 **realpath 之后**比对；
   - 强制层 = 系统级沙箱（Linux Landlock 5.13+ / Windows AppContainer，Rust helper，P2/P5 落地）；
-  - 命令执行能力分层：内置模板 → 插件声明模板（注册制）→ 自由命令（需显式授予 + 二次确认）→ 特权模板（root）。
+  - 命令执行能力分层（**无自由命令**，见 §1）：内置模板 → 插件声明模板（注册制）→ 特权模板（`privileged: true`，P5 特权执行器）。

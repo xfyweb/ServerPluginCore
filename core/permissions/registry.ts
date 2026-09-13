@@ -1,8 +1,17 @@
 // 权限注册表（D4）：宿主侧集中登记全部权限点
 // 注册表是审计、管理 UI、测试、能力插件枚举的单一事实源（api-contract §6）。
+//
+// v3（docs/plugin-signature-design.md §1）：权限点只描述"这是什么能力、有多敏感"，
+// 不描述"谁有资格申请"——来源（签名 / 市场 / 本地安装）不参与权限判定（ADR-001 v3）。
+// 因此删除了 protectionLevel（从未被判定逻辑读取）、Tier 与按档分档的 defaults。
 import { SpcError } from '../errors';
-export type ProtectionLevel = 'normal' | 'dangerous' | 'signature';
-export type Tier = 'official' | 'thirdparty';
+
+/**
+ * 作用域：决定"要不要管理员授予"。
+ * - self：只碰插件自身（自己的数据目录 / kv / 定时器）→ 不需要授予
+ * - host：碰宿主管理的资源 → 必须逐点授予
+ */
+export type Scope = 'self' | 'host';
 export type Decision = 'allow' | 'deny';
 /** 保密等级（读门槛）：public < sensitive < secret */
 export type Confidentiality = 'public' | 'sensitive' | 'secret';
@@ -17,14 +26,12 @@ export interface PermissionPoint {
   name: string;
   group: string;
   description: string;
-  /** protectionLevel（Android 参考）：normal 自动授予 / dangerous 需确认 / signature 仅官方签名 */
-  protectionLevel: ProtectionLevel;
+  /** 作用域：self 免授予 / host 必须逐点授予 */
+  scope: Scope;
   /** 默认保密等级（调用方未声明 meta 时的兜底） */
   confidentiality: Confidentiality;
   /** 默认执行等级 */
   executionLevel: ExecutionLevel;
-  /** 双档默认值：official 原样批准；thirdparty 降级在 defaults 中体现 */
-  defaults: Record<Tier, Decision>;
 }
 
 export class PermissionRegistry {
@@ -62,28 +69,25 @@ registry.register({
   name: 'fs.write.data',
   group: 'fs',
   description: '写入插件数据目录（/var/lib/spc/plugins/<id>/）',
-  protectionLevel: 'normal',
+  scope: 'self',
   confidentiality: 'sensitive',
   executionLevel: 'medium',
-  defaults: { official: 'allow', thirdparty: 'allow' },
 });
-
 
 registry.register({
   name: 'fs.write.home',
   group: 'fs',
-  description: 'spike 演示：向用户主目录写入文件（正式版由数据目录机制替代）',
-  protectionLevel: 'normal',
+  description: 'spike 演示：向用户主目录写入文件（正式版由数据目录机制替代）——属于宿主管理的资源，故 scope=host',
+  scope: 'host',
   confidentiality: 'sensitive',
   executionLevel: 'medium',
-  defaults: { official: 'allow', thirdparty: 'allow' },
 });
+
 registry.register({
   name: 'fs.read.data',
   group: 'fs',
   description: '读取插件数据目录',
-  protectionLevel: 'normal',
+  scope: 'self',
   confidentiality: 'sensitive',
   executionLevel: 'medium',
-  defaults: { official: 'allow', thirdparty: 'allow' },
 });

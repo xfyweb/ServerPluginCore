@@ -11,13 +11,21 @@
 // 运行环境约束：QuickJS 纯 ES2020 语义——**没有 Node API、没有 require、没有 process**。
 
 /**
+ * 桥契约（参数）：允许插件按原生写法传数组/对象——非字符串参数在这里序列化成
+ * `__spcJson:<JSON>` 再交给宿主（宿主侧用 core/exec/request.ts 的 decodeBridgeArg 还原）。
+ * 字符串原样传递，因此既有调用完全不受影响。
+ */
+const __JSON_PREFIX = '__spcJson:';
+const __marshal = (a) => (typeof a === 'string' ? a : __JSON_PREFIX + JSON.stringify(a === undefined ? null : a));
+
+/**
  * 宿主桥把失败以"回执单"形式回传（JSON 文本 {__spcError:{code,params}}），
  * 这里翻译成带 code / params 的异常抛给插件。
  * 为什么不用 vm.throw：asyncify 模式下宿主函数抛出的异常会随正常返回值被吞掉
  * （@experimental 路径不可靠），所以错误一律走"返回值 + 沙箱内还原"。
  */
 const __wrap = (fn) => (...args) => {
-  const raw = fn(...args);
+  const raw = fn(...args.map(__marshal));
   if (typeof raw === 'string' && raw.indexOf('__spcError') !== -1) {
     let env = null;
     try {

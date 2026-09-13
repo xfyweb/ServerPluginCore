@@ -15,7 +15,7 @@ export interface Manifest {
   schema: 2;
   /** 插件类型，缺省视为 ability（能力插件） */
   type?: PluginType;
-  /** 命名空间 id：official:<name> / thirdparty:<name> */
+  /** 发布者命名空间 id：`@<username>/<name>`（市场内唯一；跨市场靠完整引用 `<origin>/@<username>/<name>` 消歧） */
   id: string;
   name: string;
   version: {
@@ -30,6 +30,8 @@ export interface Manifest {
     targetCore?: string;
   };
   author?: {
+    /** 作者 ID：`<username>@<源域名>`（可选；填写时须与 id 命名空间、源域名一致） */
+    id?: string;
     name?: string;
     homepage?: string;
   };

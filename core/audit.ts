@@ -40,6 +40,8 @@ export interface AuditEntry {
   ts: number;
   pluginId: string;
   method: string;
+  /** 机器可读目标（如 exec 模板对应的权限点 `exec.template.nginx.reload`）；非敏感，便于排障与统计 */
+  target?: string;
   /** 入参摘要（防敏感信息落明文） */
   paramsDigest: string;
   result: 'ok' | 'denied' | 'error';
@@ -47,6 +49,8 @@ export interface AuditEntry {
   permission?: AuditDecision;
   /** result=error 时携带宿主错误码 */
   error?: AuditError;
+  /** 结果序列化字节数（exec 的命令输出量体现在这里；受模板 maxOutputBytes 约束） */
+  resultBytes?: number;
   durationMs: number;
 }
 

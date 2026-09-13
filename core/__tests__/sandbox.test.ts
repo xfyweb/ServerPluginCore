@@ -23,7 +23,7 @@ test.after(() => {
   rmSync(AUDIT_DIR, { recursive: true, force: true });
 });
 
-const OPTIONS = { pluginId: 'official:sandbox-test', permissions: ['fs.write.home'], tier: 'official' as const };
+const OPTIONS = { pluginId: '@xfy2412/sandbox-test', permissions: ['fs.write.home'], grants: ['fs.write.home'] };
 
 test('宿主错误 → 插件按 code / params 捕获（信封还原）', async () => {
   const sandbox = await createSandbox(hostApi, OPTIONS);
@@ -34,7 +34,7 @@ test('宿主错误 → 插件按 code / params 捕获（信封还原）', async 
   };
   try {
     await sandbox.runModule(
-      'official:sandbox-test',
+      '@xfy2412/sandbox-test',
       `
 import { fs } from '@host/api';
 try {
@@ -56,7 +56,7 @@ test('插件未捕获错误 → PLUGIN_LOAD_FAILED（带 cause），且 dispose 
   await assert.rejects(
     () =>
       sandbox.runModule(
-        'official:sandbox-test',
+        '@xfy2412/sandbox-test',
         `
 import { fs } from '@host/api';
 fs.write('/etc/passwd', 'x');
@@ -66,7 +66,7 @@ fs.write('/etc/passwd', 'x');
       assert.ok(err instanceof SpcError);
       assert.equal(err.code, 'PLUGIN_LOAD_FAILED');
       assert.equal(err.params.cause, 'PATH_OUT_OF_SCOPE');
-      assert.equal(err.params.pluginId, 'official:sandbox-test');
+      assert.equal(err.params.pluginId, '@xfy2412/sandbox-test');
       return true;
     },
   );
@@ -79,7 +79,7 @@ test('白名单外的模块被拒（零环境权力的执行点）', async () =>
   await assert.rejects(
     () =>
       sandbox.runModule(
-        'official:sandbox-test',
+        '@xfy2412/sandbox-test',
         `
 import fs from 'node:fs';
 `,

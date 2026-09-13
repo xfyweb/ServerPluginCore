@@ -3,7 +3,7 @@ import { isSuccess, newQuickJSAsyncWASMModule, Scope } from 'quickjs-emscripten'
 import { audit, digest, digestParams } from './audit';
 import { SpcError, toErrorShape } from './errors';
 import { checkPermission } from './permissions/check';
-import { registry, type Tier } from './permissions/registry';
+import { registry } from './permissions/registry';
 
 export interface Sandbox {
   runModule(name: string, source: string): Promise<void>;
@@ -35,17 +35,21 @@ function hostErrorPayload(code: string, params?: Record<string, string>): string
 
 /** 宿主方法：声明所需权限点 + 实现（权限检查在宿主侧强制，D3） */
 export interface HostMethod {
-  permission: string;
+  /** 静态权限点 */
+  permission?: string;
+  /** 动态解析本次调用所需的权限点（如 exec.run 按模板 ID 解析）；返回 null 表示目标非法 */
+  permissionFor?: (args: string[]) => string | null;
   fn: (...args: string[]) => unknown;
 }
 export type HostApi = Record<string, HostMethod>;
 
-/** 插件沙箱上下文（来自 manifest + 档位） */
+/** 插件沙箱上下文（来自 manifest 声明 + 安装记录的授予） */
 export interface SandboxOptions {
   pluginId: string;
-  /** manifest.permissions 提取的权限请求 */
+  /** manifest.permissions 提取的权限请求（可含通配） */
   permissions: string[];
-  tier: Tier;
+  /** 管理员逐点授予的权限点（精确；宿主侧唯一真相，见 plugin-signature-design.md §9） */
+  grants?: string[];
 }
 
 /** 生成 @host/api 的导出清单（模块正文来自 sandbox-modules/host-api.js，按方法组分组） */
@@ -106,13 +110,37 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         const strings = args.map((h) => vm.getString(h)); // spike：仅处理字符串参数
         const callDigest = digest(JSON.stringify(strings));
 
-        // ① 权限判定（宿主侧强制 + 审计）；判定只记码与参数摘要，不记本地化文本
-        const check = checkPermission(registry, method.permission, options.permissions, options.tier);
+        // ① 解析本次调用的权限点（动态点如 exec.run 由模板 ID / 原生写法匹配决定）
+        //    解析失败（如 exec 匹配不到模板）由方法自己抛 SpcError：只做**结构匹配**，
+        //    参数校验留到权限通过之后（避免未授权插件拿参数校验结果做探测）。
+        let requested: string;
+        try {
+          const resolved = method.permissionFor ? method.permissionFor(strings) : method.permission;
+          if (!resolved) throw new SpcError('PERMISSION_DENIED', { permission: '(unresolved)' });
+          requested = resolved;
+        } catch (err) {
+          const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
+          audit({
+            ts: Date.now(),
+            pluginId: options.pluginId,
+            method: name,
+            target: typeof strings[0] === 'string' ? strings[0] : undefined,
+            paramsDigest: callDigest,
+            result: 'denied',
+            permission: { decision: 'deny', code: shape.code, paramsDigest: digestParams(shape.params) },
+            durationMs: Date.now() - start,
+          });
+          return vm.newString(hostErrorPayload(shape.code, shape.params));
+        }
+
+        // ② 权限判定（宿主侧强制 + 审计）；判定只记码与参数摘要，不记本地化文本
+        const check = checkPermission(registry, requested, options.permissions, options.grants ?? []);
         if (check.decision === 'deny') {
           audit({
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
+            target: requested,
             paramsDigest: callDigest,
             result: 'denied',
             permission: {
@@ -124,19 +152,21 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           });
           return vm.newString(
             hostErrorPayload('PERMISSION_DENIED', {
-              permission: method.permission,
+              permission: requested,
               reason: check.code,
             }),
           );
         }
 
-        // ② 执行宿主实现
+        // ③ 执行宿主实现
         try {
           const result = method.fn(...strings);
+          const serialized = JSON.stringify(result ?? null);
           audit({
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
+            target: requested,
             paramsDigest: callDigest,
             result: 'ok',
             permission: {
@@ -144,9 +174,10 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
               code: check.code,
               paramsDigest: digestParams(check.params),
             },
+            resultBytes: Buffer.byteLength(serialized),
             durationMs: Date.now() - start,
           });
-          return vm.newString(JSON.stringify(result ?? null));
+          return vm.newString(serialized);
         } catch (err) {
           // 宿主错误 → 英文码 + 参数摘要入审计；插件面拿到 code/params（未分类错误记 INTERNAL）
           const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
@@ -154,6 +185,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
+            target: requested,
             paramsDigest: callDigest,
             result: 'error',
             permission: {
