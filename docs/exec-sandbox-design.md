@@ -97,6 +97,28 @@ Landlock 需内核 5.13+。2020 年前后的 LTS（Ubuntu 20.04 GA=5.4、Debian 
 - 纯 Linux 部署无此绕过面；Windows 原生部署走 AppContainer 不经 WSL；
 - 平台差异写进 ADR-002 v3（Windows/WSL 部署注意事项）。
 
+### 3.5 运行时限额与中断（QuickJS 实测，P1.5 落地）
+
+插件代码跑在宿主进程内，所以"不能让它拖垮核心"必须靠运行时限额。四条防线（本地源码 `quickjs` 核对过语义）：
+
+| 层 | 手段 | 抓什么 |
+|---|---|---|
+| CPU | `runtime.setInterruptHandler(() => 超过 deadline)` | 死循环、无限递归、**正则灾难性回溯** |
+| 内存 | `runtime.setMemoryLimit(bytes)` | 无限分配、大数组 |
+| 栈 | `runtime.setMaxStackSize(bytes)` | 深递归爆 C 栈 |
+| 挂起 | **宿主 API 自带超时**（接口强制） | `await` 一个永不 resolve 的宿主调用 |
+
+源码依据：
+
+- 轮询点：`js_poll_interrupts()` 递减计数器（初值 `JS_INTERRUPT_COUNTER_INIT = 10000`，`quickjs.c:512`、`:7877-7884`），覆盖解释器主循环每个 opcode/跳转（`:18824-18917`）、函数调用入口（`:17787`）、字符串/大对象操作（`:16373`/`:16443`）；**正则引擎有独立计数器**（`libregexp.c:63`），回溯里也轮询。
+- 中断异常**不可捕获**：`JS_ThrowInterrupted()` = `InternalError("interrupted")` + `JS_SetUncatchableException(ctx, TRUE)`（`quickjs.c:7858-7862`）→ 插件无法 `try/catch` 吞掉超时。
+- 内存：`JS_SetMemoryLimit` 写 `malloc_limit`（`:2221-2224`），分配/重分配时检查（`:2160`、`:2198`），超限先 GC（`js_trigger_gc`）再抛 `out of memory`（`:7783`）。
+- job 队列：promise 续体是 job，需宿主驱动（`JS_ExecutePendingJob`，`:2303`）——`executePendingJobs()` 不跑，`await` 之后的代码就不执行。
+
+**为什么超时不能只靠中断**：VM 在等宿主 Promise 时处于 asyncify 挂起状态、不执行代码，中断轮询不会发生。因此"卡住的 await"只能由宿主侧超时兜——这也是把"每个宿主 API 必须自带超时"写进契约的原因（plugin-lifecycle-design.md §4.3）。
+
+**实现注意**：装载器每次 `getProp`/`callFunction` 产生的 handle 必须纳入 `Scope` 统一释放，否则 dispose 会命中 `Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeRuntime)`（本项目已修过的 D1/D2 同类问题）。
+
 ## 4. 实现形态：Rust 单二进制 helper
 
 ```

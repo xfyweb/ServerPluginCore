@@ -76,6 +76,7 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 | [ADR-004](docs/ADR-004-os-boundary.md) | OS 底线：非 root + 资源限制 |
 | [ADR-005](docs/ADR-005-plugin-sandbox-and-plugin-types.md) | 插件沙箱与四类插件机制（面板/能力/驱动/协作） |
 | [宿主 API 契约](docs/api-contract.md) | 双通道传输、方法组、权限注册表、manifest schema 2 |
+| [插件生命周期与装载器](docs/plugin-lifecycle-design.md) | 装载契约（`init`/`start`/`stop` + `ctx`）、状态机、四层限额、安装记录、CLI 面（P1.5） |
 | [签名与源设计](docs/plugin-signature-design.md) | 元数据结构、规范化签名、keyring 与源、链式密钥轮换、校验流程与错误码（P4） |
 | [市场授权设计](docs/market-license-design.md) | 永久授权 + 维护窗口、下载控制面（P4 付费市场基线） |
 | [接口审计：exec + fs](docs/interface-audit-exec-fs.md) | 危险接口威胁建模清单（P1 验收依据） |
@@ -90,7 +91,7 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 
 ## 🚀 快速开始
 
-> ⚠️ 项目处于**核心链路验证完成（spike）、P1 待开工**阶段。当前可运行：
+> ⚠️ 项目处于 **P1 进行中**阶段：exec 模板基线、权限判定层、签名与源核心库已落地；**插件生命周期与装载器（P1.5）设计中**。当前可运行：
 > ```bash
 > pnpm install
 > pnpm spike              # 运行样板插件（沙箱 → @host/api → 写文件 + 调 core:git.version 模板）

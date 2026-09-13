@@ -96,7 +96,7 @@ interface EventResult {
 | **kv** | `kv.get` `kv.set` `kv.delete` | `kv.<namespace>` | 插件作用域持久化存储 |
 | **timers** | `timers.every` `timers.cron` | `timers.schedule` | 宿主侧调度，插件不保活 |
 | **events** | `events.publish`（订阅走 manifest 声明） | `events.<topic>` | §3 |
-| **lifecycle** | `lifecycle.health` `lifecycle.version` | 自动授予 | 心跳、契约协商 |
+| **lifecycle（宿主 API）** | `lifecycle.health` `lifecycle.version` | 自动授予 | 心跳、契约协商；**插件自身钩子（宿主→插件）方向相反，见 §4.2 与 plugin-lifecycle-design.md** |
 | **audit** | （无需插件调用） | — | 宿主对每个调用落审计（§8） |
 
 **核心不提供**（由驱动插件经扩展注册点提供，见 §10）：db 连接代理、SSH、Docker 客户端、net 裸 socket、pty、媒体处理。
@@ -148,6 +148,22 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 ```
 
 **事件扩展**（进 §3 事件清单）：`job.finished`、`process.exit`、`process.crash`、`process.data`（输出流订阅可选）。
+
+## 4.2 插件钩子（宿主 → 插件）
+
+与 §4 的方法组**方向相反**：装载器调用插件导出的钩子。完整契约、状态机、配置与验收见 **plugin-lifecycle-design.md**。
+
+```ts
+export async function init(ctx: PluginContext): Promise<void>;   // 必需
+export async function start(ctx: PluginContext): Promise<void>;  // 可选
+export async function stop(ctx: PluginContext): Promise<void>;   // 可选
+```
+
+- **两种注入分工**：`@host/api`（模块注入）= **能力**；`ctx`（参数注入）= **环境事实**（`{ pluginId, version, dataDir, manifest(只读), grants(只读), logger }`）；
+- **能力登记由 loader 依 manifest 完成**（routes / webApis / events；`execTemplates` 随 P2-5），插件不能自己注册；
+- **四层限额**：CPU 中断（`setInterruptHandler`：死循环与正则灾难性回溯都拦得住）/ 内存（`setMemoryLimit`）/ 栈（`setMaxStackSize`）/ **宿主 API 自带超时**；
+- **契约要求（对宿主 API 作者）**：asyncify 挂起期间 VM 不执行代码，中断不触发——所以**任何可能阻塞或依赖外部输入的宿主 API 必须自带超时**（`exec.run` 的 `timeoutMs` 是样板）；
+- async 钩子由宿主泵 job 队列（`executePendingJobs`），未泵完即报 `PLUGIN_JOB_PENDING`。
 
 ## 5. 危险原语策略
 

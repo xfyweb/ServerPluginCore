@@ -17,7 +17,8 @@
 |---|---|---|---|
 | P0 | 契约定稿（v0.2 最小集） | S | — |
 | P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 审计 | M | P0 |
-| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | L | P1 |
+| **P1.5** | **插件生命周期与装载器（冻结装载契约）** | M | P1（exec 基线已完成） |
+| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | L | P1.5 |
 | P3 | 面板插件 + 前端运行时加载 | L | P1（可与 P2 并行） |
 | P4 | 市场签名与源管理 + 市场 | M | P1 + P3 |
 | P5 | 核心插件集 + 加固 + 发布 | L | P2 + P3 |
@@ -39,6 +40,14 @@
 
 **目标**：`spc plugin list` 看到一个真实插件在 QuickJS 沙箱里跑，能调 `@host/api`，且 exec/fs 审计全绿。
 
+**现状（据实核对，2026-09）**：
+
+| 状态 | 项 |
+|---|---|
+| ✅ 已完成 | core 初始化 + 非 root fail-closed；QuickJS 沙箱宿主（错误桥 + 模块白名单 + dispose 修复，8/8 回归）；权限注册表与判定（v3：`scope` + 逐点授予）；审计链路；**exec 模板基线**（模板注册表 + 原生写法匹配 + 参数校验 + env/超时/截断 + 内置 git 模板集）；exec 沙箱设计（声明层） |
+| ⚠️ 部分 | fs 受限（仅 `fs.write.home` + 完整 safe-path；read/list/stat 缺）；CLI（仅 `about`/`status`/`plugin list`）；sdk（清单校验器 + 手写 `@host/api.d.ts`；构建模板缺）；demo 插件（fs + exec；kv/timers 缺） |
+| ❌ 待补 | **生命周期与装载器**（见 P1.5）；kv / timers / events / lifecycle API；崩溃与超时隔离的验收；性能 benchmark；`panel status` / `audit tail` |
+
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/sample/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
 - **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（JSON/正则/API 往返，验证"薄适配器无感"）；
@@ -48,6 +57,19 @@
 - **sdk**：`@host/api` 类型声明、esbuild 构建模板（ESM-only）、manifest 校验器；
 - **demo 插件**（内置示例）：kv 写入 + 定时器 + fs.data 读写 + 一次 exec 模板调用。
 - 验收：威胁建模测试清单（§5）全部通过；kill 沙箱插件 → 核心不挂；审计有条目；`panel disable` 后 CLI 一切可用。
+
+## P1.5：插件生命周期与装载器（P1 的收口，最高优先级）
+
+**为什么排在构建层之前**：装载契约没冻结，插件怎么写、产物怎么打包全是猜。完整设计见 **plugin-lifecycle-design.md**。
+
+- **装载契约**：ESM bundle 导出 `init(ctx)`（必需）+ `start`/`stop`（可选，均可 async）；`@host/api` 给**能力**、`ctx` 给**环境**（`pluginId`/`version`/`dataDir`/`manifest`/`grants`/`logger`）；
+- **状态机**：installed → loading → loaded → starting → running → stopping → stopped（+ `failed` / `disabled`），**唯一状态机在 manager**；失败重启是**配置项**（`failedRestart: manual|auto` + `maxRestartAttempts` + `restartBackoffMs`，默认 `manual`）；
+- **能力登记**：loader 依 manifest 登记 routes / webApis / events（`execTemplates` 留槽给 P2-5），插件不参与；冲突即回滚，不留半登记态；
+- **四层限额**：CPU 中断 / 内存 / 栈 / 宿主 API 自带超时（QuickJS 实测语义见 exec-sandbox-design §3.5）；
+- **安装记录**：`plugins.json`（字段与 plugin-signature-design §9 对齐；本地安装 `origin: null` ⇒ unanchored）；
+- **CLI / HTTP**：`plugin install / enable / disable / reload / status / grant / revoke` + `GET /api/plugins` 带状态；
+- **交付**：`core/plugin/{limits,records,loader,manager,capabilities}.ts` + `core/config.ts` + `core/__tests__/lifecycle.test.ts`（13 组用例，含死循环 / 灾难性正则 / 内存超限 / `stop` 超时 / **dispose 不崩**）；
+- **验收**：`pnpm spike` 走"记录 → 装载 → init/start → stop → 卸载"真实链路；kill/超时/崩溃的沙箱插件不影响核心。
 
 ## P2：命令任务模型 + 构建层 + 驱动插件
 
@@ -67,6 +89,8 @@
 - 验收：卸载/禁用 panel → Web 不可用、CLI 全可用；第三方插件前端无需重编译。
 
 ## P4：市场签名与源管理 + 市场
+
+**已提前落地（P4 核心库，随 P1 一起做的）**：`core/sources/{canonical,keys,keyring,status,verify}.ts` —— 规范化 JSON、公钥指纹与验签、keyring（域名主键 + TOFU/手填 + 暂停 + 防回滚高水位）、链式密钥轮换验证、包校验（meta 签名 + `files[]` + manifest 交叉校验 + 作者一致性），26 条测试。**未落地**：registry 服务、安装流接线（含 `verifiedMeta` 与启动哈希校验）、CLI 源管理、市场页面。
 
 - 签名工具链（ed25519；签名对象 = 规范化元数据，覆盖 manifest 与逐文件哈希，**由市场私钥签名**，见 **plugin-signature-design.md**）；registry 服务（market/，列表 / 上传 / 下载）；客户端安装流（清单校验 + 验签失败拒绝 + **本地安装不验签**）；
 - 源管理：keyring（域名主键 + 可选公钥 + `firstTrust` + `suspended` + 防回滚高水位）、添加源（TOFU 拉公钥 / 离线手填公钥）、状态文档拉取与**链式密钥轮换验证**、`revoked[]` 吊销信息（累计展示与审计，**不参与判定**）、暂停与管理员确认流程、**源信息展示**（含已吊销密钥与原因码）；
