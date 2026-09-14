@@ -20,10 +20,11 @@
 | `<queries>`（包可见性） | 默认看不到其他应用 | 插件间默认不可见，通信需显式声明 |
 | `<permission-group>` | 权限分组 | 权限点分组（`docker.*`、`fs.*`、`exec.*`） |
 | `<intent-filter>` | 组件可被外部调用的声明 | 事件订阅 / 路由声明 |
+| **SAF（系统选择器 + URI 而非路径）** | 用户主动选择资源，应用只拿到凭证 | **核心选择器 + `grantId`**：用户意图由可信前端捕获，插件只拿引用（intent-capture.md） |
 
 ## 二、manifest 草案（schema 2）
 
-> `type` 声明插件类型，缺省 `ability`。四类：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点）、**panel** 面板插件（Web 壳 + 组件库，内置可卸载）、**driver** 驱动插件（核心端注册权限节点 + API 端点并自行鉴权；安装走**独立界面与最高强度提示**，见 ADR-005 §3）、**hook** 协作插件（事件钩子，位置/权限设计中）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
+> `type` 声明插件类型，缺省 `ability`。四类（v3 起）：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点；前端形态由 `frontend.mode` 决定）、**driver** 驱动插件（核心端注册权限节点 + API 端点并自行鉴权；安装走**独立界面与最高强度提示**，见 ADR-005 §3）、**hook** 协作插件（事件钩子，位置/权限设计中）、**theme** 主题包（v3 由"面板插件"降级而来：`theme.json`，声明式令牌 + 资源，无 JS、无沙箱）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
 
 ```json
 {
@@ -56,6 +57,11 @@
     }
   },
 
+  "frontend": { "mode": "declarative" },
+  "intent": [
+    { "name": "pickContainer", "kind": "enum", "values": ["nginx", "redis"] }
+  ],
+
   "dependencies": {
     "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ],
     "plugins": [ { "id": "@xfy2412/docker-driver", "version": ">=0.1.0" } ]
@@ -76,7 +82,7 @@
    | 要多大的动静 | `confidentiality` / `executionLevel` | 决定授予时的提示强度与二次确认、审计分级；`effective = max(...)` 只升不降 |
    - 例：`fs.write.data` → `scope: self`（不授予）；`docker.write` → `scope: host` + `sensitive/medium`（授予 + 提示）；任意 fs 读写 / secrets → `scope: host` + `secret/high`（授予 + 二次确认）。
    - **为什么删掉 protectionLevel**：它在本仓库里从未被判定逻辑读取（装饰性字段）；其中 `signature` 档把身份塞进权限定义，与"来源不参与权限判定"冲突；`normal` 真正表达的是"够不着别人"，用 `scope: self` 更准确（api-contract §6）。
-   - 内置插件（面板插件本身）≈ Android 的 `signatureOrSystem`（同源内置、可卸载，见 ADR-002 v2）。
+   - 核心前端（Web Shell）与内置主题 ≈ Android 的 `signatureOrSystem`（同源内置；v3 起界面不再由"面板插件"提供）。
 
 3. **`exports` 显式导出（默认私有）**：插件对外的一切（Web API、前端路由、事件 topic）默认不对外；必须显式声明且经宿主网关登记后才可路由（对应 Android `android:exported` 默认 false）。比 AstrBot/Bukkit 的"注册即对外"更严，与"插件 Web API/页面纳入宿主网关鉴权"（AstrBot 研究结论 5）一致。
 
@@ -92,6 +98,13 @@
 
 9. **`configSchema`（插件配置声明，P1.5）**：声明用户可调参数（JSON Schema 子集：`string | number | boolean | enum | array`，带 `default`/`description`，敏感字段标 `secret: true`）。值存在宿主侧 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`，装载时按 schema 校验并补默认值，以**只读快照** `ctx.config` 注入（插件不能改自己的配置）。面板据此渲染配置表单（P3）。详见 plugin-lifecycle-design.md §1.6。
 
+10. **`frontend`（前端形态，P3）**：`{ mode: 'declarative' | 'iframe' }`——
+    - `declarative`：manifest 的 `exports.routes` 声明组件树，**核心渲染，插件代码不执行**（最安全，敏感数据首选）；
+    - `iframe`：插件 bundle 在核心前端的隔离 iframe 里运行（`sandbox` 无 `allow-same-origin`、CSP 零出网、经 `MessageChannel` 与核心通信）。
+    详见 intent-capture.md §5/§6。
+
+11. **`intent[]`（意图负载声明，P3）**：声明插件**可以从核心前端收到什么样的用户意图**——`selection`（资源**引用** + 元数据摘要）｜`text`（短字符串 + 长度上限）｜`enum`。核心代理层按声明校验，违规即 `INTENT_SCHEMA_VIOLATION`；**资源内容默认不随意图下发**，插件要内容必须持 grantId 调沙箱 API。声明即审核面：管理员安装时能看到"这个插件会收到什么样的用户输入"。详见 intent-capture.md §6.2。
+
 ## 四、与 api-contract.md §5 旧草案（schema 1）的差异
 
 | 旧（schema 1） | 新（schema 2） | 理由 |
@@ -103,6 +116,8 @@
 | `runtime: "node"` 字符串 | `runtime: {type, esm}` | 运行时类型 + ESM-only 硬约束（ADR-005 §4） |
 | 无 dependencies | `dependencies: {npm, plugins}` | 依赖管控 + 插件间可见性（要点 6/8） |
 | 无 configSchema | `configSchema`（可选） | 插件配置声明 + 面板渲染 + `ctx.config` 只读注入（要点 9） |
+| 无 frontend / intent | `frontend: {mode}` / `intent[]` | 前端形态与意图负载声明（要点 10/11，P3） |
+| `type` 含 `panel` | `type` 含 `theme`（移除 `panel`） | 面板插件降级为主题包（ADR-005 v3） |
 | — | `schema: 2` | 清单 schema 版本化（D10） |
 
 ## 五、不照搬 Android 的部分

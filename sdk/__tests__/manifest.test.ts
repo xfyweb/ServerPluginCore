@@ -147,6 +147,47 @@ test('非法：type 枚举外', () => {
   assert.equal(r.ok, false);
 });
 
+test('非法：panel 已移除（v3 面板插件降级为主题包）', () => {
+  const r = validateManifest({ ...validMinimal, type: 'panel' });
+  assert.equal(r.ok, false);
+});
+
+test('合法：主题包（type=theme）不需要 runtime / permissions，但必须给 theme 入口', () => {
+  const ok = validateManifest({
+    schema: 2,
+    type: 'theme',
+    id: '@xfy2412/nord',
+    name: 'Nord',
+    version: { code: 1, name: '0.0.1' },
+    theme: 'theme.json',
+  });
+  assert.equal(ok.ok, true, JSON.stringify(ok.errors));
+
+  const missingEntry = validateManifest({
+    schema: 2,
+    type: 'theme',
+    id: '@xfy2412/nord',
+    name: 'Nord',
+    version: { code: 1, name: '0.0.1' },
+  });
+  assert.equal(missingEntry.ok, false);
+});
+
+test('合法：frontend.mode 与 intent[] 声明', () => {
+  const ok = validateManifest({
+    ...validMinimal,
+    frontend: { mode: 'iframe' },
+    intent: [
+      { name: 'pickFile', kind: 'selection', resource: 'path', types: ['file'], maxBytes: 512 },
+      { name: 'mode', kind: 'enum', values: ['fast', 'safe'] },
+    ],
+  });
+  assert.equal(ok.ok, true, JSON.stringify(ok.errors));
+
+  assert.equal(validateManifest({ ...validMinimal, frontend: { mode: 'magic' } }).ok, false);
+  assert.equal(validateManifest({ ...validMinimal, intent: [{ name: 'x', kind: 'magic' }] }).ok, false);
+});
+
 test('非法：非对象输入', () => {
   assert.equal(validateManifest(null).ok, false);
   assert.equal(validateManifest('str').ok, false);

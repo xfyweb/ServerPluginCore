@@ -9,23 +9,134 @@
     "schema",
     "id",
     "name",
-    "version",
-    "runtime",
-    "permissions"
+    "version"
   ],
+  "if": {
+    "properties": {
+      "type": {
+        "const": "theme"
+      }
+    },
+    "required": [
+      "type"
+    ]
+  },
+  "then": {
+    "required": [
+      "theme"
+    ],
+    "properties": {
+      "theme": true
+    }
+  },
+  "else": {
+    "required": [
+      "runtime",
+      "permissions"
+    ],
+    "properties": {
+      "runtime": true,
+      "permissions": true
+    }
+  },
   "properties": {
     "schema": {
       "const": 2
     },
     "type": {
-      "description": "插件类型：ability(能力插件,默认,沙箱内挂载管理页面) | panel(面板插件,Web壳与组件库,内置可卸载) | driver(驱动插件,核心端特权,注册API端点并自行鉴权,严审) | hook(协作插件,事件钩子,位置/权限设计中)",
+      "description": "插件类型：ability(能力插件,默认,沙箱内挂载管理页面) | driver(驱动插件,核心端特权,注册API端点并自行鉴权,严审) | hook(协作插件,事件钩子,位置/权限设计中) | theme(主题包,声明式令牌+资源,无JS/无沙箱)",
       "enum": [
         "ability",
-        "panel",
         "driver",
-        "hook"
+        "hook",
+        "theme"
       ],
       "default": "ability"
+    },
+    "frontend": {
+      "description": "前端形态（P3）：declarative = manifest 声明组件树、核心渲染（插件代码不执行）；iframe = 插件 bundle 在核心前端的隔离 iframe 内运行（sandbox 无 allow-same-origin、CSP 零出网）",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "declarative",
+            "iframe"
+          ]
+        }
+      }
+    },
+    "intent": {
+      "description": "插件可从核心前端收到的用户意图声明（P3）。核心代理按此校验形状，违规即 INTENT_SCHEMA_VIOLATION；资源内容默认不随意图下发（只给引用，要内容需持 grantId 调沙箱 API）",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-zA-Z0-9_]*$"
+          },
+          "kind": {
+            "enum": [
+              "selection",
+              "text",
+              "enum"
+            ]
+          },
+          "resource": {
+            "description": "kind=selection：资源类型",
+            "enum": [
+              "path",
+              "session"
+            ]
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "file",
+                "dir"
+              ]
+            }
+          },
+          "maxCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "maxBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "maxLength": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "theme": {
+      "description": "主题包入口（仅 type=theme 使用），如 theme.json；主题 = 声明式设计令牌 + 资源 + 受限样式，无 JS",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
     },
     "id": {
       "description": "发布者命名空间 id：@<username>/<name>（市场内唯一；跨市场全局唯一性由完整引用 <origin>/@<username>/<name> 提供）",

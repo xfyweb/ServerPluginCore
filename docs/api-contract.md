@@ -233,7 +233,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 ## 9. manifest（schema 2）
 
-> `type` 声明插件类型（ability/panel/driver/hook），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005；type 目前不改变核心加载行为（**现状**档位仍由 id 前缀推导；**目标态**：**来源只决定更新渠道与安装界面，与加载和权限无关**，见 plugin-signature-design.md），P2/P3 起按类型分派运行档与安装流程。
+> `type` 声明插件类型（ability/driver/hook/theme），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005 v3；type 目前不改变核心加载行为（**现状**档位仍由 id 前缀推导；**目标态**：**来源只决定更新渠道与安装界面，与加载和权限无关**，见 plugin-signature-design.md），P2/P3 起按类型分派运行档与安装流程（`theme` 无沙箱、豁免 `init`）。
 
 完整设计见 manifest-design.md，要点（与旧 schema 1 的差异）：
 
@@ -271,19 +271,42 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 核心提供注册协议，让**驱动插件**（driver，核心端特权档）扩展 `@host/api`：
 
 ```
-注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query" }] }
+注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query", intent: "none" }] }
 ```
 
 - 驱动插件**不限制来源**（自建市场与官方市场等价），安装走**独立界面与最高强度提示**（ADR-005 §3）；必须：特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
 - 驱动插件向面板注册**权限节点 + API 端点**暴露给沙箱：每个注册方法进权限注册表（D4）、过威胁建模评审、随核心一起审计；
+- **每个注册方法必须声明是否需要"意图确认"**（`intent: 'none' | 'confirm' | 'session'`）：
+  - `none`：仅权限点（插件**自主发起**的操作）；
+  - `confirm`：每次调用都需要用户在核心 UI 确认（离散写类）；
+  - `session`：建立会话时确认一次并签发**绑定该会话**的 grantId（pty / SSH / DB 类），会话内敏感命令仍由核心拦截二次确认。
+  核心网关据此在调用前要求对应的 grantId（校验见 intent-capture.md §4/§7）；**强制点在核心/驱动端点**——沙箱插件没有 socket，会话数据面必经核心；
 - **鉴权双层**：核心网关先强制检查"调用方（沙箱内能力插件）有没有该端点权限"（D3 单一强制点不放松）；驱动插件内部再按面板给的权限列表**自行鉴权**（参数是否越界等）——驱动插件是市场严审对象，第三方安装有严厉提醒；
 - 沙箱内的**能力插件**（ability）通过 `import { db } from '@host/api/db'` 调用，**与基础 API 无感知差异**。
 
 > 术语沿革：早期文档称驱动插件为"能力插件（特权档）"，v2 定稿后"能力插件"专指沙箱内挂载管理页面的插件（ability），核心端注册端点的插件称**驱动插件**（driver）。
 
-## 11. 待定项（v0.3 再议）
+## 11. 前端 API（核心 REST，P3）
+
+**调用者只有核心前端**（浏览器里的可信 Web Shell），带 frontend-token。插件前端**不直连**这些端点（它处在 opaque origin、且 CSP 零出网），只能经 `postMessage` 由核心前端代理。完整模型见 **intent-capture.md**。
+
+| 端点 | 作用 | 认证 |
+|---|---|---|
+| `POST /api/intent/grant` | 用户确认后签发 grantId（body：`audience` / `operation` / `resource`） | frontend-token |
+| `POST /api/intent/revoke` | 撤销 grantId | frontend-token |
+| `POST /api/intent/forward` | 插件前端 → 插件后端的意图转发（**按 manifest `intent[]` 声明校验**；违规 → `INTENT_SCHEMA_VIOLATION`） | frontend-token + `MessageChannel` 会话 |
+| `POST /api/fs/{read,list,write,delete,move}`、`POST /api/session/{open,exec}` … | 核心原生能力（**核心执行，插件不参与**） | frontend-token；写类/会话类需带刚签发的 grantId |
+| `GET /api/theme/active` | 当前主题令牌（核心与插件 iframe 共用同一批 CSS 变量） | frontend-token |
+
+- **frontend-token**：绑定用户会话、只存核心前端内存、短时有效，**绝不下发给插件 iframe**；
+- 插件文档的 **CSP 与 `sandbox` 属性由核心下发**（插件无法覆盖）：`default-src 'none'`、`connect-src 'none'`、`sandbox="allow-scripts"`（无 `allow-same-origin`）等，见 intent-capture.md §5/§6.1；
+- 意图负载形状由 manifest `intent[]` 声明（`selection | text | enum`），**默认只给资源引用、不给内容**；要内容必须持 grantId 走沙箱 API；
+- 核心可 **headless**：关闭 Web 服务后本组端点一并关闭，一切管理回到 CLI（ADR-002 v4）。
+
+## 12. 待定项（v0.3 再议）
 
 1. 事件总线 topic 与插件可见性（dependencies.plugins 显式声明）的细化授权模型；
 2. `@host/api` 类型声明的自动生成（从注册表生成 TS 类型，保证 IDE 体验与运行时一致）；
 3. 驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）；
-4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响。
+4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响；
+5. **默认安全边界**：确认点数量与"管理员/开发者折损率"的平衡——哪些操作静默放行、哪些只提示、哪些必须确认、插件声明的默认授予面到哪里为止（见 intent-capture.md §8）。

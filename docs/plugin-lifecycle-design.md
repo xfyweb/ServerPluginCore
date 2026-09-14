@@ -18,17 +18,22 @@
 
 - **ESM 单文件 bundle**，QuickJS 可直接加载（模块加载器只接受源码文本，见 `core/sandbox.ts` 注释）；
 - 入口由安装记录/清单指定（P1 从插件目录读 `manifest.entry`；构建层落地后读 `dist/`）；
+- **前端产物**（P3，见 intent-capture.md §5）：
+  - `frontend.mode = 'declarative'`：组件树由 **manifest `exports.routes` 声明**，核心渲染，**没有前端代码产物**；
+  - `frontend.mode = 'iframe'`：插件自带前端 bundle（核心侧静态服务，`sandbox` 隔离 + CSP 零出网），随 `files[]` 一起被签名覆盖；
+- **主题包**（`type: theme`）：产物是 `theme.json`（声明式令牌 + 资源），**没有 JS、没有 bundle**；
 - **实测结论**：`evalCodeAsync(ESM 源码)` 返回**模块命名空间对象**，可以直接 `getProp(ns, 'init')` 取到导出函数——因此契约用标准 ESM 导出即可，不需要挂全局变量。
 
 ### 1.2 导出契约
 
 ```ts
-export async function init(ctx: PluginContext): Promise<void>;   // 必需
+export async function init(ctx: PluginContext): Promise<void>;   // 必需（type=theme 除外）
 export async function start(ctx: PluginContext): Promise<void>;  // 可选
 export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 ```
 
 - **必须导出 `init`**；缺失 → `PLUGIN_NO_ENTRY`（fail-closed）；
+- **`type: theme` 豁免**：主题包无后端脚本 → 不建沙箱、不要求 `init`，装载只做"登记 CSS + 主题令牌"（见 intent-capture.md §9）；
 - 三者都允许 `async`（宿主会泵 job 队列，见 §4.4）；
 - `init` = 准备（读配置、建目录）；`start` = 开始工作（订阅、调度）；`stop` = 优雅收尾（必须幂等，可能被重复调用）；
 - 钩子抛错即视为该插件失败，**不影响核心与其它插件**。
@@ -129,6 +134,8 @@ export async function stop(ctx: PluginContext) {
 | 路由（面板页面） | `exports.routes` | ✅ 登记进宿主路由表（前端渲染 P3） |
 | Web API | `exports.webApis` | ✅ 登记 + 网关按 `permission` 字段鉴权 |
 | 事件发布/订阅 | `exports.events` | ✅ 登记进事件总线（总线本体 P2） |
+| **前端页面** | `exports.routes` + `frontend.mode` | ✅ 登记路由（`declarative` 渲染组件树 / `iframe` 提供 bundle，P3，见 intent-capture.md） |
+| **主题** | `type: theme` + `theme.json` | ✅ 登记主题令牌（无沙箱、无钩子，P3） |
 | exec 模板 | `execTemplates` | ⏳ B 阶段：走同一套 `registerTemplate()`（自动获得形状唯一性、E1–E10、原生写法匹配） |
 
 **为什么不由插件 `ctx.register()` 动态注册**：manifest 是审核对象与唯一事实源；loader 按 manifest 登记，卸载时可精确撤销，插件说了不算。
@@ -283,7 +290,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 - **依赖拓扑排序与版本区间解析**：P1 只检查"声明的插件已安装且 enabled"；顺序按记录顺序（P2 补）；
 - **热重载注入**：`reload` = 整插件 stop → 重新 load（不做模块热替换）；
 - **插件间调用**：`dependencies.plugins` 目前只是可见性声明 + 依赖存在性检查，调用通道属 P2（事件总线 / 注册点）；
-- **driver / panel / hook 的加载档**：P1.5 只做 `ability`（沙箱 / QuickJS）；driver 是核心侧进程（P2+），panel 是前端产物（P3），hook 待 ADR；
+- **driver / theme / hook 的加载档**：P1.5 只做 `ability`（沙箱 / QuickJS）与 `theme`（无沙箱、只登记令牌）；driver 是核心侧进程（P2+），hook 待 ADR；
 - **自动重启的退避策略**：只做线性 `restartBackoffMs`；
 - **进程外隔离**：单进程内沙箱；子进程档与系统级沙箱见 ADR-005 §8 / exec-sandbox-design §3。
 
@@ -321,8 +328,9 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `core/plugin/records.ts` | 记录读写（`plugins.json`），字段校验，与 P4 字段对齐 |
 | `core/plugin/loader.ts` | 单插件装载：沙箱创建 → 导出校验 → 能力登记 → init/start；以及卸载 |
 | `core/plugin/manager.ts` | **唯一状态机**：多插件、enable/disable/reload、失败重启策略、审计 |
-| `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / webApis / events；`execTemplates` 留槽） |
+| `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / webApis / events / frontend；`execTemplates` 留槽） |
 | `core/plugin/config.ts` | 插件配置：`configSchema` 校验、默认值填充、只读快照与落盘 |
+| `core/plugin/theme.ts`（P3） | 主题包装载分支：登记 `theme.json` 令牌与资源；**不建沙箱、豁免 `init`** |
 | `core/config.ts` | 最小配置面（文件 + `SPC_*` 覆盖） |
 | `core/sandbox.ts`（改） | 暴露"带限额的运行时"与"取模块导出"的能力（handle 全部纳入 Scope） |
 | `core/cli.ts` / `core/server.ts`（改） | §8 的命令与端点；`plugin list` 加状态列 |
@@ -331,7 +339,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 **测试**（新增 `core/__tests__/lifecycle.test.ts`）
 
 1. 状态机：每个迁移 + 非法迁移被拒；
-2. 导出契约：缺 `init` → `PLUGIN_NO_ENTRY`；非函数导出 → `PLUGIN_EXPORT_INVALID`；
+2. 导出契约：缺 `init` → `PLUGIN_NO_ENTRY`；非函数导出 → `PLUGIN_EXPORT_INVALID`；**`type: theme` 豁免**（无 `init` 也应装载成功，且不创建沙箱）；
 3. 失败语义：`init` 抛错 → `PLUGIN_INIT_FAILED` 且核心不挂；`start` 抛错 → 能力回滚；
 4. **死循环**：`export function init(){ while(true){} }` → 300ms 内 `PLUGIN_INIT_TIMEOUT`，且进程存活；
 5. **灾难性正则**：`/(a+)+$/.test('a'.repeat(40))` → 同样被中断；

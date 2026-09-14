@@ -1,14 +1,36 @@
 // Manifest 类型定义（与 sdk/schema/manifest.schema.json 对齐，手写维护）
 // 单一事实源是 JSON Schema；本文件仅提供 TS 静态类型。
 
-// 插件类型（中文叫法：面板插件/能力插件/驱动插件/协作插件）
-//   panel   面板插件：构建 Web 壳与页面、提供组件库，其他插件挂载页面；内置可卸载，不算普通插件
+// 插件类型（中文叫法：能力插件/驱动插件/协作插件/主题包）
 //   ability 能力插件（默认）：运行在 QuickJS 沙箱内，挂载管理页面，经 @host/api 调驱动端点
 //   driver  驱动插件：运行在核心端（特权），注册权限节点 + API 端点暴露给沙箱并自行鉴权
 //   hook    协作插件：钩子触发逻辑，参与核心事件生命周期并干预/修改（位置/权限设计中）
-export type PluginType = 'ability' | 'panel' | 'driver' | 'hook';
+//   theme   主题包：声明式设计令牌 + 资源 + 受限样式，无 JS、无沙箱（v3 由"面板插件"降级而来）
+export type PluginType = 'ability' | 'driver' | 'hook' | 'theme';
 export type RuntimeType = 'quickjs' | 'node-child';
 export type DependencyTier = 'whitelist' | 'user-opt-in';
+/** 前端形态：declarative = 核心渲染组件树；iframe = 插件 bundle 在隔离 iframe 内运行 */
+export type FrontendMode = 'declarative' | 'iframe';
+/** 意图负载形状（核心代理按此校验；资源内容默认不随意图下发） */
+export type IntentKind = 'selection' | 'text' | 'enum';
+
+/** 意图负载声明（manifest `intent[]`；见 docs/intent-capture.md §6.2） */
+export interface IntentSpec {
+  name: string;
+  kind: IntentKind;
+  /** kind=selection：资源类型 */
+  resource?: 'path' | 'session';
+  /** kind=selection：可选文件类型 */
+  types?: ('file' | 'dir')[];
+  /** kind=selection：最多选几个 */
+  maxCount?: number;
+  /** 负载字节上限（防借意图通道搬运内容） */
+  maxBytes?: number;
+  /** kind=text：字符串长度上限 */
+  maxLength?: number;
+  /** kind=enum：允许值 */
+  values?: string[];
+}
 
 export interface Manifest {
   /** schema 版本，必须为 2 */
@@ -38,12 +60,20 @@ export interface Manifest {
   description?: string;
   /** 构建源入口，缺省 main.ts */
   entry?: string;
+  /** 前端形态（P3）：declarative = 核心渲染组件树；iframe = 插件 bundle 在隔离 iframe 内运行 */
+  frontend?: {
+    mode: FrontendMode;
+  };
+  /** 意图负载声明（P3）：插件可从核心前端收到的用户输入形状（核心代理按此校验） */
+  intent?: IntentSpec[];
+  /** 主题包入口（仅 type=theme；此时 runtime / permissions 不适用，见 schema 的条件校验） */
+  theme?: string;
   runtime: {
     type: RuntimeType;
     /** ESM-only 硬约束，必须为 true */
     esm?: true;
   };
-  /** 权限请求：无默认放行，必须显式声明 */
+  /** 权限请求：无默认放行，必须显式声明（type=theme 时不需要） */
   permissions: {
     name: string;
     reason?: string;

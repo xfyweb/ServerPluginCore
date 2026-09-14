@@ -19,7 +19,7 @@
 | P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 审计 | M | P0 |
 | **P1.5** | **插件生命周期与装载器（冻结装载契约）** | M | P1（exec 基线已完成） |
 | P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | L | P1.5 |
-| P3 | 面板插件 + 前端运行时加载 | L | P1（可与 P2 并行） |
+| P3 | 核心 Web Shell + 主题系统 + 插件前端容器 | L | P1（可与 P2 并行） |
 | P4 | 市场签名与源管理 + 市场 | M | P1 + P3 |
 | P5 | 核心插件集 + 加固 + 发布 | L | P2 + P3 |
 
@@ -46,17 +46,17 @@
 |---|---|
 | ✅ 已完成 | core 初始化 + 非 root fail-closed；QuickJS 沙箱宿主（错误桥 + 模块白名单 + dispose 修复，8/8 回归）；权限注册表与判定（v3：`scope` + 逐点授予）；审计链路；**exec 模板基线**（模板注册表 + 原生写法匹配 + 参数校验 + env/超时/截断 + 内置 git 模板集）；exec 沙箱设计（声明层） |
 | ⚠️ 部分 | fs 受限（仅 `fs.write.home` + 完整 safe-path；read/list/stat 缺）；CLI（仅 `about`/`status`/`plugin list`）；sdk（清单校验器 + 手写 `@host/api.d.ts`；构建模板缺）；demo 插件（fs + exec；kv/timers 缺） |
-| ❌ 待补 | **生命周期与装载器**（见 P1.5）；kv / timers / events / lifecycle API；崩溃与超时隔离的验收；性能 benchmark；`panel status` / `audit tail` |
+| ❌ 待补 | **生命周期与装载器**（见 P1.5）；kv / timers / events / lifecycle API；崩溃与超时隔离的验收；性能 benchmark；`audit tail` |
 
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/sample/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
 - **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（JSON/正则/API 往返，验证"薄适配器无感"）；
 - **基础宿主 API**：exec 模板（nginx + git 一族起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 判定 + 审计**（F1–F7 已覆盖；E1–E8 的注册/参数/执行三类已覆盖）。**已落地**：模板注册表 + `exec.run`（阻塞，支持**模板 ID 与原生写法**两种调用，原生写法匹配不到即拒绝）+ 参数校验（enum/pattern/whitelist/path）+ env 白名单 + 超时 + 输出截断 + 动态权限点 `exec.template.<action>.<op>`（`scope: host`，需逐点授予）+ 审计 `target`/`resultBytes` 字段 + 跨平台可执行解析（E10）+ 内置 git 模板集（version/status/log/rev-parse/branch/fetch/pull）与 `SPC_REPO_ROOTS`；样板插件已示范 `exec.run` 调用；**待补**：kv / timers / lifecycle、`exec.spawn` 任务模型（P2）；
 - **exec 基线与沙箱设计**（docs/exec-sandbox-design.md）：P1 落地"降权（spc）+ env 白名单 + 超时/输出截断"基线，声明层为过渡期唯一防线；注册制与系统级沙箱见 P2/P5；
-- **CLI**：`plugin list / install <dir> / enable / disable`、`panel status`、`audit tail`；
+- **CLI**：`plugin list / install <dir> / enable / disable`、`web status`、`audit tail`；
 - **sdk**：`@host/api` 类型声明、esbuild 构建模板（ESM-only）、manifest 校验器；
 - **demo 插件**（内置示例）：kv 写入 + 定时器 + fs.data 读写 + 一次 exec 模板调用。
-- 验收：威胁建模测试清单（§5）全部通过；kill 沙箱插件 → 核心不挂；审计有条目；`panel disable` 后 CLI 一切可用。
+- 验收：威胁建模测试清单（§5）全部通过；kill 沙箱插件 → 核心不挂；审计有条目；**headless**（关闭 Web 前端）后 CLI 一切可用。
 
 ## P1.5：插件生命周期与装载器（P1 的收口，最高优先级）
 
@@ -83,11 +83,17 @@
 7. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
 - 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）。
 
-## P3：面板插件 + 前端运行时加载
+## P3：核心 Web Shell + 主题系统 + 插件前端容器
 
-- 前端运行时加载（先最小 proof）：React shell 按 manifest 资源路径运行时加载插件 bundle；
-- **面板插件**（panel，默认内置、可卸载）：构建 Web 壳 + 组件库，其他插件按统一规范挂载页面；承载登录/auth、仪表盘、插件管理页、审计查看、市场页（P4 后接入）。
-- 验收：卸载/禁用 panel → Web 不可用、CLI 全可用；第三方插件前端无需重编译。
+**为什么是核心**：用户意图只能由可信前端捕获（ADR-001 v4），因此 Web Shell 不能是"插件"——面板插件已降级为主题包（ADR-005 v3）。完整模型见 **intent-capture.md**。
+
+- **核心 Web Shell（可信前端）**：路由 / 布局 / 菜单 / i18n / 主题系统 + 组件库；承载登录/auth、仪表盘、插件与主题管理页、审计查看、市场页（P4 后接入）；**可 headless**（关闭 Web 服务，一切回管理 CLI）；
+- **意图捕获 UI**：资源选择器、确认窗口、来源角标、提权凭据输入（样式不可被主题覆盖）；
+- **前端 API（核心 REST）**：`/api/intent/{grant,revoke,forward}` + 核心原生能力端点（api-contract §11）；frontend-token 只存核心前端内存；
+- **插件前端容器**：`declarative`（manifest 组件树 → 核心渲染）与 `iframe`（`sandbox` 无 `allow-same-origin` + CSP 零出网 + `MessageChannel` 代理）；
+- **主题系统**：`theme.json`（声明式令牌 + 资源 + 受限样式，无 JS），核心与插件 iframe 共用同一批 CSS 变量；
+- **grantId**：核心持久实例密钥签发 / 校验 / 消费（`core/intent/`）；
+- 验收：① CSP 与 `sandbox` 属性生效（插件前端无法直连核心、无法外发）；② 意图负载不合声明 → `INTENT_SCHEMA_VIOLATION`；③ grantId 绑定校验（错受众 / 错资源 / 过期 / 重放全部拒绝）；④ 主题无法覆盖安全 UI；⑤ 关闭 Web 服务后 CLI 全可用。
 
 ## P4：市场签名与源管理 + 市场
 
