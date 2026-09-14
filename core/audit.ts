@@ -7,13 +7,16 @@
 // 不落明文参数（路径等敏感值一律摘要）。控制台提示走 t()（运维可见文本）。
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { auditDir } from './config';
 import { t } from './i18n';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-/** 审计目录：默认 `<repo>/.spc`；SPC_AUDIT_DIR 可覆盖（测试用隔离目录，避免污染仓库） */
-export const AUDIT_DIR = process.env.SPC_AUDIT_DIR ?? join(__dirname, '..', '.spc');
+/**
+ * 审计目录：默认 `<STATE_DIR>/audit`（config.ts 是状态目录的唯一事实源）；
+ * SPC_AUDIT_DIR 仍是覆盖项（测试用隔离目录，避免污染仓库）。
+ * 注意这是**模块级常量**：必须在动态 import 之前设好环境变量——已有的测试都按这个约定写。
+ */
+export const AUDIT_DIR = auditDir();
 export const AUDIT_FILE = join(AUDIT_DIR, 'audit.jsonl');
 
 const BUFFER_LIMIT_BYTES = 10 * 1024 * 1024;

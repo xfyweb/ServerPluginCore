@@ -23,7 +23,9 @@ test.after(() => {
   rmSync(AUDIT_DIR, { recursive: true, force: true });
 });
 
-const OPTIONS = { pluginId: '@xfy2412/sandbox-test', permissions: ['fs.write.home'], grants: ['fs.write.home'] };
+// P1.5：fs 的作用域是**插件数据目录**（fs.write.home 那个 spike 权限点已删除），
+// 声明 + 授予的都是 fs.write.data（scope=self）；越界由路径收敛报 PATH_OUT_OF_SCOPE。
+const OPTIONS = { pluginId: '@xfy2412/sandbox-test', permissions: ['fs.write.data'], grants: ['fs.write.data'] };
 
 test('宿主错误 → 插件按 code / params 捕获（信封还原）', async () => {
   const sandbox = await createSandbox(hostApi, OPTIONS);

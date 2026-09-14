@@ -89,15 +89,21 @@ interface EventResult {
 
 ## 4. 方法组（核心第一版）
 
-| 方法组 | 方法 | 权限点 | 说明 |
-|---|---|---|---|
-| **exec（模板）** | `exec.run`（阻塞）`exec.spawn`（异步→句柄） | `exec.template.<action>.<op>` | **无自由命令**，仅模板 + 参数校验（详 §5、§4.1） |
-| **fs（受限）** | `fs.read` `fs.write` `fs.list` `fs.stat` | `fs.read.<scope>` `fs.write.<scope>` | 路径收敛 + realpath（详 §5） |
-| **kv** | `kv.get` `kv.set` `kv.delete` | `kv.<namespace>` | 插件作用域持久化存储 |
-| **timers** | `timers.every` `timers.cron` | `timers.schedule` | 宿主侧调度，插件不保活 |
-| **events** | `events.publish`（订阅走 manifest 声明） | `events.<topic>` | §3 |
-| **lifecycle（宿主 API）** | `lifecycle.health` `lifecycle.version` | 自动授予 | 心跳、契约协商；**插件自身钩子（宿主→插件）方向相反，见 §4.2 与 plugin-lifecycle-design.md** |
-| **audit** | （无需插件调用） | — | 宿主对每个调用落审计（§8） |
+> 「落地」列 = 当前代码状态。P1.5 起 fs/kv/timers/events/lifecycle 全部可用（`core/hostApi.ts`）。
+
+| 方法组 | 方法 | 权限点 | 落地 | 说明 |
+|---|---|---|---|---|
+| **exec（模板）** | `exec.run`（阻塞）`exec.spawn`（异步→句柄） | `exec.template.<action>.<op>` | `run` ✅ / `spawn` P2 | **无自由命令**，仅模板 + 参数校验（详 §5、§4.1）；返回值是**原始 JSON 文本**（唯一不自动解码的方法） |
+| **fs（受限）** | `fs.read` `fs.write` `fs.list` `fs.stat` | `fs.read.data` `fs.write.data` | ✅ | 作用域 = **插件数据目录**；路径收敛 + realpath；`fs.write` 在"最近存在祖先的 realpath 在数据目录内"时补建父目录；读取上限 1MB（写 64MB） |
+| **kv** | `kv.get` `kv.set` `kv.delete` `kv.keys` | `kv.read` `kv.write` | ✅ | 插件作用域持久化存储（`<dataDir>/kv.json`）；值 JSON 编解码（可存对象/数组）；键 `[A-Za-z0-9_.:-]{1,256}`、值 ≤256KB、键数 ≤1000 |
+| **timers** | `timers.every` `timers.clear` | `timers.schedule` | `every`/`clear` ✅ / `cron` P2 | 宿主侧调度，插件不保活（定时器 unref）；回调在沙箱内执行、与钩子同样限额；卸载时宿主自动清掉 |
+| **events** | `events.publish`（订阅走 manifest 声明） | `events.publish` | ✅（总线本体 P2） | topic 必须已在 manifest `exports.events.publish` 声明，否则 `EVENT_TOPIC_NOT_DECLARED`；同一 topic 只能有一个发布者 |
+| **lifecycle（宿主 API）** | `lifecycle.health` `lifecycle.version` | `lifecycle.health` `lifecycle.version` | ✅ | 心跳、契约协商；**插件自身钩子（宿主→插件）方向相反，见 §4.2 与 plugin-lifecycle-design.md** |
+| **audit** | （无需插件调用） | — | ✅ | 宿主对每个调用落审计（§8） |
+
+- **作用域**：上表除 `exec.template.*`（`scope: host`，必须管理员逐点授予）外，其余全部 `scope: self`——碰的都是插件自己的数据/自己的调度，安装即生效（见 intent-capture §8.1 的三档模型，`grant` 档位落地位于 P2）；
+- **返回值约定**：除 `exec.run` 外的组由沙箱侧做 JSON 解码，插件拿到真值（对象/数组/布尔），不需要自己 `JSON.parse`；
+- **命名约定**：权限点 = 方法名（同样的字符串让插件作者一眼看懂要哪几个点），差别只出现在"同一方法因目标不同而敏感度不同"的场合（`exec.run` 的动态模板点）。
 
 **核心不提供**（由驱动插件经扩展注册点提供，见 §10）：db 连接代理、SSH、Docker 客户端、net 裸 socket、pty、媒体处理。
 
@@ -235,6 +241,8 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 ## 8. 审计
 
 每条调用落：`{ts, pluginId, method, target?, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, resultBytes?, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。`target` 是动态权限点的解析结果（如 `exec.template.nginx.reload`），`resultBytes` 是结果序列化字节数（exec 的命令输出量），两者都非敏感，便于排障与统计。
+
+**生命周期条目**（plugin-lifecycle-design §7）：`lifecycle.load`（求值失败）、`lifecycle.init` / `lifecycle.start` / `lifecycle.stop` / `lifecycle.unload`（每个钩子，`result: ok/error` + durationMs）、`lifecycle.restart`（`failedRestart=auto` 触发，带 `attempts`）；`target` = 插件 ID。**定时器回调**落 `timers.tick`（`target` = timerId，`paramsDigest` = callbackId 摘要）——它不经过宿主桥，所以由沙箱侧显式记账。
 
 ## 9. manifest（schema 2）
 

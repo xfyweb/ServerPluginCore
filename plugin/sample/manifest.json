@@ -3,10 +3,43 @@
   "id": "@xfy2412/sample",
   "name": "Sample Plugin",
   "version": { "code": 1, "name": "0.0.1" },
+  "description": "样板插件：演示装载契约（init/start/stop + ctx）、数据目录写入、kv、定时器与 exec 模板调用",
   "runtime": { "type": "quickjs", "esm": true },
+  "entry": "main.ts",
   "permissions": [
-    { "name": "fs.write.home", "reason": "spike：向用户主目录写入 test.txt" },
-    { "name": "exec.template.git.version", "reason": "spike：演示调用已注册模板（只读、无参数）" }
+    { "name": "fs.write.data", "reason": "在自己的数据目录里写一份启动记录" },
+    { "name": "fs.read.data", "reason": "读回自己写的启动记录" },
+    { "name": "kv.read", "reason": "读取自己的启动计数" },
+    { "name": "kv.write", "reason": "累加并保存启动计数" },
+    { "name": "timers.schedule", "reason": "每 30 秒打一次心跳，演示宿主侧调度" },
+    { "name": "lifecycle.version", "reason": "启动时做契约协商（核心 API 版本）" },
+    { "name": "lifecycle.health", "reason": "面板查询本插件状态时回执" },
+    { "name": "exec.template.git.version", "reason": "演示调用已注册模板（只读、无参数；host 档需管理员逐点授予）" }
   ],
-  "entry": "main.ts"
+  "configSchema": {
+    "type": "object",
+    "required": ["greeting"],
+    "additionalProperties": false,
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "default": "hello",
+        "description": "启动时写进启动记录里的问候语"
+      },
+      "heartbeatSeconds": {
+        "type": "integer",
+        "default": 30,
+        "minimum": 5,
+        "maximum": 3600,
+        "description": "心跳间隔（秒）"
+      }
+    }
+  },
+  "exports": {
+    "routes": [{ "path": "/sample", "title": "样板插件", "icon": "sparkles", "order": 10 }],
+    "webApis": [{ "path": "/api/sample/status", "permission": "lifecycle.health" }],
+    "events": {
+      "publish": [{ "topic": "sample.heartbeat", "classification": "public" }]
+    }
+  }
 }

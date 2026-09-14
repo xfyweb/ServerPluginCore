@@ -1,25 +1,64 @@
-// 样板插件：fs（写文件）+ exec（调用已注册模板）——权限由宿主侧检查 + 审计
-import { fs, exec } from '@host/api';
+// 样板插件：演示 P1.5 装载契约（init / start / stop + ctx）与宿主 API 的几条主线
+//
+// 它不是"最小示例"，而是**可验收的活体**：pnpm spike 会真的把它装起来、跑起来、停下去。
+// 权限面刻意覆盖三条不同的授权路径：
+//   · fs / kv / timers → scope=self，声明即用（不需要管理员授予）
+//   · exec.template.git.version → scope=host，**必须管理员逐点授予**，否则 PERMISSION_DENIED
+import { events, exec, fs, kv, lifecycle, timers } from '@host/api';
+import type { PluginContext } from '@spc/sdk';
 
-// 1) fs：向用户主目录写文件（权限点 fs.write.home，scope=host ⇒ 需管理员授予）
-const writeResult = fs.write('~/test.txt', 'HelloWorld');
-console.log('[plugin] write result:', writeResult);
+let heartbeat: { timerId: string } | undefined;
 
-// 2) exec：只能调用**已注册模板**，没有自由命令（docs/interface-audit-exec-fs.md §1）。
-//    注意：宿主方法返回值目前是 JSON 文本（spike 桥约定），P2 桥契约落地后统一为对象。
-function runTemplate(id: string, params?: Record<string, string>) {
-  // 无参数时不要传第二个实参：桥会把 undefined 当字符串传过去
-  const raw = (
-    params ? exec.run(id, JSON.stringify(params)) : exec.run(id)
-  ) as unknown as string;
-  return JSON.parse(raw) as { exitCode: number | null; stdout: string; stderr: string; truncated: boolean };
+export async function init(ctx: PluginContext) {
+  ctx.logger.info(`init: dataDir=${ctx.dataDir}`);
+
+  // 0) 契约协商：先问清楚"这个核心提供哪一版 API"
+  const v = lifecycle.version();
+  ctx.logger.info(`core=${v.core} api=${v.api}`);
+
+  // 1) kv：插件作用域持久化（值可以是任意可 JSON 化的数据）
+  const starts = (kv.get<number>('starts') ?? 0) + 1;
+  kv.set('starts', starts);
+
+  // 2) fs：只能碰自己的数据目录（相对路径按数据目录解析）
+  //    配置是**只读快照**，默认值由宿主按 configSchema 补齐
+  const greeting = String(ctx.config.greeting ?? 'hello');
+  fs.write('started.log', `${greeting} #${starts}\n`);
+  const back = fs.read('started.log');
+  ctx.logger.info(`record=${back.content.trim()} bytes=${back.bytes}`);
+
+  // 3) 列目录 + 取属性（作用域同样收敛在数据目录内）
+  const listed = fs.list('.');
+  const names = listed.entries.map((e) => `${e.name}(${e.type})`).join(',');
+  ctx.logger.info(`files=[${names}]${listed.truncated ? ' (truncated)' : ''}`);
+
+  // 4) exec：只能调已注册模板。未授予 → PERMISSION_DENIED（按英文码分支，不匹配文案）
+  try {
+    const raw = exec.run('core:git.version') as unknown as string;
+    const parsed = JSON.parse(raw) as { stdout: string };
+    ctx.logger.info(`git: ${parsed.stdout.trim()}`);
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? 'UNKNOWN';
+    ctx.logger.warn(`git.version unavailable: ${code}`);
+  }
 }
 
-try {
-  const v = runTemplate('core:git.version');
-  console.log('[plugin] git version:', v.stdout.trim());
-} catch (e) {
-  // git 不在本机时模板不会被注册 ⇒ 权限点是未知点 ⇒ UNKNOWN_POINT；
-  // 演示插件的重点是"调用形状"，因此这里只记录码，不让 spike 失败。
-  console.log('[plugin] git.version unavailable:', (e as { code?: string }).code ?? 'UNKNOWN');
+export async function start(ctx: PluginContext) {
+  // 5) timers：宿主侧调度，插件不保活；回调里可以继续用宿主 API
+  const seconds = Number(ctx.config.heartbeatSeconds ?? 30);
+  heartbeat = timers.every(seconds * 1000, () => {
+    const at = Date.now();
+    events.publish('sample.heartbeat', { at }); // topic 必须已在 manifest 声明
+    kv.set('lastHeartbeatAt', at);
+  });
+  ctx.logger.info(`started (heartbeat every ${seconds}s)`);
+}
+
+export async function stop(ctx: PluginContext) {
+  // 宿主卸载时会自动清掉定时器；显式 clear 让语义更清楚（stop 必须幂等）
+  if (heartbeat) {
+    timers.clear(heartbeat.timerId);
+    heartbeat = undefined;
+  }
+  ctx.logger.info('stopped');
 }

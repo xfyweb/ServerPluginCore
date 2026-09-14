@@ -23,8 +23,9 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 
 ## ✨ 核心特性
 
-- 🧩 **一切皆插件**：核心不实现任何业务功能；面板、监控、文件管理……都是插件，连 Web UI 本身都是
-- 🛡️ **零环境权力沙箱**：插件运行在 QuickJS 沙箱中，只能调用宿主审核过的 API，**无法直接接触操作系统**——安全边界是"接口审计"，不是"事后隔离"
+- 🧩 **一切皆插件**：核心不实现任何业务功能——监控、文件管理、终端……都是插件
+- 🛡️ **零环境权力沙箱**：插件运行在 QuickJS 沙箱中，只能调用宿主审核过的 API，**无法直接接触操作系统**——安全边界是"接口审计"，不是"事后隔离"；四层限额（CPU 中断 / 内存 / 栈 / 宿主 API 超时）保证插件拖不垮核心
+- 🔄 **真实生命周期**：`init`/`start`/`stop` 装载契约 + 唯一状态机 + 能力登记（可精确撤销）+ 安装记录 + `failed` 隔离（单插件失败不影响其它插件与核心）
 - 🔑 **市场签名 + 源**：包由**市场**签名（不是开发者），信任根是管理员自己的 keyring（以域名为主键，公钥可远程 TOFU 拉取或离线手填）；本地安装不验签，装进来的插件标记为**无更新渠道**。所有调用的审查由权限系统完成（声明 + `grant` 三档：安装清单即授权、危险点逐点授予）
 - 📦 **四类插件**：能力插件（沙箱内管理界面）、驱动插件（核心端领域能力，严审）、协作插件（事件钩子，设计中）、主题包（换肤/密度/图标，无 JS）
 - 📦 **驱动插件机制**：数据库、SSH 等协议能力由**驱动插件**（核心端特权）注册进宿主 API；沙箱内的**能力插件**经 `@host/api` 调用——核心保持最小
@@ -36,7 +37,8 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 ┌─────────────────────────────────────────────────────┐
 │  Node Core（无头，非 root 运行）                       │
 │  auth/RBAC/audit · 插件生命周期 · CLI · 资源限制       │
-│  基础宿主 API（exec模板/fs/kv/timers）· 权限注册表      │
+│  基础宿主 API（exec模板/fs/kv/timers/events/lifecycle） │
+│  权限注册表 · 能力登记表（routes/webApis/events）       │
 │  【API 扩展注册点】←─ 驱动插件注册 @host/api/db 等       │
 └───────────┬─────────────────────────────────────────┘
             │ 进程内注入 @host/api（QuickJS 沙箱）
@@ -78,7 +80,7 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 | [ADR-004](docs/ADR-004-os-boundary.md) | OS 底线：非 root + 资源限制 |
 | [ADR-005](docs/ADR-005-plugin-sandbox-and-plugin-types.md) | 插件沙箱与四类插件机制（面板/能力/驱动/协作） |
 | [宿主 API 契约](docs/api-contract.md) | 双通道传输、方法组、权限注册表、manifest schema 2 |
-| [插件生命周期与装载器](docs/plugin-lifecycle-design.md) | 装载契约（`init`/`start`/`stop` + `ctx`）、状态机、四层限额、安装记录、CLI 面（P1.5） |
+| [插件生命周期与装载器](docs/plugin-lifecycle-design.md) | 装载契约（`init`/`start`/`stop` + `ctx`）、状态机、四层限额、能力登记、安装记录、CLI 面（P1.5 **已落地**，§14 是落地记录与 13 条实现偏差） |
 | [意图捕获与双通道权限](docs/intent-capture.md) | 用户意图信任根、grantId、前端两层结构（声明式 / iframe）、CSP 零出网、意图负载、**默认安全边界（确认判据 + `grant` 三档）**、主题模型（P3） |
 | [签名与源设计](docs/plugin-signature-design.md) | 元数据结构、规范化签名、keyring 与源、链式密钥轮换、校验流程与错误码（P4） |
 | [市场授权设计](docs/market-license-design.md) | 永久授权 + 维护窗口、下载控制面（P4 付费市场基线） |
@@ -94,23 +96,28 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。它受 [
 
 ## 🚀 快速开始
 
-> ⚠️ 项目处于 **P1 进行中**阶段：exec 模板基线、权限判定层、签名与源核心库已落地；**插件生命周期与装载器（P1.5）设计中**、**意图捕获与默认安全边界（P3 接口 / P2 权限档位）已定稿**。当前可运行：
+> ⚠️ 项目处于 **P1.5 已落地 / P2 待开工**阶段：exec 模板基线、权限判定层、签名与源核心库、**插件生命周期与装载器**均已落地；意图捕获与默认安全边界（P3 接口 / P2 权限档位）已定稿。当前可运行：
 > ```bash
 > pnpm install
-> pnpm spike              # 运行样板插件（沙箱 → @host/api → 写文件 + 调 core:git.version 模板）
+> pnpm spike              # 真实链路：写安装记录 → 装载 → init/start → stop → 卸载
+> pnpm spc plugin list    # 管理面（需先 pnpm daemon 起核心）
+> pnpm test               # 186 例
 > pnpm verify:sandbox     # 验证 quickjs-emscripten 补丁有效性（8/8 用例）
 > ```
+> `pnpm spike` 首次运行会把内置样板插件装进状态目录（`SPC_STATE_DIR`，默认 `<repo>/.spc`）：它演示了**声明即用**（fs/kv/timers/events/lifecycle，`scope=self`）与**管理员逐点授予**（`exec.template.git.version`，`scope=host`）两条不同的授权路径。
+>
 > 注意：本项目使用 **pnpm** 作为包管理器（patchedDependencies 依赖 pnpm 机制）。
 
 ## 🗺️ 开发路线
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| P0 | 宿主 API 契约定稿（exec/fs/kv/timers + 权限注册表 + manifest schema） | 规划完成 |
-| P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 接口审计 | **待开工** |
-| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | 待定 |
-| P3 | 核心 Web Shell + 主题系统 + 插件前端容器 | 待定 |
-| P4 | 市场签名与源管理 + 插件市场 | 待定 |
+| P0 | 宿主 API 契约定稿（exec/fs/kv/timers + 权限注册表 + manifest schema） | 已完成 |
+| P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 接口审计 | 已完成 |
+| **P1.5** | **插件生命周期与装载器**（装载契约 / 状态机 / 四层限额 / 能力登记 / 安装记录 / CLI 全命令面） | **已落地** |
+| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 + 权限档位（`grant` 三档） | 待开工 |
+| P3 | 核心 Web Shell + 主题系统 + 插件前端容器 | 设计中（接口已定） |
+| P4 | 市场签名与源管理 + 插件市场 | 核心库已提前落地 |
 | P5 | 核心插件集 + 加固 + v1.0 发布 | 待定 |
 
 

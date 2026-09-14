@@ -32,6 +32,36 @@ export interface IntentSpec {
   values?: string[];
 }
 
+/** 配置字段类型（configSchema 支持的 JSON Schema 子集） */
+export type ConfigFieldType = 'string' | 'number' | 'integer' | 'boolean' | 'array';
+
+/** 单个配置字段声明 */
+export interface ConfigFieldSchema {
+  type: ConfigFieldType;
+  description?: string;
+  /** 缺省值：读取值文件时由宿主补上 */
+  default?: unknown;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  /** type=array 的元素 schema（简化：只支持对象形式） */
+  items?: Record<string, unknown>;
+  /** 敏感值：面板掩码显示，日志与审计一律摘要 */
+  secret?: boolean;
+}
+
+/** 插件配置声明（manifest `configSchema`；见 plugin-lifecycle-design.md §1.6） */
+export interface PluginConfigSchema {
+  type: 'object';
+  description?: string;
+  required?: string[];
+  additionalProperties?: false;
+  properties: Record<string, ConfigFieldSchema>;
+}
+
 export interface Manifest {
   /** schema 版本，必须为 2 */
   schema: 2;
@@ -66,6 +96,12 @@ export interface Manifest {
   };
   /** 意图负载声明（P3）：插件可从核心前端收到的用户输入形状（核心代理按此校验） */
   intent?: IntentSpec[];
+  /**
+   * 插件配置声明（JSON Schema 子集：type=object + properties）。
+   * 宿主据此校验值文件、补默认值，并把**只读快照**注入 `ctx.config`；面板在 P3 据此渲染表单。
+   * 字段可标 `secret: true`（面板掩码、日志与审计摘要）。
+   */
+  configSchema?: PluginConfigSchema;
   /** 主题包入口（仅 type=theme；此时 runtime / permissions 不适用，见 schema 的条件校验） */
   theme?: string;
   runtime: {

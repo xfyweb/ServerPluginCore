@@ -1,6 +1,6 @@
 # 插件生命周期与装载器设计
 
-- 状态：**设计基线（P1.5a，待实现）**
+- 状态：**已落地（P1.5a，2026-09）**——交付物与**实现偏差**见 §14
 - 关联：ADR-001（零环境权力）、ADR-005（沙箱与插件类型）、api-contract §4/§4.1（方法组）、exec-sandbox-design §3（运行时限额）、plugin-signature-design §9（安装记录）、ROADMAP P1.5
 - 定位：**冻结"什么是插件、宿主怎么把它跑起来"这份契约**。构建层（打包/签名产物）、开发工具（`new`/`dev`）都以本文件为输入。
 - 参考：AstrBot 的插件生命周期（`astrbot/core/star/{star_manager,base,star}.py`）——`initialize`/`terminate` 钩子、metadata 与代码分离、**插件配置 schema**、失败隔离与"重载失败插件"。借鉴点与取舍见 §13。
@@ -362,11 +362,12 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 
 ## 12. 待定
 
-1. 钩子命名是否就用 `init/start/stop`（备选：`activate/deactivate`）；
-2. `stop` 是否需要接收"关闭原因"（`stop(ctx, {reason})`：`reload` / `disable` / `shutdown`）——**倾向要**，便于插件区分优雅停机与重启；
-3. `dataDir` 清理策略（`disable` 是否保留数据；卸载是否删数据）——**倾向：都保留，卸载提供 `--purge`**；
+1. 钩子命名是否就用 `init/start/stop`（备选：`activate/deactivate`）——**已按 init/start/stop 落地**，改名窗口关闭；
+2. `stop` 是否需要接收"关闭原因"（`stop(ctx, {reason})`：`reload` / `disable` / `shutdown`）——**倾向要**，便于插件区分优雅停机与重启。**现状**：原因只进审计（`lifecycle.unload` 的 `paramsDigest`），还没进钩子签名；
+3. `dataDir` 清理策略（`disable` 是否保留数据；卸载是否删数据）——**倾向：都保留，卸载提供 `--purge`**。**现状**：都保留，`--purge` 未做；
 4. hook 插件的钩子形态与 `init/start/stop` 的关系（待 ADR 定稿）；
-5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量共存）。
+5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量共存）。**已按此落地**（`core/config.ts`，另加 `SPC_DATA_DIR` 覆盖数据根）。
+
 
 ## 13. 参考：AstrBot 的可借鉴做法与我们的取舍
 
@@ -390,3 +391,41 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `astrbot_version`（PEP 440 区间）不满足即拒载 | `compat.minCore/targetCore`：不满足即拒载，不静默降级 |
 | `OnPluginLoadedEvent` 钩子（插件间可监听"某插件已加载"） | hook 插件 + 事件总线（P2；P1.5 只登记 `exports.events`） |
 | 旧版插件类兼容加载（`Plugin`/`Main` 命名回退） | **不做兼容回退**：导出契约唯一（缺 `init` 即 `PLUGIN_NO_ENTRY`），fail-closed |
+
+## 14. 实现记录与偏差（P1.5a）
+
+**交付物**（`core/`，共 8 个新文件 + 8 个改动）：
+
+| 文件 | 内容 |
+|---|---|
+| `core/config.ts`（新） | 状态目录统一（`SPC_STATE_DIR` 基座 + `SPC_AUDIT_DIR`/`SPC_DATA_DIR`/`SPC_KEYRING_DIR` 覆盖）、配置面（限额 / `failedRestart` / 退避）、`SPC_*` 环境变量覆盖、`sanitizePluginId` |
+| `core/plugin/limits.ts`（新） | 四层限额装配、deadline 中断、`classifyVmFailure`（InternalError 三态归类）、job 泵 |
+| `core/plugin/records.ts`（新） | `plugins.json` 读写（原子写）、记录字段校验、状态枚举 |
+| `core/plugin/capabilities.ts`（新） | 能力登记/回滚/快照（routes / webApis / events / 订阅 / theme），**全有或全无** |
+| `core/plugin/config.ts`（新） | 插件配置：`configSchema` 校验 + 默认值填充 + 值文件读写 |
+| `core/plugin/loader.ts`（新） | 单插件装载（目录→依赖→沙箱→bundle→能力→init→start）与卸载（stop→撤销→dispose） |
+| `core/plugin/manager.ts`（新） | **唯一状态机** + 唯一锁、install/enable/disable/reload/uninstall/grant/revoke、失败重启策略 |
+| `core/sandbox.ts`（改） | 限额接线、导出钩子调用（`callHook`）、ctx 注入（沙箱侧 deepFreeze）、`hasFunctionExport`、定时器宿主回填 |
+| `core/hostApi.ts`（改） | 由单例改为**工厂**（`buildHostApi(ctx)`）；新增 fs.read/list/stat、kv.*、timers.*、events.publish、lifecycle.* |
+| `core/permissions/registry.ts`（改） | 权限点扩到 8 个静态点（fs.read.data / fs.write.data / kv.read / kv.write / timers.schedule / events.publish / lifecycle.version / lifecycle.health），删 `fs.write.home` |
+| `core/cli.ts` / `core/server.ts`（改） | §8 的全命令面 + 端点；daemon 启动 `initAudit()` + `manager.startAll()` |
+| `core/main.ts`（改） | `pnpm spike` 走真实链路（记录 → 装载 → init/start → stop → 卸载） |
+| `core/__tests__/lifecycle.test.ts`（新，28 例）、`core/__tests__/hostapi.test.ts`（新，11 例） | 见 §11 的 17 条 + 宿主 API 行为 |
+
+**实现偏差（与本文档正文不一致的地方，以本节为准）**
+
+1. **`fs.write.home` 已删除**：它是 spike 遗留（写用户主目录）。P1.5 起 fs 的作用域**统一为插件数据目录**，`fs.read.data` / `fs.write.data` 两个点覆盖读写。
+2. **`fs.write` 会补建缺失的父目录**——但**仅当最近的已存在祖先的 realpath 落在数据目录内**，建完再走一遍完整校验。没有这一步插件写不了 `backups/2026-09-18/x.tar`（F6 会报 `PARENT_MISSING`），而按日期分目录是最基本的用法。这不是放松 F6：它防的是逃逸，不是禁止插件建自己的目录树。
+3. **求值必须显式按模块**：`evalCodeAsync(src, 'plugin.js', { type: 'module' })`。不传 options 时 quickjs-emscripten 会打开模块自动探测，而 `JS_DetectModule` **只看第一个 token**（`quickjs.c:23792`）；esbuild 会把导出提升到文件末尾（`function init(){}` + `export { init };`），首 token 变成 `function` → 判成脚本模式 → `unsupported keyword: export`。**没有 `import` 的插件会全部加载失败**——这是实测抓到的真 bug，不是理论风险。
+4. **WASM 模块实例不可复用**：`setMaxStackSize` 在 asyncify 变体上是**整个模块的全局副作用**（上游 d.ts 明确写了会一并调整 `ASYNCIFY_STACK_SIZE`）。复用模块换速度 = 让栈限额退化成进程级且互相污染。实测复用只省 12ms/沙箱，不值得，因此**每个沙箱各起一份模块实例**。
+5. **新增错误码**（§5 的清单未列，但实现需要）：`PLUGIN_STACK_LIMIT`（栈超限，与内存分开）、`PLUGIN_STOP_FAILED`、`PLUGIN_TIMER_FAILED`、`PLUGIN_TIMER_TIMEOUT`、`PLUGIN_DISPOSED`、`GRANT_WILDCARD`（管理员写 `kv.*` 时给专门的提示，比"权限被拒绝"准确）、`CONFIG_INVALID`、`RECORDS_INVALID`、`KV_INVALID`/`KV_KEY_INVALID`/`KV_VALUE_INVALID`/`KV_VALUE_TOO_LARGE`/`KV_LIMIT_EXCEEDED`、`NOT_A_FILE`、`NOT_A_DIRECTORY`、`EVENT_TOPIC_NOT_DECLARED`、`TIMER_INTERVAL_INVALID`/`TIMER_HANDLER_INVALID`/`TIMER_UNAVAILABLE`。全部只增不改，中英文都补了词条。
+6. **新增配置项 `timerTimeoutMs`**（默认 5000）：定时器回调与钩子享受同样的限额，需要一个 deadline 来源；§10 的键表没列它。
+7. **`kv` 的权限点命名**：定为 `kv.read` / `kv.write`，**不采用** api-contract §4 写的 `kv.<namespace>`——namespace 就是插件自己，为它生成权限点等于"每个插件都有专属权限点"，只会让注册表膨胀。
+8. **`events.publish` 定为 `scope: self`**：边界由"topic 必须在 manifest 声明 + 同一 topic 只有一个发布者"提供。按 intent-capture §8.1 的 `grant` 三档，它应当是 `install` 档（安装清单里可见即可，不必逐点授予）——**该档位属 P2，尚未实现**，当前 self 档等价于"声明即可用"。
+9. **`capabilities` 在卸载/失败后清空**：记录里的 `capabilities` 表示"**当前**登记了哪些能力"，不是历史。历史在审计里（`lifecycle.*` 条目）。
+10. **`install` 装载失败会抛出，但记录已写入**（state=`failed` + `lastError`）。这是有意的：管理面必须能看到坏插件，而不是"装失败了却什么都没留下"。
+11. **定时器回调的实现方式**：回调注册表（`__spcTimerCallbacks`）与派发函数（`__spcTimerInvoke`）都放在**沙箱引导层**，`@host/api` 只往表里登记。原因是宿主在 `createSandbox` 时就要抓住 `__spcTimerInvoke` 的句柄，而 `@host/api` 是 `runModule` 才求值的——放在模块里会让宿主抓到 `undefined`（实测踩到）。
+12. **daemon 启动即 `initAudit()`**：之前只有 `pnpm spike` 会探测审计目录，daemon 不会。审计目录不可写时 `audit()` 会静默退化成内存缓冲——运维会以为审计正常、实际读不到。现在两条入口都是 fail-closed。
+13. **fs 读取上限 1MB**（写入仍是 64MB）：读到的内容会变成沙箱内的 JS 字符串，而沙箱堆只有 32 MiB——给插件读一个 64MB 文件只会把 VM 撑爆并报成 `PLUGIN_MEMORY_LIMIT`（误导）。所以在宿主侧就按"能安全进 VM"的尺寸拒绝。
+
+**测试**：`pnpm test` **186 例全绿**（P1.5 新增 41 例：lifecycle 28 + hostapi 11 + manifest configSchema 2），`tsc --noEmit` 干净，`pnpm spike` 走通真实链路。

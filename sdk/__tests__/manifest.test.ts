@@ -29,7 +29,7 @@ const validFull = {
   },
   dependencies: {
     npm: [{ name: 'zod', version: '3.x', tier: 'whitelist' }],
-    plugins: [{ id: '@xfy2412/panel', version: '>=0.1.0' }],
+    plugins: [{ id: '@xfy2412/base', version: '>=0.1.0' }],
   },
 };
 
@@ -186,6 +186,59 @@ test('合法：frontend.mode 与 intent[] 声明', () => {
 
   assert.equal(validateManifest({ ...validMinimal, frontend: { mode: 'magic' } }).ok, false);
   assert.equal(validateManifest({ ...validMinimal, intent: [{ name: 'x', kind: 'magic' }] }).ok, false);
+});
+
+test('合法：configSchema（默认值 / 描述 / 枚举 / secret）', () => {
+  const ok = validateManifest({
+    ...validMinimal,
+    configSchema: {
+      type: 'object',
+      required: ['greeting'],
+      additionalProperties: false,
+      properties: {
+        greeting: { type: 'string', default: 'hello', description: '启动问候语' },
+        retries: { type: 'integer', default: 3, minimum: 1, maximum: 10 },
+        mode: { type: 'string', enum: ['fast', 'safe'] },
+        token: { type: 'string', secret: true },
+        hosts: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  });
+  assert.equal(ok.ok, true, JSON.stringify(ok.errors));
+});
+
+test('非法：configSchema 结构不对（缺 properties / 类型枚举外 / 未知字段）', () => {
+  // 必须有 properties（否则"声明了配置"却没有字段可渲染）
+  assert.equal(validateManifest({ ...validMinimal, configSchema: { type: 'object' } }).ok, false);
+  // 顶层 type 只能是 object
+  assert.equal(
+    validateManifest({ ...validMinimal, configSchema: { type: 'array', properties: {} } }).ok,
+    false,
+  );
+  // 字段类型限 string|number|integer|boolean|array（嵌套对象留给后续版本）
+  assert.equal(
+    validateManifest({
+      ...validMinimal,
+      configSchema: { type: 'object', properties: { a: { type: 'object' } } },
+    }).ok,
+    false,
+  );
+  // 未支持的关键字（如 format）直接拒——避免"写了不生效"的静默失败
+  assert.equal(
+    validateManifest({
+      ...validMinimal,
+      configSchema: { type: 'object', properties: { a: { type: 'string', format: 'uri' } } },
+    }).ok,
+    false,
+  );
+  // 字段名必须是 lowerCamel
+  assert.equal(
+    validateManifest({
+      ...validMinimal,
+      configSchema: { type: 'object', properties: { 'Bad-Name': { type: 'string' } } },
+    }).ok,
+    false,
+  );
 });
 
 test('非法：非对象输入', () => {
