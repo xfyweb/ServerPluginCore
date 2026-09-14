@@ -11,9 +11,9 @@
 | `versionCode` / `versionName` | 程序化比较 / 展示 | `version.code`（整数）/ `version.name`（字符串） |
 | `minSdkVersion` / `targetSdkVersion` | 兼容下限 / 针对版本 | `compat.minCore` / `compat.targetCore`（核心 API 版本） |
 | `<uses-permission>` | **声明"需要"，不是"拥有"** | `permissions[]`（请求） |
-| `<permission protectionLevel>` | 权限定义 + **授予仪式** | **无对应**——宿主权限注册表（D4）不用"授予仪式"枚举，只用 `scope`（要不要管理员授予）+ 等级（提示强度），见 api-contract §6 |
-| `protectionLevel=normal` | 安装时自动授予 | `scope: self`：只碰插件自身的数据 → 不需要授予 |
-| `protectionLevel=dangerous` | 需用户同意、可随时撤销 | `scope: host`：默认拒绝 + 安装确认 + 风险提示 + 对具体权限点**显式授予**（deny→allow）；可撤销（D7） |
+| `<permission protectionLevel>` | 权限定义 + **授予仪式** | **无对应**——宿主权限注册表（D4）用 `scope`（碰不碰宿主资源）+ `grant`（三档授予方式）+ 等级（提示强度），见 api-contract §6 |
+| `protectionLevel=normal` | 安装时自动授予 | `grant: auto`：只碰插件自身的数据 → 安装即生效 |
+| `protectionLevel=dangerous` | 需用户同意、可随时撤销 | **按读取/写入再分**：`grant: install`（host 只读与插件自有能力 → 安装清单即生效、可一键收回）／`grant: explicit`（写宿主资源、执行模板、提权、出网 → 默认拒绝 + 逐点授予）；可撤销（D7） |
 | `protectionLevel=signature` | 仅同签名应用可用 | **无对应**——来源（签名 / 市场）不参与权限判定（ADR-001 v3）；高敏感点靠 `secret` / `high` 等级的**二次确认** |
 | `protectionLevel=signatureOrSystem` | 同签名或系统应用 | ≈ 内置插件（面板本身） |
 | `android:exported` | 组件默认私有，显式导出才对外 | `exports` 块：Web API/路由/事件默认私有 |
@@ -73,15 +73,17 @@
 
 ## 三、关键设计点
 
-1. **请求 / 批准分离（Android 最核心的洞见）**：`permissions[]` 只是插件的**请求**；批准与否由宿主按"`scope` 规则 + 管理员逐点授予"决定——**来源（签名 / 市场 / 本地安装）不参与**。Android 的 `uses-permission` 与系统最终授权是两回事——这是"manifest 声明权限"最成熟的工业先例，直接支撑 D5（manifest 声明是请求，宿主判定才是批准）。
+1. **请求 / 批准分离（Android 最核心的洞见）**：`permissions[]` 只是插件的**请求**；批准与否由宿主按"`scope` / `grant` 规则 + 管理员对 `explicit` 档的逐点授予"决定——**来源（签名 / 市场 / 本地安装）不参与**。Android 的 `uses-permission` 与系统最终授权是两回事——这是"manifest 声明权限"最成熟的工业先例，直接支撑 D5（manifest 声明是请求，宿主判定才是批准）。**安装清单本身就是同意书**（intent-capture §8.1）：`auto` / `install` 档一次看全即生效，只有 `explicit` 档才逐点问。
 
-2. **权限模型两条轴（v3：删除 protectionLevel）**：
+2. **权限模型三条轴（v4：新增 `grant`）**：
    | 轴 | 字段 | 规则 |
    |---|---|---|
-   | 要不要管理员点头 | `scope`：`self` / `host` | `self`（只碰插件自身的数据目录 / kv / 定时器）不需要授予；`host`（碰宿主管理的资源）**逐个权限点授予** |
+   | 碰不碰宿主资源 | `scope`：`self` / `host` | `self`（只碰插件自身的数据目录 / kv / 定时器）；`host`（碰宿主管理的资源）；注册期约束 `self ⇒ grant: auto` |
+   | 要不要管理员点头 | `grant`：`auto` / `install` / `explicit` | `auto` 安装即生效；`install`（host 只读 + 插件自有能力）安装清单即生效、可一键收回；`explicit`（写宿主资源 / 执行模板 / 提权 / 出网）默认拒绝 + 逐点授予 |
    | 要多大的动静 | `confidentiality` / `executionLevel` | 决定授予时的提示强度与二次确认、审计分级；`effective = max(...)` 只升不降 |
-   - 例：`fs.write.data` → `scope: self`（不授予）；`docker.write` → `scope: host` + `sensitive/medium`（授予 + 提示）；任意 fs 读写 / secrets → `scope: host` + `secret/high`（授予 + 二次确认）。
-   - **为什么删掉 protectionLevel**：它在本仓库里从未被判定逻辑读取（装饰性字段）；其中 `signature` 档把身份塞进权限定义，与"来源不参与权限判定"冲突；`normal` 真正表达的是"够不着别人"，用 `scope: self` 更准确（api-contract §6）。
+   - 例：`fs.write.data` → `self` + `auto`（不问）；`docker.read` → `host` + `install`（安装清单即生效）；`docker.write` → `host` + `explicit` + `sensitive/medium`（逐点授予 + 提示）；secrets / 任意 fs 读写 → `host` + `explicit` + `secret/high`（逐点授予 + 二次确认）。
+   - **为什么删掉 protectionLevel**：它在本仓库里从未被判定逻辑读取（装饰性字段）；其中 `signature` 档把身份塞进权限定义，与"来源不参与权限判定"冲突；`normal` / `dangerous` 真正表达的是"够不着别人"与"要不要点头"，用 `scope` + `grant` 表达更准确（api-contract §6）。
+   - **`grant` 与被删的 `protectionLevel` 的区别**：`grant` 被判定链第 3 步读取，不是装饰字段；`scope` 退为资源语义并在注册期约束 `grant`——两个字段各有一处读取点。
    - 核心前端（Web Shell）与内置主题 ≈ Android 的 `signatureOrSystem`（同源内置；v3 起界面不再由"面板插件"提供）。
 
 3. **`exports` 显式导出（默认私有）**：插件对外的一切（Web API、前端路由、事件 topic）默认不对外；必须显式声明且经宿主网关登记后才可路由（对应 Android `android:exported` 默认 false）。比 AstrBot/Bukkit 的"注册即对外"更严，与"插件 Web API/页面纳入宿主网关鉴权"（AstrBot 研究结论 5）一致。
@@ -122,6 +124,6 @@
 
 ## 五、不照搬 Android 的部分
 
-- **不做运行时逐次授权弹窗**（Android 6+ dangerous 权限每次使用要用户同意）——对服务器面板是噪音；用"安装时一次性确认 + 风险提示 + 可撤销"替代；
-- **不照搬 protectionLevel**——Android 的"授予仪式"枚举（normal / dangerous / signature，以及 privileged / development / appop / instant / setup 等内部档）在我们这里退化成两条正交判断：`scope` 决定要不要管理员点头，等级决定提示强度；**身份 / 信任类档位（signature = 同签名才可用）整类删除**（ADR-001 v3）；
+- **不做运行时逐次授权弹窗**（Android 6+ dangerous 权限每次使用要用户同意）——对服务器面板是噪音；用"**安装清单一次性授权**（`auto`/`install` 档）+ 只对 `explicit` 档逐点授予 + 可撤销"替代（intent-capture §8）；
+- **不照搬 protectionLevel**——Android 的"授予仪式"枚举（normal / dangerous / signature，以及 privileged / development / appop / instant / setup 等内部档）在我们这里退化成三条正交判断：`scope` 决定碰不碰宿主资源、`grant` 决定要不要管理员点头、等级决定提示强度；**身份 / 信任类档位（signature = 同签名才可用）整类删除**（ADR-001 v3）；
 - **不做 intent-filter 级隐式分发**——插件间通信走显式声明的事件总线，不搞隐式意图匹配（那套是 Android 特有的复杂性与安全漏洞来源）。

@@ -193,20 +193,24 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
   "name": "docker.write",
   "group": "docker",
   "description": "修改容器配置",
-  "scope": "host",                  // self | host
+  "scope": "host",                  // self | host：资源作用域（碰不碰宿主资源）
+  "grant": "explicit",              // auto | install | explicit：授予方式（判定链读取）
   "confidentiality": "sensitive",   // 读门槛
   "executionLevel": "medium"        // 写门槛
 }
 ```
 
-两个维度，各管一件事：
+三个维度，各管一件事：
 
 | 字段 | 管什么 | 规则 |
 |---|---|---|
-| `scope` | **要不要管理员授予** | `self`（只碰插件自身：自己的数据目录 / kv / 定时器）→ 不需要授予；`host`（碰宿主管理的资源）→ **必须逐点授予** |
+| `scope` | **碰不碰宿主资源**（资源作用域，用于路径收敛与文案） | `self` = 只碰插件自身（自己的数据目录 / kv / 定时器）；`host` = 碰宿主管理的资源。注册期一致性约束：**`self` 只能是 `auto`**（违反 → `SCOPE_GRANT_INVALID`），与既有的 `executionLevel ≥ confidentiality` 同属注册期校验 |
+| `grant` | **要不要管理员逐点授予**（判定链第 3 步读取） | `auto` 安装即生效；`install` 读安装清单即生效、可一键收回；`explicit` 默认拒绝、**必须逐点授予**（intent-capture §8.1） |
 | `confidentiality` / `executionLevel` | 授予时的**提示强度**、审计分级与 `effective` 合成 | `effective = max(调用方声明, 用户目录覆盖, 权限点默认)`，**只升不降**；不变式 `executionLevel ≥ confidentiality`（封死仲裁旁路） |
 
 > v3 修订：**删除 `protectionLevel`**（Android 的"授予仪式"枚举：normal / dangerous / signature）。理由：(1) 它在本仓库里从未被判定逻辑读取，是装饰性字段；(2) 其中 `signature`（仅同签名可申请）把身份塞进权限定义，与"来源不参与权限判定"冲突；(3) `normal` 真正表达的是"这个能力够不着别人"，用 `scope: self` 表达更准确。按信任档分档的 `defaults` 同时删除。
+>
+> v4 修订：**新增 `grant` 三档**（intent-capture §8.1）。它和刚删掉的 `protectionLevel` 的区别是本质的——`grant` **被判定链读取**（第 3 步只看它），而 `protectionLevel` 是死字段；`scope` 则从"要不要授予"退为"碰不碰宿主资源"，并在注册期约束 `grant`。**目标态尚未落地**：当前代码仍是 `scope = host ⇒ 未授予即拒绝`，改动随 P2 权限层一起做。
 
 - **权限点不设 identity / trust 类字段**：它只描述"这个能力是什么、有多敏感"，不描述"谁有资格申请"。
 - 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
@@ -216,15 +220,16 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 判定链（宿主侧强制，D3 单一强制点）：
 
 ```
-1  权限点未在注册表登记            → UNKNOWN_POINT（未知即拒绝）
-2  manifest 未声明该点             → NOT_DECLARED（无默认放行）
-3  scope = host 且管理员未授予     → NOT_GRANTED
-4  通过 → 作用域与参数校验在各方法内层
+1  权限点未在注册表登记               → UNKNOWN_POINT（未知即拒绝）
+2  manifest 未声明该点                → NOT_DECLARED（无默认放行）
+3  grant = explicit 且管理员未授予    → NOT_GRANTED（auto / install 档免逐点授予，见 intent-capture §8）
+4  通过 → 作用域与参数校验在各方法内层（auto / install 通过时审计记 installed-grant）
 ```
 
+- `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / 未来 `net.*` / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；
 - **声明可用通配，授予不可**：manifest 声明可写 `docker.*` / `*` 图省事；**管理员的授予必须是具体权限点**（不允许通配，防止一次点击等于全授）；
-- 插件 manifest 声明的是"请求"（uses-permission）；宿主按"`scope` 规则 + 管理员逐点授予"做出"批准"（请求/批准分离，Android 模型）；
+- 插件 manifest 声明的是"请求"（uses-permission）；宿主按"`scope` + `grant` 档 + 管理员逐点授予"做出"批准"（请求/批准分离，Android 模型）；
 - **来源（签名 / 市场 / 本地安装）不参与判定**：有源与无源插件在权限面前完全平等（ADR-001 v3）。
 
 ## 8. 审计
@@ -271,11 +276,12 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 核心提供注册协议，让**驱动插件**（driver，核心端特权档）扩展 `@host/api`：
 
 ```
-注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query", intent: "none" }] }
+注册请求：{ capability: "db", methods: [{ name: "query", schema, permission: "db.query", intent: "none", operation: "db.query" }] }
 ```
 
 - 驱动插件**不限制来源**（自建市场与官方市场等价），安装走**独立界面与最高强度提示**（ADR-005 §3）；必须：特权档（跑在核心侧/独立 Node 进程，拥有 node API，可下载自己的依赖）；
 - 驱动插件向面板注册**权限节点 + API 端点**暴露给沙箱：每个注册方法进权限注册表（D4）、过威胁建模评审、随核心一起审计；
+- **`operation` 名必须与 `permission` 一同登记**：核心确认窗口据此签发 grantId，`grant.operation` 校验不上就执行不了（intent-capture §8.7②）——`operation` 缺省时取 `name`，但涉及资源操作的方法**必须显式写明**（如 `docker.remove` 而非 `remove`）；
 - **每个注册方法必须声明是否需要"意图确认"**（`intent: 'none' | 'confirm' | 'session'`）：
   - `none`：仅权限点（插件**自主发起**的操作）；
   - `confirm`：每次调用都需要用户在核心 UI 确认（离散写类）；
@@ -309,4 +315,4 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 2. `@host/api` 类型声明的自动生成（从注册表生成 TS 类型，保证 IDE 体验与运行时一致）；
 3. 驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）；
 4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响；
-5. **默认安全边界**：确认点数量与"管理员/开发者折损率"的平衡——哪些操作静默放行、哪些只提示、哪些必须确认、插件声明的默认授予面到哪里为止（见 intent-capture.md §8）。
+5. **默认安全边界（已定，见 intent-capture §7/§8）**：确认判据 = ①意图经不可信方转述 或 ②点击时后果不可见；四档 L0–L3；权限点 `grant` 三档 `auto`/`install`/`explicit`；仅 `explicit` 需逐点授予。落地在 P2（`core/permissions/` 加 `grant` 字段 + 判定链第 3 步）与 P3（前端确认 UI）。

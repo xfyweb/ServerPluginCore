@@ -18,7 +18,7 @@
 | P0 | 契约定稿（v0.2 最小集） | S | — |
 | P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 审计 | M | P0 |
 | **P1.5** | **插件生命周期与装载器（冻结装载契约）** | M | P1（exec 基线已完成） |
-| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 | L | P1.5 |
+| P2 | 构建层与依赖三层 + 事件总线 + 驱动插件扩展点 + **权限档位（`grant` 三档）** | L | P1.5 |
 | P3 | 核心 Web Shell + 主题系统 + 插件前端容器 | L | P1（可与 P2 并行） |
 | P4 | 市场签名与源管理 + 市场 | M | P1 + P3 |
 | P5 | 核心插件集 + 加固 + 发布 | L | P2 + P3 |
@@ -51,7 +51,7 @@
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/sample/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
 - **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（JSON/正则/API 往返，验证"薄适配器无感"）；
-- **基础宿主 API**：exec 模板（nginx + git 一族起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 判定 + 审计**（F1–F7 已覆盖；E1–E8 的注册/参数/执行三类已覆盖）。**已落地**：模板注册表 + `exec.run`（阻塞，支持**模板 ID 与原生写法**两种调用，原生写法匹配不到即拒绝）+ 参数校验（enum/pattern/whitelist/path）+ env 白名单 + 超时 + 输出截断 + 动态权限点 `exec.template.<action>.<op>`（`scope: host`，需逐点授予）+ 审计 `target`/`resultBytes` 字段 + 跨平台可执行解析（E10）+ 内置 git 模板集（version/status/log/rev-parse/branch/fetch/pull）与 `SPC_REPO_ROOTS`；样板插件已示范 `exec.run` 调用；**待补**：kv / timers / lifecycle、`exec.spawn` 任务模型（P2）；
+- **基础宿主 API**：exec 模板（nginx + git 一族起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 判定 + 审计**（F1–F7 已覆盖；E1–E8 的注册/参数/执行三类已覆盖）。**已落地**：模板注册表 + `exec.run`（阻塞，支持**模板 ID 与原生写法**两种调用，原生写法匹配不到即拒绝）+ 参数校验（enum/pattern/whitelist/path）+ env 白名单 + 超时 + 输出截断 + 动态权限点 `exec.template.<action>.<op>`（`scope: host`，需逐点授予；P2 起统一为 `grant: explicit`）+ 审计 `target`/`resultBytes` 字段 + 跨平台可执行解析（E10）+ 内置 git 模板集（version/status/log/rev-parse/branch/fetch/pull）与 `SPC_REPO_ROOTS`；样板插件已示范 `exec.run` 调用；**待补**：kv / timers / lifecycle、`exec.spawn` 任务模型（P2）；
 - **exec 基线与沙箱设计**（docs/exec-sandbox-design.md）：P1 落地"降权（spc）+ env 白名单 + 超时/输出截断"基线，声明层为过渡期唯一防线；注册制与系统级沙箱见 P2/P5；
 - **CLI**：`plugin list / install <dir> / enable / disable`、`web status`、`audit tail`；
 - **sdk**：`@host/api` 类型声明、esbuild 构建模板（ESM-only）、manifest 校验器；
@@ -80,8 +80,9 @@
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
 5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
 6. **官方模块仿真**（docs/module-emulation-design.md）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖——P2-A 纯计算模块（path/util/events/assert/url）+ 桥契约（信封/对象化/异步 await）+ 构建期 builtin 校验；P2-B `node:fs`/`fs/promises`/`process`/`os`（作用域=数据目录 + errno 映射）；P2-C 最小 `buffer`/`crypto` 摘要。**交付物**：`core/sandbox-modules/<name>.js`（一模块一文件）+ `core/sandbox.ts` 的 loader 注册表（骨架已在 P1 落成）+ 各模块行为对齐测试；
-7. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
-- 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）。
+7. **权限档位落地**（intent-capture §8.1/§8.2）：`PermissionPoint.grant` 三档（`auto` / `install` / `explicit`）+ 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）+ 判定链第 3 步改为"**仅 `explicit` 需逐点授予**"（`auto`/`install` 审计记 `installed-grant`）；升级新增的 `install`/`explicit` 点走**增量同意**；
+8. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
+- 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）；**权限档位判定**——`auto`/`install` 免逐点授予、`explicit` 未授予 → `NOT_GRANTED`、`scope: self` + `grant: explicit` 注册报 `SCOPE_GRANT_INVALID`。
 
 ## P3：核心 Web Shell + 主题系统 + 插件前端容器
 
@@ -92,8 +93,9 @@
 - **前端 API（核心 REST）**：`/api/intent/{grant,revoke,forward}` + 核心原生能力端点（api-contract §11）；frontend-token 只存核心前端内存；
 - **插件前端容器**：`declarative`（manifest 组件树 → 核心渲染）与 `iframe`（`sandbox` 无 `allow-same-origin` + CSP 零出网 + `MessageChannel` 代理）；
 - **主题系统**：`theme.json`（声明式令牌 + 资源 + 受限样式，无 JS），核心与插件 iframe 共用同一批 CSS 变量；
+- **确认 UI 与档位**：L0 静默 / L1 toast+撤销（回收站）/ L2 确认弹窗 / L3 二次确认；判据 = 意图经不可信方转述 或 点击时后果不可见（intent-capture §7）；`intent.confirm` 三档 + 新装/升级蜜月期 `strict`；
 - **grantId**：核心持久实例密钥签发 / 校验 / 消费（`core/intent/`）；
-- 验收：① CSP 与 `sandbox` 属性生效（插件前端无法直连核心、无法外发）；② 意图负载不合声明 → `INTENT_SCHEMA_VIOLATION`；③ grantId 绑定校验（错受众 / 错资源 / 过期 / 重放全部拒绝）；④ 主题无法覆盖安全 UI；⑤ 关闭 Web 服务后 CLI 全可用。
+- 验收：① CSP 与 `sandbox` 属性生效（插件前端无法直连核心、无法外发）；② 意图负载不合声明 → `INTENT_SCHEMA_VIOLATION`；③ grantId 绑定校验（错受众 / 错资源 / 过期 / 重放全部拒绝）；④ 主题无法覆盖安全 UI；⑤ 关闭 Web 服务后 CLI 全可用；⑥ **六场景档位判定**（intent-capture §8.6）——特别是场景 1（用户直选 → 0 弹窗）与场景 3（用户亲手敲 sudo → 仍 L3）的对照，以及场景 4（插件自主越界 → 拒绝而非弹窗）。
 
 ## P4：市场签名与源管理 + 市场
 
@@ -124,6 +126,7 @@
 | R3 exec 模板设计不足 → 插件做不了事 | P1 先做 2 个真实模板（nginx/git）验证；模板注册表是核心评审对象 |
 | R4 驱动插件与核心进程边界不清 | api-contract §11-3 待定项，P2 落地时定 |
 | R5 单人节奏拖垮 | 每阶段小步可演示；P2 与 P3 可并行 |
+| R6 **确认点过多 → 管理员/开发者折损率上升**（每个弹窗都是一次流失机会） | 默认边界按"确认判据二条件"压降（intent-capture §7）：用户直选的意图**不再重复确认**；`auto`/`install` 档**安装清单即授权**；可逆写用回收站 + toast 替代弹窗。六场景（§8.6）作为验收硬指标 |
 
 ## 明确不做（现阶段）
 

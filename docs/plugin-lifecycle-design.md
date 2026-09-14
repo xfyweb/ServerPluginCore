@@ -269,13 +269,15 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 
 ```
 spc plugin list                       # 状态列：state / enabled / version
-spc plugin install <dir>              # 写记录（本地安装 ⇒ unanchored，提示"无更新渠道"）
+spc plugin install <dir>              # 写记录（本地安装 ⇒ unanchored，提示"无更新渠道"）；auto/install 档权限随安装清单生效
 spc plugin enable|disable <id>        # 写操作经 daemon
 spc plugin reload <id>                # failed 恢复 / 配置变更后重启
 spc plugin status <id>                # 详情：state / grants / lastError / dataDir
-spc plugin grant <id> <point>...      # 逐点授予（isValidGrantPoint 校验，拒绝通配）
+spc plugin grant <id> <point>...      # 逐点授予（isValidGrantPoint 校验，拒绝通配；只对 explicit 档）
 spc plugin revoke <id> <point>...
 ```
+
+> 授权面（intent-capture §8）：**安装即一次授权**——`auto` / `install` 档权限点在安装清单里一次看全即生效，`grant` 只用于 `explicit` 档（写宿主资源 / 执行模板 / 提权 / 出网）；升级新增的 `install`/`explicit` 点走**增量同意**。CLI 的 `grant` 与核心前端的逐点授予写的是同一份记录。
 
 **HTTP**（daemon）
 
