@@ -90,6 +90,8 @@
 
 8. **`dependencies.npm`（D8 载体）**：每项带 `tier`——`whitelist`（L1 平台托管，构建层锁定版本+签名）/ `user-opt-in`（L2 用户显式放行）；原生模块与重型二进制不进此表（L3 禁区，ADR-005 §7）。装依赖与插件安装分离，需显式授权。manifest 里声明的是"意图"，宿主侧白名单才是"批准"——与权限同一哲学。
 
+9. **`configSchema`（插件配置声明，P1.5）**：声明用户可调参数（JSON Schema 子集：`string | number | boolean | enum | array`，带 `default`/`description`，敏感字段标 `secret: true`）。值存在宿主侧 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`，装载时按 schema 校验并补默认值，以**只读快照** `ctx.config` 注入（插件不能改自己的配置）。面板据此渲染配置表单（P3）。详见 plugin-lifecycle-design.md §1.6。
+
 ## 四、与 api-contract.md §5 旧草案（schema 1）的差异
 
 | 旧（schema 1） | 新（schema 2） | 理由 |
@@ -100,6 +102,7 @@
 | 无 compat | `compat: {minCore, targetCore}` | 插件-核心版本耦合（要点 5） |
 | `runtime: "node"` 字符串 | `runtime: {type, esm}` | 运行时类型 + ESM-only 硬约束（ADR-005 §4） |
 | 无 dependencies | `dependencies: {npm, plugins}` | 依赖管控 + 插件间可见性（要点 6/8） |
+| 无 configSchema | `configSchema`（可选） | 插件配置声明 + 面板渲染 + `ctx.config` 只读注入（要点 9） |
 | — | `schema: 2` | 清单 schema 版本化（D10） |
 
 ## 五、不照搬 Android 的部分

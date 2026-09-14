@@ -3,6 +3,7 @@
 - 状态：**设计基线（P1.5a，待实现）**
 - 关联：ADR-001（零环境权力）、ADR-005（沙箱与插件类型）、api-contract §4/§4.1（方法组）、exec-sandbox-design §3（运行时限额）、plugin-signature-design §9（安装记录）、ROADMAP P1.5
 - 定位：**冻结"什么是插件、宿主怎么把它跑起来"这份契约**。构建层（打包/签名产物）、开发工具（`new`/`dev`）都以本文件为输入。
+- 参考：AstrBot 的插件生命周期（`astrbot/core/star/{star_manager,base,star}.py`）——`initialize`/`terminate` 钩子、metadata 与代码分离、**插件配置 schema**、失败隔离与"重载失败插件"。借鉴点与取舍见 §13。
 
 ## 0. 两个 "lifecycle" 别搞混
 
@@ -50,12 +51,14 @@ interface PluginContext {
   dataDir: string;                      // 宿主创建并保证存在；插件唯一可写位置
   manifest: Readonly<Manifest>;         // 只读副本（自查声明用，改不了）
   grants: readonly string[];            // 本插件已获授予的权限点（只读；判定仍由宿主侧强制）
+  config: Readonly<Record<string, unknown>>;  // 插件配置（按 configSchema 校验后的只读快照，见 §1.6）
   logger: { info(m: string): void; warn(m: string): void; error(m: string): void };
 }
 ```
 
 - `dataDir` 规则：`<SPC_DATA_DIR ?? <cwd>/.spc>/data/plugins/<sanitized-id>/`，其中 `sanitized-id = pluginId.replace(/^@/, '').replace(/\//g, '__')`（`@xfy2412/sample` → `xfy2412__sample`；该映射唯一且可读）。
-- `logger` P1 转发到宿主 console（带插件前缀）；P2-4 日志聚合器接管后落聚合流。
+- `logger` P1 转发到宿主 console（带插件前缀）；P2-4 日志聚合器接管后落聚合流；**日志等级可按插件覆盖**（P2-4）。
+- `config` 是**只读快照**：插件改不了自己的配置，写配置属管理员/面板动作（见 §1.6）。
 
 ### 1.5 最小插件形态
 
@@ -72,6 +75,18 @@ export async function stop(ctx: PluginContext) {
   ctx.logger.info('bye');
 }
 ```
+
+### 1.6 插件配置（config schema）
+
+插件一定需要用户可调的参数（端口、路径、开关）。契约三件套：
+
+1. **声明**：manifest 增 `configSchema`（JSON Schema 子集：`type/object`；字段支持 `string | number | boolean | enum | array`，带 `default` 与 `description`）——加进 `sdk/schema` 与本阶段一起落地，面板渲染在 P3；
+2. **取值与存储**：值存 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`；读取时**按 schema 校验 → 补默认值**；非法值拒绝保存（`PLUGIN_CONFIG_INVALID`）；
+3. **注入**：`ctx.config` 是**只读快照**；插件只能读。配置变更后由 manager 重启该插件（P1.5 用 `reload` 生效；热更新留给 P2-4 配置中心）。
+
+- **为什么不做 `ctx.config.set()`**：写配置 = 改持久状态，必须走管理员与审计路径；插件要存运行期数据用 `dataDir`（kv 在 P2）。
+- **敏感值**：schema 字段可标 `secret: true` → 面板掩码显示，审计与日志一律摘要（不落明文）。
+- 与 AstrBot 的对应：它把 `_conf_schema.json` 放在插件目录、用 `AstrBotConfig(config_path, schema)` 管值、并把配置作为构造参数注入。我们把 schema 放进 manifest（与其它的声明同一份单一事实源），注入**只读快照**而不是可变对象。
 
 ## 2. 状态机
 
@@ -119,6 +134,9 @@ export async function stop(ctx: PluginContext) {
 **为什么不由插件 `ctx.register()` 动态注册**：manifest 是审核对象与唯一事实源；loader 按 manifest 登记，卸载时可精确撤销，插件说了不算。
 
 - 登记冲突（路由撞车、topic 撞车、权限点未知）→ `PLUGIN_EXPORT_INVALID`，并**回滚本次已登记的部分**（不留半登记状态）。
+- **登记结果写进安装记录**（`capabilities: string[]`，如 `route:/docker`、`api:/api/docker/*`、`event:backup.done`、`template:mc.start`）：卸载按它精确撤销、CLI/面板可展示、审计可追溯；
+- **重载必须幂等**：`reload` 先撤销该插件的全部已登记能力，再重新登记（避免重复绑定/能力叠加）；
+- **`disabled` 不做任何求值**：禁用的插件连 bundle 都不加载（不建沙箱、不执行任何插件代码）。
 
 ## 4. 运行时限额与超时（四层）
 
@@ -185,7 +203,14 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 4  state = stopped（审计 lifecycle.unload）
 ```
 
-**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
+**并发与失败隔离**：
+
+- manager 的每个状态变更（load / start / stop / reload / enable / disable）都走**同一把锁**串行执行——插件管理操作不并发；
+- **单插件失败不影响其它插件**：逐个 `try/catch`，失败进 `failed` + `lastError`，继续装载下一个；
+- **`stop` 抛错或超时都继续卸载**（只告警 + 审计）：绝不因一个插件卡住核心停机；
+- 卸载顺序固定：`stop` → 撤销能力登记 → `dispose`（Scope 顺序释放 handle）。
+
+**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_RESERVED`、`PLUGIN_FILE_MISMATCH`（P4 预留）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
 
 ## 6. 安装记录（P1 最小版）
 
@@ -199,6 +224,9 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
     "version": { "code": 1, "name": "0.0.1" },
     "enabled": true,
     "grants": ["fs.write.home", "exec.template.git.version"],
+    "capabilities": ["route:/sample", "api:/api/sample/*"],
+    "configPath": "config/plugins/xfy2412__sample.json",
+    "reserved": false,
     "state": "stopped",
     "installedAt": "2026-09-15T00:00:00Z",
     "lastError": null,
@@ -213,7 +241,10 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 ```
 
 - **记录由 daemon 拥有**（写操作必须经过 daemon），CLI 只读时可离线读取；
-- 同一 `id` 只有一条记录；`dir` 为绝对路径或相对核心工作目录的相对路径（写入时归一化为绝对路径）。
+- 同一 `id` 只有一条记录；`dir` 为绝对路径或相对核心工作目录的相对路径（写入时归一化为绝对路径）；
+- `reserved: true` = 内置/保留插件（**可禁用、不可卸载**），普通插件可卸载（`uninstall` 对 reserved 报 `PLUGIN_RESERVED`）；
+- `capabilities` 是"该插件登记了哪些能力"的清单（撤销依据 + 展示 + 审计）；
+- 插件配置值不在本文件，单独存 `config/plugins/<sanitized-id>.json`（见 §1.6）。
 
 ## 7. 审计
 
@@ -291,6 +322,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `core/plugin/loader.ts` | 单插件装载：沙箱创建 → 导出校验 → 能力登记 → init/start；以及卸载 |
 | `core/plugin/manager.ts` | **唯一状态机**：多插件、enable/disable/reload、失败重启策略、审计 |
 | `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / webApis / events；`execTemplates` 留槽） |
+| `core/plugin/config.ts` | 插件配置：`configSchema` 校验、默认值填充、只读快照与落盘 |
 | `core/config.ts` | 最小配置面（文件 + `SPC_*` 覆盖） |
 | `core/sandbox.ts`（改） | 暴露"带限额的运行时"与"取模块导出"的能力（handle 全部纳入 Scope） |
 | `core/cli.ts` / `core/server.ts`（改） | §8 的命令与端点；`plugin list` 加状态列 |
@@ -310,7 +342,11 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 10. **dispose 不崩**：钩子抛错 / 超时 / 提前 return 三种情况下 `dispose()` 都不命中 GC 断言（D1/D2 回归）；
 11. 记录：`install` 写记录、`enable/disable` 生效、启动时自动装载 `enabled` 插件；
 12. `failedRestart=auto`：连续失败 `maxRestartAttempts` 次后停在 `failed`，审计有 `attempts`；
-13. 依赖检查：声明未安装的插件 → `PLUGIN_DEPENDENCY_MISSING`。
+13. 依赖检查：声明未安装的插件 → `PLUGIN_DEPENDENCY_MISSING`；
+14. 插件配置：缺省值填充、非法值被拒（`PLUGIN_CONFIG_INVALID`）、`ctx.config` 只读（插件写入无效、不污染宿主）；
+15. 能力登记幂等：连续两次 `reload` 后登记表与 `capabilities` 完全一致（撤销后重建，不叠加）；
+16. 并发：同时发起同一插件的两个 `load`/`reload` → 锁串行，终态一致且无重复登记；
+17. `reserved` 插件：可 `disable`，`uninstall` 被拒（`PLUGIN_RESERVED`）。
 
 **验收**：以上全绿 + `pnpm spike` 走"记录 → 装载 → init/start → stop"真实链路且输出与现在等价；`spc plugin list` 显示状态。
 
@@ -320,4 +356,27 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 2. `stop` 是否需要接收"关闭原因"（`stop(ctx, {reason})`：`reload` / `disable` / `shutdown`）——**倾向要**，便于插件区分优雅停机与重启；
 3. `dataDir` 清理策略（`disable` 是否保留数据；卸载是否删数据）——**倾向：都保留，卸载提供 `--purge`**；
 4. hook 插件的钩子形态与 `init/start/stop` 的关系（待 ADR 定稿）；
-5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量并存）。
+5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量共存）。
+
+## 13. 参考：AstrBot 的可借鉴做法与我们的取舍
+
+参考实现：`astrbot/core/star/star_manager.py`（`load` / `reload` / `reload_failed_plugin` / `_terminate_plugin`）、`base.py`（`Star` 基类）、`star.py`（`StarMetadata`）。
+
+| AstrBot 的做法 | 我们的对应 |
+|---|---|
+| `initialize()` / `terminate()` 作为基类空实现钩子；`__del__` 已标 Deprecated | 模块级导出 `init` / `start` / `stop`（ESM，无类继承；沙箱里没有装饰器与动态导入） |
+| metadata 与代码分离（`metadata.yaml` 优先于装饰器推断），校验失败即拒载 | `manifest.json` + JSON Schema 校验（构建期与装载期各一次） |
+| `_conf_schema.json` + `AstrBotConfig(config_path, schema)`，配置作为构造参数注入，面板据此渲染 | manifest `configSchema` + 记录旁的值文件 + `ctx.config` **只读快照**（§1.6） |
+| `StarMetadata.star_handler_full_names` 记录该插件注册了哪些 handler | 记录里的 `capabilities: string[]`（§3、§6） |
+| 重载前把 handler 还原成 raw、再重新绑定，防重复叠加 | `reload` 先撤销全部能力登记再重建（幂等，§3） |
+| `inactivated_plugins` ⇒ 不实例化插件类（`star_cls = None`） | `disabled` ⇒ 连 bundle 都不加载（零求值，§3） |
+| `reserved` 插件在 `builtin_stars`，不可卸载 | 记录 `reserved: true` ⇒ 可禁用、不可卸载（§6） |
+| 单插件 `try/except` 包住整段装载，失败进 `failed_plugin_dict` 并清理状态后**继续下一个** | 逐个 try/catch，失败进 `failed` + `lastError`，继续装载其它插件（§5） |
+| `reload_failed_plugin(dir_name)` 专治失败插件 | `failed` + `spc plugin reload <id>`（默认不自动重启；`failedRestart=auto` 可选） |
+| `_terminate_plugin`：不在跑就跳过；`__del__` 丢 executor 并捕获异常；terminate 抛错只告警、继续卸载 | `stop` 抛错/超时都继续卸载，随后强制 `dispose`（§5） |
+| 所有管理操作走 `_pm_lock` | manager 的每次状态变更串行化（一把锁，§5） |
+| `plugin_id = author/name`（对类属性注入 `name/author/plugin_id`） | `id = @publisher/name`（多一个 `@`；身份与来源解耦见 ADR-001 v3） |
+| 插件专用 logger，且支持按插件覆盖日志等级 | `ctx.logger`；日志等级覆盖记在 P2-4 日志聚合器 |
+| `astrbot_version`（PEP 440 区间）不满足即拒载 | `compat.minCore/targetCore`：不满足即拒载，不静默降级 |
+| `OnPluginLoadedEvent` 钩子（插件间可监听"某插件已加载"） | hook 插件 + 事件总线（P2；P1.5 只登记 `exports.events`） |
+| 旧版插件类兼容加载（`Plugin`/`Main` 命名回退） | **不做兼容回退**：导出契约唯一（缺 `init` 即 `PLUGIN_NO_ENTRY`），fail-closed |

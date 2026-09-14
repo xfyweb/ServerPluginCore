@@ -62,13 +62,14 @@
 
 **为什么排在构建层之前**：装载契约没冻结，插件怎么写、产物怎么打包全是猜。完整设计见 **plugin-lifecycle-design.md**。
 
-- **装载契约**：ESM bundle 导出 `init(ctx)`（必需）+ `start`/`stop`（可选，均可 async）；`@host/api` 给**能力**、`ctx` 给**环境**（`pluginId`/`version`/`dataDir`/`manifest`/`grants`/`logger`）；
+- **装载契约**：ESM bundle 导出 `init(ctx)`（必需）+ `start`/`stop`（可选，均可 async）；`@host/api` 给**能力**、`ctx` 给**环境**（`pluginId`/`version`/`dataDir`/`manifest`/`grants`/`config`/`logger`）；
+- **插件配置**：manifest `configSchema` + 宿主侧值文件 + `ctx.config` **只读快照**（plugin-lifecycle-design §1.6）；面板渲染在 P3；
 - **状态机**：installed → loading → loaded → starting → running → stopping → stopped（+ `failed` / `disabled`），**唯一状态机在 manager**；失败重启是**配置项**（`failedRestart: manual|auto` + `maxRestartAttempts` + `restartBackoffMs`，默认 `manual`）；
-- **能力登记**：loader 依 manifest 登记 routes / webApis / events（`execTemplates` 留槽给 P2-5），插件不参与；冲突即回滚，不留半登记态；
+- **能力登记**：loader 依 manifest 登记 routes / webApis / events（`execTemplates` 留槽给 P2-5），插件不参与；登记结果写进记录的 `capabilities`，重载幂等（先撤销再重建）；冲突即回滚；
 - **四层限额**：CPU 中断 / 内存 / 栈 / 宿主 API 自带超时（QuickJS 实测语义见 exec-sandbox-design §3.5）；
-- **安装记录**：`plugins.json`（字段与 plugin-signature-design §9 对齐；本地安装 `origin: null` ⇒ unanchored）；
+- **安装记录**：`plugins.json`（字段与 plugin-signature-design §9 对齐；本地安装 `origin: null` ⇒ unanchored；`reserved` 内置插件不可卸载）；
 - **CLI / HTTP**：`plugin install / enable / disable / reload / status / grant / revoke` + `GET /api/plugins` 带状态；
-- **交付**：`core/plugin/{limits,records,loader,manager,capabilities}.ts` + `core/config.ts` + `core/__tests__/lifecycle.test.ts`（13 组用例，含死循环 / 灾难性正则 / 内存超限 / `stop` 超时 / **dispose 不崩**）；
+- **交付**：`core/plugin/{limits,records,loader,manager,capabilities,config}.ts` + `core/config.ts` + `core/__tests__/lifecycle.test.ts`（17 组用例，含死循环 / 灾难性正则 / 内存超限 / `stop` 超时 / **dispose 不崩** / 配置只读 / 重载幂等 / 并发串行）；
 - **验收**：`pnpm spike` 走"记录 → 装载 → init/start → stop → 卸载"真实链路；kill/超时/崩溃的沙箱插件不影响核心。
 
 ## P2：命令任务模型 + 构建层 + 驱动插件
