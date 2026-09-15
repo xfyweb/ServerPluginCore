@@ -466,6 +466,121 @@ test('依赖检查：声明的插件未安装 → PLUGIN_DEPENDENCY_MISSING', as
   await manager.disable(id('dep-provider'));
 });
 
+test('反向依赖：被 enabled 插件依赖时，uninstall / disable 都被拒（PLUGIN_IN_USE）', async () => {
+  const provider = makePlugin('inuse-provider', `export function init(){}`);
+  const consumer = makePlugin('inuse-consumer', `export function init(){}`, {
+    dependencies: { plugins: [{ id: '@spc/inuse-provider' }] },
+  });
+  await manager.install(provider);
+  await manager.install(consumer);
+
+  // 错误信息要能直接告诉管理员"谁在依赖它"，否则只会在日志里猜
+  for (const op of ['uninstall', 'disable'] as const) {
+    let caught: unknown;
+    try {
+      await (op === 'uninstall' ? manager.uninstall(id('inuse-provider')) : manager.disable(id('inuse-provider')));
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof SpcError, `${op} 应被拒`);
+    assert.equal((caught as InstanceType<typeof SpcError>).code, 'PLUGIN_IN_USE');
+    assert.equal((caught as InstanceType<typeof SpcError>).params.dependents, id('inuse-consumer'));
+    assert.equal((caught as InstanceType<typeof SpcError>).params.action, op);
+  }
+  // provider 仍在运行（拒绝是"什么都没发生"，不是"半途卸载"）
+  assert.equal(manager.status(id('inuse-provider')).state, 'running');
+
+  // 依赖方禁用之后，卸载放行
+  await manager.disable(id('inuse-consumer'));
+  await manager.uninstall(id('inuse-provider'));
+  await rejects(() => manager.status(id('inuse-provider')), 'PLUGIN_NOT_FOUND');
+});
+
+test('装载顺序：记录顺序把依赖方排在前面，startAll 仍按拓扑序（依赖先 init）', async () => {
+  const consumer = makePlugin('topo-consumer', `export function init(){}`, {
+    dependencies: { plugins: [{ id: '@spc/topo-provider' }] },
+  });
+  const provider = makePlugin('topo-provider', `export function init(){}`);
+  // 先装依赖方：它会因依赖未满足而失败（但记录已写入，且 enabled=true）
+  try {
+    await manager.install(consumer);
+  } catch {
+    /* 预期 */
+  }
+  await manager.install(provider);
+  await manager.stopAll('shutdown'); // 两者都卸载，enabled 保持 true
+
+  // 前提：记录顺序确实是"依赖方在前"——否则这个用例测不到拓扑排序
+  const order = loadRecords()
+    .plugins.map((p) => p.id)
+    .filter((i) => i.startsWith('@spc/topo-'));
+  assert.deepEqual(order, [id('topo-consumer'), id('topo-provider')]);
+
+  const rows = await withEnv({ SPC_PLUGIN_INIT_TIMEOUT_MS: '300' }, () => manager.startAll());
+  assert.equal(rows.find((r) => r.id === id('topo-consumer'))?.state, 'running');
+  assert.equal(rows.find((r) => r.id === id('topo-provider'))?.state, 'running');
+
+  // 顺序证据：审计里最后两次 init 必须是"提供方 → 依赖方"
+  const inits = auditEntries()
+    .filter((e) => e.method === 'lifecycle.init')
+    .filter((e) => e.pluginId === id('topo-consumer') || e.pluginId === id('topo-provider'))
+    .map((e) => e.pluginId);
+  assert.deepEqual(
+    inits.slice(-2),
+    [id('topo-provider'), id('topo-consumer')],
+    `依赖必须先 init，实际序列：${inits.join(' → ')}`,
+  );
+  await manager.stopAll('shutdown');
+});
+
+test('依赖已启用但没在跑（failed）→ PLUGIN_DEPENDENCY_NOT_LOADED，而不是 MISSING', async () => {
+  const broken = makePlugin('depbroken', `export function init(){ throw new Error('boom'); }`);
+  try {
+    await manager.install(broken);
+  } catch {
+    /* 预期失败：enabled=true 但 state=failed */
+  }
+  assert.equal(manager.status(id('depbroken')).enabled, true);
+  assert.equal(manager.status(id('depbroken')).state, 'failed');
+
+  const user = makePlugin('depbroken-user', `export function init(){}`, {
+    dependencies: { plugins: [{ id: '@spc/depbroken' }] },
+  });
+  let caught: unknown;
+  try {
+    await manager.install(user);
+  } catch (e) {
+    caught = e;
+  }
+  assert.ok(caught instanceof SpcError, '应被拒');
+  assert.equal((caught as InstanceType<typeof SpcError>).code, 'PLUGIN_DEPENDENCY_NOT_LOADED');
+  assert.equal((caught as InstanceType<typeof SpcError>).params.state, 'failed');
+});
+
+test('依赖环：环上插件直接判 failed（PLUGIN_DEPENDENCY_CYCLE），不互相报"依赖缺失"', async () => {
+  const x = makePlugin('cyc-x', `export function init(){}`, {
+    dependencies: { plugins: [{ id: '@spc/cyc-y' }] },
+  });
+  const y = makePlugin('cyc-y', `export function init(){}`, {
+    dependencies: { plugins: [{ id: '@spc/cyc-x' }] },
+  });
+  for (const dir of [x, y]) {
+    try {
+      await manager.install(dir);
+    } catch {
+      /* 预期：互为依赖时装不起来 */
+    }
+  }
+  await manager.stopAll('shutdown');
+
+  const rows = await withEnv({ SPC_PLUGIN_INIT_TIMEOUT_MS: '300' }, () => manager.startAll());
+  for (const pid of ['cyc-x', 'cyc-y']) {
+    const view = rows.find((r) => r.id === id(pid));
+    assert.equal(view?.state, 'failed', `${pid} 应为 failed`);
+    assert.equal(view?.lastError?.code, 'PLUGIN_DEPENDENCY_CYCLE', `${pid} 的错误码`);
+  }
+});
+
 // ---------------- 22 插件配置 ----------------
 
 test('插件配置：默认值填充、非法值被拒、ctx.config 是只读快照', async () => {

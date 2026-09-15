@@ -148,10 +148,92 @@ export class PluginManager {
     this.patchRecord(id, { state, ...(error === undefined ? {} : { lastError: error }) });
   }
 
-  private isDependencyReady = (id: string): boolean => {
+  // ---- 依赖图：装载顺序 + 反向依赖保护 ----
+  //
+  // 语义（plugin-lifecycle-design §5）：
+  //   · **依赖必须已装载**，不只是"已启用"——依赖没跑起来，依赖方不许起（否则它会跑在一个
+  //     它本不该能进入的状态里）；未安装/未启用 → MISSING，已启用但没在跑 → NOT_LOADED。
+  //   · **装载顺序依赖优先**（拓扑排序），环上的插件直接判失败而不是互相报"依赖缺失"。
+  //   · **反向保护**：被已启用插件依赖时，不许卸载／禁用。
+
+  /** 直接依赖的插件 id。清单读不出来时返回空并告警——一个坏插件不该阻塞别人的管理操作 */
+  private directDeps(record: PluginRecord): string[] {
+    try {
+      return (readManifestFromDir(record.dir).dependencies?.plugins ?? []).map((d) => d.id);
+    } catch (err) {
+      console.warn(
+        `[plugin] ${record.id} 清单不可读，依赖关系未知：${toErrorShape(err)?.code ?? 'INTERNAL'}`,
+      );
+      return [];
+    }
+  }
+
+  /** 依赖是否就绪；不就绪时给出**原因**，让装载期能报准确的码 */
+  private dependencyStatus = (
+    id: string,
+  ): { ok: true } | { ok: false; reason: 'missing' | 'not-loaded'; state?: string } => {
     const record = findRecord(loadRecords(), id);
-    return Boolean(record?.enabled);
+    if (!record || !record.enabled) return { ok: false, reason: 'missing' };
+    if (!this.loaded.has(id)) return { ok: false, reason: 'not-loaded', state: record.state };
+    return { ok: true };
   };
+
+  /** 哪些**已启用**的插件依赖它（用于反向保护） */
+  private enabledDependents(id: string): string[] {
+    const users: string[] = [];
+    for (const r of loadRecords().plugins) {
+      if (r.id === id || !r.enabled) continue;
+      if (this.directDeps(r).includes(id)) users.push(r.id);
+    }
+    return users.sort();
+  }
+
+  /** 被依赖时拒绝卸载／禁用：否则依赖方会毫无察觉地跑在"依赖已消失"的状态里 */
+  private assertNotInUse(id: string, action: 'uninstall' | 'disable'): void {
+    const dependents = this.enabledDependents(id);
+    if (dependents.length > 0) {
+      throw new SpcError('PLUGIN_IN_USE', {
+        pluginId: id,
+        dependents: dependents.join(', '),
+        action,
+      });
+    }
+  }
+
+  /**
+   * 拓扑排序（依赖优先）。
+   * 环上的插件单独返回：它们的依赖关系互相死锁，装载期永远无法满足——直接判失败，
+   * 比让它们各自报一个看不出所以然的 `PLUGIN_DEPENDENCY_MISSING` 清楚得多。
+   */
+  private resolveLoadOrder(records: PluginRecord[]): { order: PluginRecord[]; cyclic: Set<string> } {
+    const byId = new Map(records.map((r) => [r.id, r]));
+    const state = new Map<string, 'visiting' | 'done'>();
+    const order: PluginRecord[] = [];
+    const cyclic = new Set<string>();
+    const stack: string[] = [];
+
+    const visit = (id: string): void => {
+      const st = state.get(id);
+      if (st === 'done') return;
+      if (st === 'visiting') {
+        // 回边：栈上从该 id 起（含）的都在环里
+        const from = stack.indexOf(id);
+        if (from !== -1) for (const member of stack.slice(from)) cyclic.add(member);
+        return;
+      }
+      const record = byId.get(id);
+      if (!record) return; // 依赖不在本次装载集合里 → 交给装载期报 MISSING / NOT_LOADED
+      state.set(id, 'visiting');
+      stack.push(id);
+      for (const dep of this.directDeps(record)) visit(dep);
+      stack.pop();
+      state.set(id, 'done');
+      order.push(record);
+    };
+
+    for (const r of records) visit(r.id);
+    return { order, cyclic };
+  }
 
   // ---- 装载 / 卸载 ----
 
@@ -167,7 +249,7 @@ export class PluginManager {
     try {
       run = await loadPlugin(record, {
         limits: this.limits(),
-        isDependencyReady: this.isDependencyReady,
+        dependencyStatus: this.dependencyStatus,
         logger: (level, message) => console[level](`[${id}] ${message}`),
       });
       this.loaded.set(id, run);
@@ -305,6 +387,8 @@ export class PluginManager {
 
   disable(id: string): Promise<PluginView> {
     return this.withLock(async () => {
+      // 禁用同样会让依赖方失去依赖（`dependencyStatus` 要求"已启用且已装载"）→ 一并设防
+      this.assertNotInUse(id, 'disable');
       await this.stopAndUnload(id, 'disable');
       this.patchRecord(id, { enabled: false, state: 'disabled' });
       return this.status(id);
@@ -330,6 +414,8 @@ export class PluginManager {
       const record = findRecord(file, id);
       if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
       if (record.reserved) throw new SpcError('PLUGIN_RESERVED', { pluginId: id });
+      // 被别的（已启用）插件依赖时不许卸载：先禁用/卸载依赖方
+      this.assertNotInUse(id, 'uninstall');
       await this.stopAndUnload(id, 'uninstall');
       dropRecord(file, id);
       saveRecords(file);
@@ -379,7 +465,8 @@ export class PluginManager {
 
   /**
    * 启动时自动装载 enabled 的插件（§2）。
-   * 逐个 try/catch：**单插件失败不影响其它插件**；顺序按记录顺序（P1.5 不做拓扑排序）。
+   * **按依赖拓扑序装载**（依赖先起）；环上的插件直接判 failed，其余逐个 try/catch——
+   * 单插件失败不影响其它插件。
    */
   startAll(): Promise<PluginView[]> {
     return this.withLock(async () => {
@@ -394,8 +481,17 @@ export class PluginManager {
       }
       if (dirty) saveRecords(file);
 
-      for (const record of file.plugins) {
-        if (!record.enabled || this.loaded.has(record.id)) continue;
+      const pending = file.plugins.filter((r) => r.enabled && !this.loaded.has(r.id));
+      const { order, cyclic } = this.resolveLoadOrder(pending);
+
+      for (const id of cyclic) {
+        const error: PluginErrorRecord = { code: 'PLUGIN_DEPENDENCY_CYCLE', at: Date.now() };
+        this.setState(id, 'failed', error);
+        console.warn(`[plugin] ${id} 处在依赖环上，跳过装载（环成员：${[...cyclic].join(', ')}）`);
+      }
+
+      for (const record of order) {
+        if (cyclic.has(record.id) || this.loaded.has(record.id)) continue;
         try {
           await this.loadAndStart(record);
         } catch (err) {

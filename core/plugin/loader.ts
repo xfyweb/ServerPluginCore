@@ -25,8 +25,13 @@ export type StopReason = 'reload' | 'disable' | 'shutdown' | 'failed' | 'uninsta
 
 export interface LoadDeps {
   limits: PluginLimits;
-  /** 依赖是否已满足（manager 提供：已安装且 enabled） */
-  isDependencyReady(id: string): boolean;
+  /**
+   * 依赖是否就绪；不就绪时给出原因，好让这里报准确的码：
+   * `missing` = 未安装或未启用；`not-loaded` = 已启用但当前没在跑（例如它自己 failed）。
+   */
+  dependencyStatus(
+    id: string,
+  ): { ok: true } | { ok: false; reason: 'missing' | 'not-loaded'; state?: string };
   /** 插件日志出口 */
   logger?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
@@ -136,11 +141,19 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
   const manifest = readRecordManifest(record);
   const isTheme = (manifest.type ?? 'ability') === 'theme';
 
-  // 2) 依赖检查（P1.5：只查"已安装且 enabled"，顺序按记录顺序，不做拓扑排序）
+  // 2) 依赖检查（P1.5：只查直接依赖、不解析 version 区间；装载顺序由 manager 的拓扑排序保证）
+  //    「已启用」不够——依赖必须**已经在跑**，否则依赖方会进入一个它本不该能进入的状态
   for (const dep of manifest.dependencies?.plugins ?? []) {
-    if (!deps.isDependencyReady(dep.id)) {
+    const status = deps.dependencyStatus(dep.id);
+    if (status.ok) continue;
+    if (status.reason === 'missing') {
       throw new SpcError('PLUGIN_DEPENDENCY_MISSING', { pluginId: id, dependency: dep.id });
     }
+    throw new SpcError('PLUGIN_DEPENDENCY_NOT_LOADED', {
+      pluginId: id,
+      dependency: dep.id,
+      state: status.state ?? 'unknown',
+    });
   }
 
   // 数据目录由宿主创建并保证存在：这是插件唯一可写位置（也是 fs 权限点的作用域）

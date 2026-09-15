@@ -195,7 +195,8 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 ```
 装载（load + start）：
 1  记录存在？目录/入口存在？（P4 之后在此加：验签 + verifiedMeta 文件哈希校验）
-2  依赖检查：dependencies.plugins 声明的插件已安装且 enabled，否则 PLUGIN_DEPENDENCY_MISSING
+2  依赖检查：dependencies.plugins 声明的插件**已启用且已装载**，否则
+   PLUGIN_DEPENDENCY_MISSING（未安装 / 未启用）或 PLUGIN_DEPENDENCY_NOT_LOADED（已启用但没在跑）
 3  createSandbox(hostApi, { pluginId, permissions, grants }) → 施加 §4 四层限额
 4  runModule(bundle) → 取命名空间 → 校验导出契约（缺 init → PLUGIN_NO_ENTRY）
 5  依 manifest 登记能力（§3）→ 冲突/非法 → PLUGIN_EXPORT_INVALID（回滚）
@@ -204,11 +205,19 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 8  state = running（审计 lifecycle.start）
 
 卸载（stop + dispose）：
+0  **反向依赖检查**：被其它已启用插件依赖 → PLUGIN_IN_USE（先处理依赖方；disable 同样设防，
+   因为 disable 会让依赖方失去依赖）
 1  state = stopping
 2  stop(ctx)（幂等；超时 → PLUGIN_STOP_TIMEOUT，**强制继续**，绝不为一个插件卡住核心）
 3  撤销能力登记 → dispose 沙箱（Scope 顺序释放）
 4  state = stopped（审计 lifecycle.unload）
 ```
+
+**装载顺序 = 依赖优先（拓扑排序）**：
+
+- `startAll` 先对"已启用且未装载"的插件做拓扑排序，**依赖方排在依赖之后**；单插件路径（install / enable / reload）同样受"依赖必须已在跑"约束；
+- **环上的插件直接判 `failed`（`PLUGIN_DEPENDENCY_CYCLE`）**，而不是让它们各自报一个看不出所以然的"依赖缺失"——依赖死锁是配置错误，必须一眼能认出来；
+- 反向依赖保护与拓扑排序是一对：前者保证"依赖不会在依赖方运行期间消失"，后者保证"依赖方不会先于依赖起来"。
 
 **并发与失败隔离**：
 
@@ -217,7 +226,7 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 - **`stop` 抛错或超时都继续卸载**（只告警 + 审计）：绝不因一个插件卡住核心停机；
 - 卸载顺序固定：`stop` → 撤销能力登记 → `dispose`（Scope 顺序释放 handle）。
 
-**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_RESERVED`、`PLUGIN_FILE_MISMATCH`（P4 预留）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
+**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_RESERVED`、`PLUGIN_FILE_MISMATCH`（P4 预留）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
 
 ## 6. 安装记录（P1 最小版）
 
@@ -289,9 +298,11 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 
 ## 9. 明确不做（P1.5）
 
-- **依赖拓扑排序与版本区间解析**：P1 只检查"声明的插件已安装且 enabled"；顺序按记录顺序（P2 补）；
+- **依赖的版本区间解析**：`dependencies.plugins[].version` 字段已在 schema 里，但装载期**不读**它——只检查依赖是否存在、启用、已装载（P2 补）；
+- **依赖的传递检查**：只查直接依赖。B→A→C 时，C 的问题会先让 A 装载失败，B 随即以 `PLUGIN_DEPENDENCY_NOT_LOADED` 被拒——报错准确，但不是一次性给出完整依赖链；
 - **热重载注入**：`reload` = 整插件 stop → 重新 load（不做模块热替换）；
-- **插件间调用**：`dependencies.plugins` 目前只是可见性声明 + 依赖存在性检查，调用通道属 P2（事件总线 / 注册点）；
+- **插件间调用**：`dependencies.plugins` 目前只是可见性声明 + 依赖检查，调用通道属 P2（事件总线 / 注册点）；
+- **依赖失效的运行时通知**：A 在 B 运行期间被 reload（先 stop 后 load）时，B 不会收到任何事件——依赖图的一致性只在管理操作的那一刻检查（运行时通知要等事件总线，P2）；
 - **driver / theme / hook 的加载档**：P1.5 只做 `ability`（沙箱 / QuickJS）与 `theme`（无沙箱、只登记令牌）；driver 是核心侧进程（P2+），hook 待 ADR；
 - **自动重启的退避策略**：只做线性 `restartBackoffMs`；
 - **进程外隔离**：单进程内沙箱；子进程档与系统级沙箱见 ADR-005 §8 / exec-sandbox-design §3。
@@ -352,7 +363,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 10. **dispose 不崩**：钩子抛错 / 超时 / 提前 return 三种情况下 `dispose()` 都不命中 GC 断言（D1/D2 回归）；
 11. 记录：`install` 写记录、`enable/disable` 生效、启动时自动装载 `enabled` 插件；
 12. `failedRestart=auto`：连续失败 `maxRestartAttempts` 次后停在 `failed`，审计有 `attempts`；
-13. 依赖检查：声明未安装的插件 → `PLUGIN_DEPENDENCY_MISSING`；
+13. 依赖检查：声明未安装的插件 → `PLUGIN_DEPENDENCY_MISSING`；依赖已启用但没在跑 → `PLUGIN_DEPENDENCY_NOT_LOADED`；被依赖时卸载/禁用 → `PLUGIN_IN_USE`；依赖成环 → `PLUGIN_DEPENDENCY_CYCLE`；装载顺序按依赖拓扑序（依赖先 init）；
 14. 插件配置：缺省值填充、非法值被拒（`PLUGIN_CONFIG_INVALID`）、`ctx.config` 只读（插件写入无效、不污染宿主）；
 15. 能力登记幂等：连续两次 `reload` 后登记表与 `capabilities` 完全一致（撤销后重建，不叠加）；
 16. 并发：同时发起同一插件的两个 `load`/`reload` → 锁串行，终态一致且无重复登记；
@@ -428,4 +439,17 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 12. **daemon 启动即 `initAudit()`**：之前只有 `pnpm spike` 会探测审计目录，daemon 不会。审计目录不可写时 `audit()` 会静默退化成内存缓冲——运维会以为审计正常、实际读不到。现在两条入口都是 fail-closed。
 13. **fs 读取上限 1MB**（写入仍是 64MB）：读到的内容会变成沙箱内的 JS 字符串，而沙箱堆只有 32 MiB——给插件读一个 64MB 文件只会把 VM 撑爆并报成 `PLUGIN_MEMORY_LIMIT`（误导）。所以在宿主侧就按"能安全进 VM"的尺寸拒绝。
 
-**测试**：`pnpm test` **186 例全绿**（P1.5 新增 41 例：lifecycle 28 + hostapi 11 + manifest configSchema 2），`tsc --noEmit` 干净，`pnpm spike` 走通真实链路。
+### 14.1 依赖机制补强（P1.5a 后补）
+
+首版依赖检查只有一行：`Boolean(findRecord(id)?.enabled)`。补成一张真正的依赖图：
+
+| 补的东西 | 语义 | 错误码 |
+|---|---|---|
+| **依赖必须已装载**（不只是"已启用"） | 依赖没跑起来，依赖方不许起——否则它会进入一个本不该能进入的状态 | `PLUGIN_DEPENDENCY_NOT_LOADED`（含 `state` 参数，便于直接看出"是它自己 failed"） |
+| **反向依赖保护** | 被**已启用**插件依赖时，不许 `uninstall`／`disable`（disable 同样让依赖方失去依赖） | `PLUGIN_IN_USE`（含 `dependents` 参数，直接告诉管理员该先处理谁） |
+| **拓扑排序装载** | `startAll` 对"已启用且未装载"的集合做拓扑排序，**依赖先 init** | — |
+| **依赖环检测** | 环上插件直接判 `failed`，而不是互相报"依赖缺失"（死锁是配置错误，要一眼认出来） | `PLUGIN_DEPENDENCY_CYCLE` |
+
+**仍不做**（见 §9）：版本区间解析、传递依赖的完整链式报告、依赖失效的运行时通知。
+
+**测试**：`pnpm test` **190 例全绿**（lifecycle 32 + hostapi 11 + manifest 24 + exec/sandbox/signature/cli-e2e 等），`tsc --noEmit` 干净，`pnpm spike` 走通真实链路。
