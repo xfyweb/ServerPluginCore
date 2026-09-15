@@ -81,7 +81,8 @@
 5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
 6. **官方模块仿真**（docs/module-emulation-design.md）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖——P2-A 纯计算模块（path/util/events/assert/url）+ 桥契约（信封/对象化/异步 await）+ 构建期 builtin 校验；P2-B `node:fs`/`fs/promises`/`process`/`os`（作用域=数据目录 + errno 映射）；P2-C 最小 `buffer`/`crypto` 摘要。**交付物**：`core/sandbox-modules/<name>.js`（一模块一文件）+ `core/sandbox.ts` 的 loader 注册表（骨架已在 P1 落成）+ 各模块行为对齐测试；
 7. **权限档位落地**（intent-capture §8.1/§8.2）：`PermissionPoint.grant` 三档（`auto` / `install` / `explicit`）+ 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）+ 判定链第 3 步改为"**仅 `explicit` 需逐点授予**"（`auto`/`install` 审计记 `installed-grant`）；升级新增的 `install`/`explicit` 点走**增量同意**；
-8. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
+8. **CLI 完善**（依赖管理约定的后半，plugin-lifecycle-design §5）：① **维护模式守护进程**——主进程停止时由 CLI 临时拉起，不触发装载、只处理 CLI 事件、30 秒无交互自动退出；② 卸载/禁用的**依赖树级联确认**（最多向下追溯 3 层，确认后连带**禁用**依赖方）；
+9. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
 - 验收：恶意依赖（含原生模块）构建失败；L2 用户放行 + 审计生效；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）；**权限档位判定**——`auto`/`install` 免逐点授予、`explicit` 未授予 → `NOT_GRANTED`、`scope: self` + `grant: explicit` 注册报 `SCOPE_GRANT_INVALID`。
 
 ## P3：核心 Web Shell + 主题系统 + 插件前端容器

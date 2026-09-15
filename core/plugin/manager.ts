@@ -178,19 +178,29 @@ export class PluginManager {
     return { ok: true };
   };
 
-  /** 哪些**已启用**的插件依赖它（用于反向保护） */
-  private enabledDependents(id: string): string[] {
+  /**
+   * 哪些**正在运行**的插件依赖它 —— 反向保护的判据。
+   *
+   * 为什么看"运行态"而不是记录里的 `enabled`：
+   * 保护要防的是"依赖方正在跑、依赖却被抽走"这件事。谁没在跑，就没有谁的运行会被悄悄打断。
+   * 于是维护模式（不装载任何插件）**天然**没有阻拦——不需要"跳过检查"的开关：
+   * 维护模式是**启动形态**（启不启动插件），不是**校验开关**（检查要不要执行）；
+   * 检查在任何形态下都照常执行，只是在不装载的形态下它没有对象可拦。
+   */
+  private activeDependents(id: string): string[] {
+    const file = loadRecords();
     const users: string[] = [];
-    for (const r of loadRecords().plugins) {
-      if (r.id === id || !r.enabled) continue;
-      if (this.directDeps(r).includes(id)) users.push(r.id);
+    for (const loadedId of this.loaded.keys()) {
+      if (loadedId === id) continue;
+      const record = findRecord(file, loadedId);
+      if (record && this.directDeps(record).includes(id)) users.push(loadedId);
     }
     return users.sort();
   }
 
-  /** 被依赖时拒绝卸载／禁用：否则依赖方会毫无察觉地跑在"依赖已消失"的状态里 */
+  /** 被运行中的插件依赖时拒绝卸载／禁用：否则它会毫无察觉地失去依赖 */
   private assertNotInUse(id: string, action: 'uninstall' | 'disable'): void {
-    const dependents = this.enabledDependents(id);
+    const dependents = this.activeDependents(id);
     if (dependents.length > 0) {
       throw new SpcError('PLUGIN_IN_USE', {
         pluginId: id,

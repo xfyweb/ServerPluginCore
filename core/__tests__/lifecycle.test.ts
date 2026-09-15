@@ -466,7 +466,7 @@ test('依赖检查：声明的插件未安装 → PLUGIN_DEPENDENCY_MISSING', as
   await manager.disable(id('dep-provider'));
 });
 
-test('反向依赖：被 enabled 插件依赖时，uninstall / disable 都被拒（PLUGIN_IN_USE）', async () => {
+test('反向依赖：被运行中的插件依赖时，uninstall / disable 都被拒（PLUGIN_IN_USE）', async () => {
   const provider = makePlugin('inuse-provider', `export function init(){}`);
   const consumer = makePlugin('inuse-consumer', `export function init(){}`, {
     dependencies: { plugins: [{ id: '@spc/inuse-provider' }] },
@@ -494,6 +494,26 @@ test('反向依赖：被 enabled 插件依赖时，uninstall / disable 都被拒
   await manager.disable(id('inuse-consumer'));
   await manager.uninstall(id('inuse-provider'));
   await rejects(() => manager.status(id('inuse-provider')), 'PLUGIN_NOT_FOUND');
+});
+
+test('反向保护只管运行态：全部卸载后（维护态）同一个卸载操作放行', async () => {
+  const provider = makePlugin('maint-provider', `export function init(){}`);
+  const consumer = makePlugin('maint-consumer', `export function init(){}`, {
+    dependencies: { plugins: [{ id: '@spc/maint-provider' }] },
+  });
+  await manager.install(provider);
+  await manager.install(consumer);
+  // 运行中 → 拦
+  await rejects(() => manager.uninstall(id('maint-provider')), 'PLUGIN_IN_USE');
+
+  // 全部停掉（= 维护模式守护进程的形态：不装载任何插件）→ 不拦。
+  // 注意 enabled 仍是 true：判据是"有没有在跑"，不是记录里的意图。
+  await manager.stopAll('shutdown');
+  assert.equal(manager.status(id('maint-consumer')).enabled, true);
+  await manager.uninstall(id('maint-provider'));
+  await rejects(() => manager.status(id('maint-provider')), 'PLUGIN_NOT_FOUND');
+
+  await manager.disable(id('maint-consumer'));
 });
 
 test('装载顺序：记录顺序把依赖方排在前面，startAll 仍按拓扑序（依赖先 init）', async () => {
