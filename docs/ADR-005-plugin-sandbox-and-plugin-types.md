@@ -58,8 +58,8 @@
 **注入面 = 安全边界**（沙箱里插件只能碰到注入的东西）：
 
 - 显式声明"提供哪些标准模块子集"与"明确拦截哪些"（QuickJS 里本无 require/process，注入什么就是什么）；
-- 高权类操作（exec/网络/pty）不走沙箱内实现，只走 `@host/api` 模板；
-- 第一版表面最小化：`@host/api`（exec 模板、fs、kv、timers、events）+ 纯计算 ESM 依赖白名单；不提供 net 裸 socket、子进程、原生模块。
+- 高权类操作（exec/网络/pty）不走沙箱内实现，只走 `@host/api`——**exec 与网络走模板或驱动插件端点（核心不长网络原语，见 api-contract §4 / intent-capture §6.3）**；
+- 第一版表面最小化：`@host/api`（exec 模板、fs、kv、timers、events）+ 纯计算 ESM 依赖白名单；不提供 net 裸 socket、子进程、原生模块，**也不设 `net.*` API**。
 
 ### 6. 构建层 hook（编译期不可达）—— 依赖管控的执行点
 

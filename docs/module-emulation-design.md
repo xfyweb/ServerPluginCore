@@ -158,7 +158,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 1. **静态扫描 builtin 依赖**：构建层解析依赖图，收集所有 `node:*` / 裸内建模块引用，与本文件的登记表比对；
    - 未登记 → **构建失败**（而不是"构建通过、运行时报 module not allowed"）；
-2. **CJS 依赖的 `require('fs')`**：依赖若是 CJS，esbuild 打成 ESM 时可能保留 `require` 调用或注入 `__require` 兜底。构建层需验证并按需提供映射到 loader 的 shim（**实现细节待 P2-A 验证后落定**，不在此处假设 esbuild 行为）；
+2. **CJS 依赖的 `require('fs')`**：**已实测，结论见 build-layer-design §7** —— esbuild 在 `platform: node` 下把它转成 `__require("fs")` 兜底**留在产物里**，**构建不会失败**，运行期才炸。因此构建层必须有两道闸：① resolve 插件把**已登记**的内建重定向到仿真模块；② **产物断言**不允许 `__require` / `require(` 的调用残留（沙箱里没有 `require`，任何残留都说明有东西没被静态解析）；
 3. **ESM-only 与依赖三层**（ADR-005 §4/§7）不变：L1 平台托管、L2 用户放行、L3 禁区；
 4. **构建产物里不出现未登记的内建引用**可作为 CI 断言（与 `verify-no-bare-dispatcher` 同类的门禁思路）。
 

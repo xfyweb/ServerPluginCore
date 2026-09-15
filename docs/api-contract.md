@@ -105,7 +105,9 @@ interface EventResult {
 - **返回值约定**：除 `exec.run` 外的组由沙箱侧做 JSON 解码，插件拿到真值（对象/数组/布尔），不需要自己 `JSON.parse`；
 - **命名约定**：权限点 = 方法名（同样的字符串让插件作者一眼看懂要哪几个点），差别只出现在"同一方法因目标不同而敏感度不同"的场合（`exec.run` 的动态模板点）。
 
-**核心不提供**（由驱动插件经扩展注册点提供，见 §10）：db 连接代理、SSH、Docker 客户端、net 裸 socket、pty、媒体处理。
+**核心不向插件暴露网络原语**：不仿真 `node:net`/`http`/`dns`/`tls`、不提供裸 socket、**也不设 `net.*` API**。db 连接代理、SSH、Docker 客户端、pty、媒体处理同样**由驱动插件经扩展注册点提供**（见 §10）。插件出网只有两条路：**`exec` 模板**（核心）与**驱动插件注册的端点**（插件），两条都是显式权限点（intent-capture §6.3）。
+
+> 注意区分：**核心自身有出网**——市场下载与密钥状态文档拉取（plugin-signature-design §6 的 `GET https://{origin}/.well-known/spc-key-status`）。那是核心的运维行为，与插件能力面无关，也不出现在权限注册表里。
 
 ## 4.1 命令执行任务模型（参考 MCSManager）
 
@@ -232,7 +234,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 4  通过 → 作用域与参数校验在各方法内层（auto / install 通过时审计记 installed-grant）
 ```
 
-- `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / 未来 `net.*` / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
+- `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / **出网类权限点（exec 模板或驱动插件注册的端点）** / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；
 - **声明可用通配，授予不可**：manifest 声明可写 `docker.*` / `*` 图省事；**管理员的授予必须是具体权限点**（不允许通配，防止一次点击等于全授）；
 - 插件 manifest 声明的是"请求"（uses-permission）；宿主按"`scope` + `grant` 档 + 管理员逐点授予"做出"批准"（请求/批准分离，Android 模型）；

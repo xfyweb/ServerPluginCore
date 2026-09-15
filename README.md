@@ -142,6 +142,7 @@ flowchart LR
 |---|---|
 | [意图捕获与双通道权限](docs/intent-capture.md) | 用户意图的信任根、grantId、声明式/iframe 前端、CSP 零出网、**默认安全边界** |
 | [exec 沙箱与模板注册制](docs/exec-sandbox-design.md) | 模板来源与命名空间、双层安全模型、E1–E10 静态校验 |
+| [构建层设计](docs/build-layer-design.md) | 打包流水线：esbuild 配置决策（**实测依据**）、依赖闭包与 tier 判定、内建校验两道闸、产物元数据（P2） |
 | [接口审计：exec + fs](docs/interface-audit-exec-fs.md) | 危险接口的威胁建模清单 |
 | [签名与源设计](docs/plugin-signature-design.md) | 元数据规范化签名、keyring、链式密钥轮换 |
 | [manifest 设计](docs/manifest-design.md) | 清单字段与权限声明（Android 权限系统参考） |

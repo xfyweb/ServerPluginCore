@@ -75,7 +75,7 @@
 ## P2：命令任务模型 + 构建层 + 驱动插件
 
 1. **命令执行任务模型**（api-contract §4.1，参考 MCSManager）：exec.spawn → TaskHandle（wait/output/kill）、世代号防竞态、取消三层链（杀进程树）、优雅停止契约、输出环形缓冲 + 截断标记；**进程管理器**（process.* 组：长驻进程状态机 + 崩溃自动重启）——MC 管理场景的落地；
-2. **构建流水线**：依赖图静态解析 → 白名单校验（禁原生模块/禁用模块）→ esbuild ESM bundle → 生成元数据 + 签名（plugin-signature-design.md §2–§5）；依赖三层（L1 平台托管 / L2 用户放行 / L3 禁区）落地；
+2. **构建流水线**（设计见 **docs/build-layer-design.md**）：依赖闭包静态解析（含传递）→ 内建登记表校验（两道闸：resolve 重定向 + 产物断言）→ esbuild 单文件 ESM bundle → 元数据（逐文件哈希）；依赖三层（L1 白名单 / L2 用户放行 / L3 拒）落地。**esbuild 行为已实测**（build-layer-design §7：`platform: node` 会把内建 externalize、CJS 残留 `__require` 且不报错）；
 3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，协作插件地基）；
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
 5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
