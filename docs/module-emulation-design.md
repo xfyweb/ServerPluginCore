@@ -48,7 +48,7 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | **P2-B** | `node:fs` + `node:fs/promises` | `fs.read.data` / `fs.write.data` | 作用域 = 插件数据目录（+ 显式授予的额外目录）；errno 映射见 §7 |
 | P2-B | `node:process` | 只读 | 冻结子集：`platform` / `arch` / `version` / `versions`（仿真值）/ `nextTick` / `env`（默认空，§13-1） |
 | P2-B | `node:os` | 只读 | `platform` / `arch` / `EOL` / `tmpdir`（宿主值） |
-| **P2-C** | `node:buffer` | 无 | 最小 `Buffer`：`from` / `alloc` / `concat` / `toString(enc)` / `write`；编码 `utf8`/`base64`/`hex`（**注：不少纯 JS 依赖在加载期即使用 `Buffer`，若真实需求提前出现，可把 Buffer 提前到 P2-A/P2-B**） |
+| **P2-B** | `node:buffer` | 无 | 最小 `Buffer`：`from` / `alloc` / `concat` / `toString(enc)` / `write`；编码 `utf8`/`base64`/`hex`。**已定提前到 P2-B（原 P2-C），随 `fs` 的二进制读写一起**——理由：构建期口径低估了它（只要求"引用了就得有"），而它是二进制的通用货币，`fs` 一支持二进制就必然需要 |
 | P2-C | `node:crypto` | `crypto.hash`（待注册） | 只做摘要（sha256/md5）与 `randomUUID`；加密原语走宿主，不在沙箱内自实现 |
 | 后置 | `node:stream` / `node:zlib` / `node:string_decoder` … | 视需求 | 按真实插件需求逐块评估，一律"先登记后可用" |
 
@@ -80,6 +80,13 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 
 **一条必须搭配的约束**：仿真模块**必须可内联**（静态、无构建期占位符、能力运行时从全局取）——
 见 §5 规则 2 的修订要求与 build-layer-evidence §4.2。
+
+**两条原待定项已定（2026-09）**
+
+| 问题 | 决定 | 落点 |
+|---|---|---|
+| **`Buffer` 要不要提前** | **提前到 P2-B**，随 `fs` 的二进制读写一起（构建期口径低估了它） | §3 清单已改 |
+| **`fs` 回调风格要不要支持** | **支持**（薄包装，非第二套实现）；必须照做"回调不同步触发" | §8 |
 
 ## 4. specifier 规则
 
@@ -169,6 +176,12 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 ```
   `fs.promises.*` 与将来的网络类能力都依赖这条；实现时必须验证 asyncify 下 Promise 挂起与错误路径（P2-A 的验收项之一）。
 
+- **回调风格（已定，2026-09）：支持**。Node 的 `fs.readFile(p, cb)` 与 `fs.promises.readFile(p)` 并存
+  （callback 风格要支持，否则一批老包直接不可用），而**回调不是第二套实现，是薄包装**：
+  宿主侧只实现一份桥，回调形式 = 调桥 + 把结果排进微任务再回调。
+  **必须照做"回调不同步触发"**——这是 Node 的保证，某些依赖的时序假设建立在这上面；
+  同步触发会让它们在 Node 上能跑、在沙箱里出错（属静默行为差异，见 build-layer-evidence §2.6 的同类问题）。
+
 ## 9. 不可仿真项与替代
 
 | 做不到 | 替代 |
@@ -206,7 +219,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 |---|---|---|
 | **P2-A** | `node:path` / `util` / `events` / `assert` / `url` 五个纯计算模块；桥契约（信封 + 对象化 + 异步 await）；loader 归一化（`node:` 前缀/裸名/`fs/promises`）；构建层 builtin 静态校验 | 纯 JS 依赖（只用官方模块）能在沙箱内跑通；未登记模块构建期失败 |
 | **P2-B** | `node:fs` + `node:fs/promises`（作用域=数据目录、errno 映射）、`node:process` / `node:os` 只读子集 | `mkdirp`/`glob` 一类只用 fs+path+events 的依赖跑通；越界与未授权均 `EACCES`；审计完整 |
-| **P2-C** | 最小 `node:buffer`、`node:crypto` 摘要 | 二进制读写（base64/hex）与摘要用例通过；依赖探测 `Buffer` 的分支不崩 |
+| **P2-C** | 最小 `node:crypto` 摘要（`node:buffer` 已提前到 P2-B，见 §3） | 二进制读写（base64/hex）与摘要用例通过；依赖探测 `Buffer` 的分支不崩 |
 | 后续 | `stream` / `zlib` / `string_decoder` … 按真实插件需求逐块评估 | 每个新模块：本文件登记 + 权限映射 + 对齐测试 |
 
 ## 13. 待定项（评审时逐条定）
