@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Plugin-driven server management core (spike)",
+  "packageManager": "pnpm@12.4.1",
   "scripts": {
     "spike": "tsx core/main.ts",
     "daemon": "tsx core/server.ts",
