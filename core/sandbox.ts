@@ -140,6 +140,12 @@ export type HostArg = string | Uint8Array;
  * 所以这里用 `new Uint8Array(view)`：走 TypedArray 构造（复制），与 Buffer 的原型无关。
  */
 function toExactBytes(result: unknown): ArrayBufferLike {
+  // 声明了 `binaryResult` 就必须真的返回字节：宿主实现写错时**抛错**，
+  // 不能静默退化成"零字节"——那会把一个实现缺陷变成沙箱里的垃圾数据
+  // （破坏"ArrayBuffer=数据 / 字符串=错误"这条契约）。
+  if (!(result instanceof Uint8Array) && !(result instanceof ArrayBuffer)) {
+    throw new SpcError('INVALID_ARGS', { reason: 'binary-result-not-bytes', got: typeof result });
+  }
   const view = result instanceof Uint8Array ? result : new Uint8Array(result as ArrayBufferLike);
   if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) return view.buffer;
   return new Uint8Array(view).buffer;
@@ -360,6 +366,18 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           try {
             view = vm.getArrayBuffer(h);
           } catch {
+            // **失败路径也要落审计**：不落的话插件可以制造任意多次不可见交互，
+            // 破坏"每个宿主调用一条审计"这条不变量。
+            audit({
+              ts: Date.now(),
+              pluginId: options.pluginId,
+              method: name,
+              target: undefined,
+              paramsDigest: digest(name),
+              result: 'error',
+              error: { code: 'INVALID_ARGS', paramsDigest: digestParams({ reason: 'binary-arg-not-arraybuffer' }) },
+              durationMs: Date.now() - start,
+            });
             return vm.newString(
               hostErrorPayload('INVALID_ARGS', { reason: 'binary-arg-not-arraybuffer' }),
             );
@@ -388,7 +406,10 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
-            target: typeof strings[0] === 'string' ? strings[0] : undefined,
+            // **不落明文**：这一支是"权限点解析失败"，`strings[0]` 完全由插件控制
+            // （exec.run 的命令行里可能有路径/凭据），与 audit.ts「不落明文参数」的策略相矛盾。
+            // 需要复盘时用 paramsDigest 关联；能给出权限点的地方（下面那支）才写 target。
+            target: undefined,
             paramsDigest: callDigest,
             result: 'denied',
             permission: { decision: 'deny', code: shape.code, paramsDigest: digestParams(shape.params) },
