@@ -63,7 +63,7 @@
   ],
 
   "dependencies": {
-    "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ],
+    "npm": [ { "name": "zod", "version": "3.x" } ],
     "plugins": [ { "id": "@xfy2412/docker-driver", "version": ">=0.1.0" } ]
   }
 }

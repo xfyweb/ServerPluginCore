@@ -270,7 +270,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
       "subscribe": [ { "topic": "docker.container.crash", "mode": "notify" } ]
     }
   },
-  "dependencies": { "npm": [ { "name": "zod", "version": "3.x", "tier": "whitelist" } ], "plugins": [] }
+  "dependencies": { "npm": [ { "name": "zod", "version": "3.x" } ], "plugins": [] }
 }
 ```
 

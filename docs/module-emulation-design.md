@@ -146,7 +146,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 | 做不到 | 替代 |
 |---|---|
-| 原生模块（`.node`） | L3 禁区（ADR-005 §7）：由驱动插件在核心侧提供 `@host/api` 端点 |
+| 原生模块（`.node`） | **构建期失败**（ADR-005 §7）：由驱动插件在核心侧提供 `@host/api` 端点 |
 | `child_process` | exec 模板（interface-audit-exec-fs.md / exec-sandbox-design.md） |
 | `worker_threads` | 不做；重计算拆成多次宿主调用或由驱动插件承担 |
 | 真 `Buffer`（C++） | 最小纯 JS 实现（§3 P2-C）：只保证常见编码与操作 |
@@ -158,8 +158,9 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 1. **静态扫描 builtin 依赖**：构建层解析依赖图，收集所有 `node:*` / 裸内建模块引用，与本文件的登记表比对；
    - 未登记 → **构建失败**（而不是"构建通过、运行时报 module not allowed"）；
-2. **CJS 依赖的 `require('fs')`**：**已实测，结论见 build-layer-design §7** —— esbuild 在 `platform: node` 下把它转成 `__require("fs")` 兜底**留在产物里**，**构建不会失败**，运行期才炸。因此构建层必须有两道闸：① resolve 插件把**已登记**的内建重定向到仿真模块；② **产物断言**不允许 `__require` / `require(` 的调用残留（沙箱里没有 `require`，任何残留都说明有东西没被静态解析）；
-3. **ESM-only 与依赖三层**（ADR-005 §4/§7）不变：L1 平台托管、L2 用户放行、L3 禁区；
+2. **CJS 依赖的 `require('fs')`**：**已实测**——esbuild 在 `platform: node` 下会把它降级成"运行期兜底"**留在产物里**，且**构建不会失败**。因此构建层必须有两道闸：① resolve 插件对**未登记内建**直接报错、对**已登记内建内联仿真正文**（实测：标 external 对 CJS 形态无效，会退化成兜底调用）；② **产物断言**——判据是标记字符串 `"Dynamic require of "`（朴素正则 `__require(` 会误报辅助函数的定义行）。完整证据与方法见 **docs/build-layer-evidence.md**；
+3. **ESM-only 不变**（ADR-005 §4）；**依赖不分级**（ADR-005 §7 v2）——内联是当前唯一路径。
+   L1 里混着的"平台托管"是**模块供给机制**（不是政策档位），取消分级时被连带丢掉，**属未排期的社区讨论项**（ADR-005 §7 v3 补记）；
 4. **构建产物里不出现未登记的内建引用**可作为 CI 断言（与 `verify-no-bare-dispatcher` 同类的门禁思路）。
 
 ## 11. 测试策略

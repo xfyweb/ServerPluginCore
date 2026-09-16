@@ -1,7 +1,7 @@
 # 构建层设计（打包流水线）
 
-- 状态：**设计基线**（P2-2；§7 的实测结论已验证，其余为实现契约）
-- 关联：ADR-005 §6/§7（构建层 hook + 依赖三层）、plugin-signature-design §2–§5（元数据与签名）、module-emulation-design §10（builtin 联动）、plugin-lifecycle-design（产物如何被装载）、ROADMAP P2-2
+- 状态：**设计基线**（P2-2；§2 按 v2 修正重写，§7 的实测结论已验证，其余为实现契约）
+- 关联：ADR-005 §6/§7（构建层 hook + 依赖管控）、**build-layer-evidence.md（实测证据与方法）**、plugin-signature-design §2–§5（元数据与签名）、module-emulation-design §10（builtin 联动）、plugin-lifecycle-design（产物如何被装载）、ROADMAP P2-2
 - 定位：回答"**插件怎么从源码变成一个能装、能跑、可审查的单文件产物**"。
 
 ## 0. 一句话
@@ -12,8 +12,8 @@
 
 **目标**
 
-- `pnpm build:plugin <目录>` → `dist/bundle.js` + `plugin.meta.json`；
-- 依赖闭包**静态解析 + tier 判定 + 内建登记表校验**，违规**构建失败**（不是运行期拒绝）；
+- `pnpm build:plugin <目录>` → 产物目录（`bundle.js` + 清单文件；**不产出 `plugin.meta.json`**，见 §2）；
+- 依赖闭包**静态解析 + 内建登记表校验**，违规**构建失败**（不是运行期拒绝）；
 - 产物可被现有 `spc plugin install` 装载（`plugin-lifecycle-design` 不改契约）。
 
 **非目标（本阶段不做）**
@@ -25,34 +25,28 @@
 
 ## 2. 产物形态
 
-```
-dist/
-├── bundle.js         单文件 ESM 产物（沙箱按源码文本加载，见 plugin-lifecycle-design §1.1）
-└── plugin.meta.json  元数据（供安装流与签名使用）
-```
+**构建层不产出元数据。** `plugin.meta.json` 是**市场来源校验**的载体（逐文件哈希 + 市场签名），
+属 P4 发布/签名流程。本地构建的包没有"来源"可言，也就没有元数据——这与"本地安装不验签"一致。
 
-`plugin.meta.json`（与 plugin-signature-design §2 对齐）：
+产物目录的布局**遵循 plugin-signature-design §2**：清单与载荷同级，将来 zip 一下就是 `.spc` 容器的载荷部分。
 
-```jsonc
-{
-  "metaSchema": 1,
-  "id": "@xfy2412/sample",
-  "version": { "code": 1, "name": "0.0.1" },
-  "entry": "bundle.js",
-  "files": [{ "path": "bundle.js", "sha256": "…", "bytes": 12345 }],
-  "dependencies": {
-    "npm": [{ "name": "zod", "resolved": "4.6.5", "tier": "whitelist" }],
-    "builtins": [{ "specifier": "node:path", "module": "path", "registered": true }]
-  },
-  "build": { "tool": "esbuild", "version": "0.28.2", "target": "es2022", "platform": "node" }
-}
+```
+dist/                     ← 发布容器根（将来打包成 .spc 的内容）
+├── manifest.json         清单：作者声明 + **构建器写入的产物事实**
+└── bundle.js             单文件 ESM 产物（沙箱按源码文本加载，见 plugin-lifecycle-design §1.1）
 ```
 
-要点：
+**新增的条目写进清单文件，不写进元数据**（v2 修正）。由构建器写入的**产物事实**：
 
-- `dependencies.npm[].resolved` 记**实际解析到的版本**（不是 manifest 里写的区间）——"装的是哪个版本"必须可追溯，否则用户放行的"插件+版本"没有落点；
-- `dependencies.builtins` 是**审查面**：让管理员一眼看到"这个插件用到了哪些宿主仿真模块"；
-- `build` 段记录构建参数，为将来的可复现验证留位。
+| 事实 | 来源（关键：都不是作者声明的） | 用途 |
+|---|---|---|
+| `dependencies.npm[].resolved` | 构建器解析出的**真实版本**（不是 manifest 里写的区间） | 与作者声明比对，**不一致 → 构建失败**；于是声明从装饰性字段变成**可校验**字段 |
+| 已登记内建的使用清单 | 第一道闸的判定结果 | **审查面**：一眼看到"这个插件用到了哪些宿主仿真模块" |
+| 真实依赖闭包 + 体积 | 构建器算出（不读声明） | 透明与归因 |
+
+> **为什么这样分**：元数据被市场签名，是**来源**的证据；清单是**产物自己**的描述。
+> 把"产物事实"放清单，是因为它是**构建器算出来的**——正好落在 ADR-005 §6 的原则上：
+> **事实来源是构建器，不是 manifest 里的手写字段**。
 
 ## 3. esbuild 配置决策（**基于 §7 实测**）
 
@@ -133,18 +127,20 @@ await esbuild.build({
 ## 6. 与签名、装载的关系
 
 - 元数据**逐文件哈希**覆盖 `bundle.js`（`core/sources/canonical.ts` 已落地）→ 签名后篡改产物即可发现；
-- **但哈希只能证明"文件没被改"，不能证明"产物与声明的依赖图一致"**——声明 `zod@L1` 却打包别的东西，哈希看不出来。这块的缺口与处置见 §9-1；
+- **但哈希只能证明"文件没被改"，不能证明"产物与声明的依赖图一致"**——声明 `zod@3` 却打包了别的版本，哈希看不出来。**处置**（§2）：构建器把**真实闭包**与 `resolved` 写进清单，使声明**可校验**；哈希管"没被改"，构建器管"与声明一致"，两者互补；
 - 装载侧**不改契约**：`plugin-lifecycle-design` 的入口解析已支持"记录/清单指定的入口"，本层只让 `entry` 指向 `dist/bundle.js`。
 
 ## 7. 实测记录（esbuild 行为，2026-09）
 
 **为什么必须实测**：module-emulation-design §10-2 原本标着"实现细节待 P2-A 验证后落定，**不在此处假设 esbuild 行为**"。这份实测就是那个验证。
 
-**方法**：仓库外临时目录装真实包，跑参数矩阵，扫描产物里的标记。
+> 本节是**摘要**。完整数据、方法与"哪些结论后来被实测推翻"见 **docs/build-layer-evidence.md**；工具在 `tools/`（`esbuild-probe.mjs` / `gate-probe.mjs` / `dep-survey.mjs`），可重跑复核。
+
+**方法**：跑具名脚本 `node tools/esbuild-probe.mjs`（自包含样本，不再需要手工造临时目录）。
 
 ```bash
-npm install zod nanoid debug esbuild --registry=https://registry.npmmirror.com
-node bundle-probe.mjs
+node tools/esbuild-probe.mjs     # 参数矩阵（§1）
+node tools/gate-probe.mjs        # 两道闸的可行性（§3）
 ```
 
 样本与选它的理由：
@@ -170,7 +166,8 @@ node bundle-probe.mjs
 **四条结论**
 
 1. **`platform: node` 会把内建 externalize，构建静默通过**（`node:fs` 只留 100B 产物）→ 若用它而不加第二道闸，"构建期即失败"就是空话；
-2. **CJS 包的内建引用不会让构建失败**：`debug` 在 `node` 下产出 `__require("tty")` —— 这是 esbuild 的 CJS→ESM 兜底，**运行期才会炸**。这就是 §5 第二道闸存在的理由，也是 §10-2 那个 TODO 的答案：**会残留，且不报错，所以必须扫产物**；
+2. **CJS 包解析不到的引用不会让构建失败**：esbuild 在 `node` 下把它降级成运行期兜底调用，**连 warning 都不给**（实测 `warnings` 为空）。
+   **⚠️ 修正（v2）**：这里原本的表述把"内建"和"可选依赖"混为一谈——**未登记内建其实被第一道闸拦得住**（`onResolve` 对 try/catch 里的 `require` 同样触发，报错带依赖包内的行号）。真正只能靠第二道闸的只有两类：**解析不到的非内建可选依赖** 与 **动态 `require`**。详见 build-layer-evidence §2/§3；
 3. **`browser` 的"能通过"是假象**：debug 的 `require('tty')` 之所以消失，是因为它按 `browser` 条件走了 `./browser.js`——**包被静默换了实现**。构建通过 ≠ 语义一致；
 4. **原生模块的"必失败"是配置的产物，不是自动保证**：失败原因是 `No loader is configured for ".node"`——一旦有人为了让它过而配上 `.node` 的 loader，它就会被内联成二进制数据、构建通过。**必须把"esbuild 配置里永远不出现 `.node` loader"写成硬约束并加测试守住。**
 
@@ -182,18 +179,25 @@ node bundle-probe.mjs
 |---|---|---|
 | 1 | 样板插件经**构建产物**走通 install → 装载 → init/start（`pnpm spike` 从"源码 transform"改为"读产物"） | ✅ |
 | 2 | 一个 `import 'node:fs'` 的插件 → **构建期失败**（登记表里现在没有 fs） | ✅ 规则现在就成立 |
-| 3 | 一个引入 CJS 包（内部 require 内建）的插件 → **构建期失败**（靠第二道闸） | ✅ |
+| 3 | 一个引入 CJS 包（内部 `require` 未登记内建）的插件 → **构建期失败**（靠**第一道闸**，报错带行号） | ✅ |
 | 4 | 一个引入 `.node` 的插件 → 构建期失败 | ✅ |
-| 5 | 产物元数据可被 `spc plugin install` 消费（入口指向 `dist/bundle.js`） | ✅ |
-| 6 | 同一输入两次构建产出**字节一致** | ✅ |
-| 7 | `pnpm test` 全绿 | ✅ |
+| 5 | 一个带 try/catch 可选依赖的 CJS 包 → 构建**成功**，欠条换成 stub（行为与 Node 一致） | ✅ **新增** |
+| 6 | 一个写 `require(变量)` 的插件 → 构建期失败 | ✅ **新增** |
+| 7 | 产物清单可被 `spc plugin install` 消费（入口指向产物文件） | ✅ |
+| 8 | 同一输入两次构建产出**字节一致** | ✅ |
+| 9 | `pnpm test` 全绿 | ✅ |
 
 ## 9. 待定项
 
-1. **自构建插件的依赖声明可信度**：文件哈希证明"没被改"，但证明不了"产物与声明的依赖图一致"。候选：(a) 要求可复现构建并比对；(b) **`unanchored` 插件的全部依赖一律按 L2 处理**（不认它的 L1 声明）；(c) 交给市场审核。倾向 (b)——不需要新机制，且与"来源不影响权限但影响信任展示"一致；
-2. **L2 放行的记录位置与失效**：建议存安装记录（与 `grants` 并列，键为 `name@resolved`），**插件升级时清空**（"更新需重新确认"的落地方式）；
-3. **L1 白名单的载体**：建议 `sdk/deps-whitelist.json`（name + 允许区间 + 用途 + 维护者），核心与构建工具共用，不硬编码；
-4. **版本解析是否上 lockfile**：建议要——"静态解析依赖图"没有确定性版本解析就是空话；L1 锁死版本，L2 认解析结果并写进批准记录；
-5. **L2 展示给管理员什么**（决定 CLI/前端形态）：依赖树（含传递）+ `os`/`cpu`/平台包标记 + install 脚本标记 + 体积（实测 zod 一个包就 753KB）+ OSV 结果；
-6. **裸名内建的报错文案**：`Could not resolve "path"` 对作者是误导（他以为要装个叫 path 的包）。构建层需要一份内建名单（可用 `node:module` 的 `builtinModules`）先识别、再给"沙箱尚未支持"的准确文案；
-7. **`neutral` + 自定义 resolve 条件**是否比 `node` 更可控：留待真实包踩坑后再评估，当前不引入额外复杂度。
+1. **自动 stub 的"可解析性判定"怎么实现**（本轮新增）：要判定"esbuild 解析不到某个 specifier"，候选——
+   (a) **两遍构建**：先正常构建、扫出欠条的 specifier、再带 stub 重建；(b) 在 `onResolve` 里用
+   `createRequire(...).resolve()` 自己判。**(a) 用 esbuild 自己的解析结果，不会产生分歧**，代价是构建两次
+   （约 100–200ms）。倾向 (a)，实现期验证；
+2. **裸名内建的报错文案**：`Could not resolve "path"` 对作者是误导（他以为要装个叫 `path` 的包）。
+   构建层需要一份内建名单（`node:module` 的 `builtinModules`）先识别、再给"沙箱尚未支持 X"的准确文案。
+   **可行性已实测**（build-layer-evidence §3.1：`onResolve` 能拿到 specifier 与依赖包内的行号）；
+3. **版本解析是否上 lockfile**：建议要——"静态解析依赖图"没有确定性版本解析就是空话。
+   构建器解析出的 `resolved` 写进清单（§2），与作者声明比对；
+4. **依赖托管**（平台提供依赖源码、不打进产物）：**未排期**，属开源后社区讨论项。
+   分析见 ADR-005 §7 v3 补记 与 `.github/ISSUE_DRAFT-hosted-dependencies.md`；
+5. **`neutral` + 自定义 resolve 条件**是否比 `node` 更可控：留待真实包踩坑后再评估，当前不引入额外复杂度。
