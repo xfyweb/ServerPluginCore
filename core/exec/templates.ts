@@ -112,6 +112,31 @@ export function resolveExecutable(name: string, extraDirs: string[] = []): strin
   return undefined;
 }
 
+/**
+ * 路径包含判定（E10 白名单用）：**Windows 大小写不敏感，POSIX 敏感**。
+ *
+ * 为什么必须分流：Windows 上 `C:\WINDOWS\system32\cmd.exe` 与 `C:\Windows\System32\cmd.exe`
+ * 是同一个文件，不敏感比较会把合法模板判成"越界"（fail-closed，但会逼运维放宽白名单
+ * ——那才是真正的风险）。反过来 POSIX 上 `/bin` 与 `/BIN` 是**两个不同目录**，
+ * 不敏感比较就成了越权放行。两个方向都不能拍脑袋选一个。
+ *
+ * 纯函数（platform 可注入），所以两条语义都能在任意开发机上被单测。
+ */
+export function pathInside(
+  child: string,
+  parent: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const win = platform === 'win32';
+  // Windows：分隔符与大小写**都不敏感**（`C:/x` 与 `c:\x` 是同一个位置，两种写法都要放行）。
+  // POSIX：两者都敏感——`\` 在那里是**合法文件名字符**，当分隔符归一化就等于换了目录。
+  const norm = (p: string): string => (win ? p.replace(/\//g, '\\').toLowerCase() : p);
+  const c = norm(child);
+  const p = norm(parent);
+  if (c === p) return true;
+  return c.startsWith(p.endsWith(win ? '\\' : '/') ? p : p + (win ? '\\' : '/'));
+}
+
 /** 解析后的命令必须在系统目录白名单内（E10）+ 存在 + 可执行 */
 export function assertExecutableInSystemDirs(cmd: string, allowlist = executableAllowlist()): void {
   if (!isAbsolute(cmd)) {
@@ -130,7 +155,7 @@ export function assertExecutableInSystemDirs(cmd: string, allowlist = executable
     } catch {
       /* 目录不存在则用原值比较 */
     }
-    return resolved === real || resolved.startsWith(real.endsWith('/') || real.endsWith('\\') ? real : real + (process.platform === 'win32' ? '\\' : '/'));
+    return pathInside(resolved, real);
   });
   if (!inside) {
     throw new SpcError('TEMPLATE_COMMAND_NOT_ALLOWED', { command: cmd, reason: 'outside-system-dirs' });

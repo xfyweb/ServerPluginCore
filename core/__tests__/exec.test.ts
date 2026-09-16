@@ -12,6 +12,7 @@ import { SpcError } from '../errors';
 import { registerTemplate } from '../exec/install';
 import {
   assertExecutableInSystemDirs,
+  pathInside,
   permissionPointOf,
   resolveExecutable,
   templates,
@@ -114,6 +115,38 @@ if (RAW_GIT) {
 }
 
 // ---- 注册期静态校验（E1 / E7 / E8 / E10）----
+
+// B4 回归：白名单包含判定的**平台语义**（Windows 不敏感、POSIX 敏感）。
+// 纯函数 + platform 入参 → 两条语义都能在任意开发机上被验证。
+test('B4：pathInside —— Windows 大小写不敏感，POSIX 敏感（两个方向都不能拍脑袋）', () => {
+  // Windows：同一目录的不同大小写写法必须都算"在里面"（否则合法模板被误拒 → 逼运维放宽白名单）
+  assert.equal(pathInside('C:\\Windows\\System32\\cmd.exe', 'C:\\Windows\\System32', 'win32'), true);
+  assert.equal(pathInside('C:\\WINDOWS\\system32\\CMD.EXE', 'C:\\Windows\\System32', 'win32'), true);
+  assert.equal(pathInside('C:/Windows/System32/cmd.exe', 'C:\\Windows\\System32', 'win32'), true);
+  assert.equal(pathInside('C:\\Windows\\System32', 'C:\\Windows\\System32', 'win32'), true);
+  assert.equal(pathInside('C:\\Windows\\System32x\\evil.exe', 'C:\\Windows\\System32', 'win32'), false);
+  assert.equal(pathInside('C:\\Windows\\Sys\\evil.exe', 'C:\\Windows\\System32', 'win32'), false);
+  // POSIX：`/bin` 与 `/BIN` 是**两个不同目录**，不敏感比较就是越权放行
+  assert.equal(pathInside('/bin/ls', '/bin', 'linux'), true);
+  assert.equal(pathInside('/bin/ls', '/bin/', 'linux'), true);
+  assert.equal(pathInside('/BIN/ls', '/bin', 'linux'), false);
+  assert.equal(pathInside('/usr/binfoo/x', '/usr/bin', 'linux'), false);
+  assert.equal(pathInside('/anything', '/', 'linux'), true);
+});
+
+test('B4：Windows 上大小写不同的白名单路径仍能通过 E10（本机实测）', () => {
+  if (process.platform !== 'win32') {
+    // POSIX 方向的判别力：把白名单写成大写 → 必须拒绝（同一台机器上把两种语义都验掉）
+    assert.throws(
+      () => assertExecutableInSystemDirs('/BIN/sh', ['/bin']),
+      /TEMPLATE_COMMAND_NOT_ALLOWED/,
+    );
+    return;
+  }
+  const root = process.env.SystemRoot ?? 'C:\\Windows';
+  const upper = join(root.toUpperCase(), 'SYSTEM32', 'cmd.exe');
+  assert.doesNotThrow(() => assertExecutableInSystemDirs(upper, [join(root, 'System32')]));
+});
 
 test('E10：可执行文件落在系统目录白名单外 → 拒绝注册', () => {
   assert.throws(
