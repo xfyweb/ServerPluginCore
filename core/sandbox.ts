@@ -274,18 +274,23 @@ async function newRuntimeForSandbox(): Promise<QuickJSAsyncRuntime> {
 }
 
 /** 限额命中 / 插件错误 → 带正确码的 SpcError（设计 §5 的错误码表） */
-function hookError(pluginId: string, hook: HookName, failure: VmFailure): SpcError {
+function hookError(
+  pluginId: string,
+  hook: HookName,
+  failure: VmFailure,
+  extra?: Record<string, string>,
+): SpcError {
+  const base = { pluginId, hook, ...(extra ?? {}) };
   switch (failure.kind) {
     case 'interrupt':
-      return new SpcError(timeoutCodeFor(hook), { pluginId, hook });
+      return new SpcError(timeoutCodeFor(hook), base);
     case 'memory':
-      return new SpcError('PLUGIN_MEMORY_LIMIT', { pluginId, hook });
+      return new SpcError('PLUGIN_MEMORY_LIMIT', base);
     case 'stack':
-      return new SpcError('PLUGIN_STACK_LIMIT', { pluginId, hook });
+      return new SpcError('PLUGIN_STACK_LIMIT', base);
     case 'error':
       return new SpcError(failureCodeFor(hook), {
-        pluginId,
-        hook,
+        ...base,
         cause: failure.code ?? 'PLUGIN_ERROR',
       });
   }
@@ -707,7 +712,16 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       // 于是首 token 是 `function` → 判成脚本模式 → `unsupported keyword: export`。
       // 插件契约本来就是 ESM-only（ADR-005），显式声明模块模式既正确又不再依赖首 token 的运气。
       const started = Date.now();
-      const result = await vm.evalCodeAsync(source, 'plugin.js', { type: 'module' });
+      // **装载也必须计时**：顶层代码同样是插件代码，`while(true)` 可以就写在这里。
+      // 少了这段 deadline，一个死循环会把整个核心占死——无超时、无审计、无恢复路径。
+      // 与钩子同一套做法：设 deadline → 无论成败都在 finally 复位（复位成 Infinity 即"永不触发"）。
+      deadline.setDeadline(started + limits.loadTimeoutMs);
+      let result;
+      try {
+        result = await vm.evalCodeAsync(source, 'plugin.js', { type: 'module' });
+      } finally {
+        deadline.setDeadline(Number.POSITIVE_INFINITY);
+      }
       if (isSuccess(result)) {
         // 命名空间句柄**保留**（钩子从这里取导出），由 Scope 在 dispose 时释放
         namespace = scope.manage(result.value);
@@ -726,28 +740,32 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         result.error.dispose();
       }
 
-      const info = (dumped && typeof dumped === 'object' ? dumped : {}) as {
-        code?: unknown;
-        message?: unknown;
-      };
-      const cause = typeof info.code === 'string' ? info.code : 'PLUGIN_ERROR';
-      const message = typeof info.message === 'string' ? info.message : String(dumped);
+      // 与钩子**共用同一套归类**：中断（超时）/ 内存 / 栈 / 插件自身错误。
+      // 于是装载期限额命中会得到 PLUGIN_LOAD_TIMEOUT / PLUGIN_MEMORY_LIMIT / PLUGIN_STACK_LIMIT，
+      // 而不是一律混进 PLUGIN_LOAD_FAILED —— 靠 code 分支的调用方（manager/CLI）才分得清"限额"与"缺陷"。
+      // `message` 必须带上：装载失败的原文是排障的第一手信息（既有用法与测试都依赖它）。
+      const failure = classifyVmFailure(dumped);
+      const err = hookError(
+        options.pluginId,
+        'load',
+        failure,
+        failure.message ? { message: failure.message } : undefined,
+      );
 
-      // 判定为插件代码缺陷：终止本次加载 + 记账（是否禁用该插件由上层策略决定，核心不崩）
+      // 判定为加载失败：终止本次加载 + 记账（是否禁用该插件由上层策略决定，核心不崩）
       audit({
         ts: Date.now(),
         pluginId: options.pluginId,
         method: 'lifecycle.load',
         paramsDigest: digest(name),
         result: 'error',
-        error: { code: 'PLUGIN_LOAD_FAILED', paramsDigest: digestParams({ cause }) },
+        error: {
+          code: err.code,
+          paramsDigest: digestParams({ cause: err.params.cause ?? err.code }),
+        },
         durationMs: Date.now() - started,
       });
-      throw new SpcError('PLUGIN_LOAD_FAILED', {
-        pluginId: options.pluginId,
-        cause,
-        message,
-      });
+      throw err;
     },
 
     hasFunctionExport(name: string) {

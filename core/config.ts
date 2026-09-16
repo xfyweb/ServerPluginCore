@@ -86,6 +86,12 @@ export interface PluginLimits {
   memoryBytes: number;
   /** 栈上限（QuickJS setMaxStackSize） */
   maxStackBytes: number;
+  /**
+   * 插件模块**求值**（装载）的 CPU 中断 deadline。
+   * 与 init 分开单列：装载是独立阶段，而**顶层代码同样是插件代码**——
+   * 没有它，一个 `while(true)` 能把整个核心占死（见 plugin-lifecycle-design 的四层限额）。
+   */
+  loadTimeoutMs: number;
   /** init 钩子 CPU 中断 deadline */
   initTimeoutMs: number;
   /** start 钩子 */
@@ -114,6 +120,7 @@ export interface SpcConfig {
 export const DEFAULT_LIMITS: PluginLimits = {
   memoryBytes: 32 * 1024 * 1024, // 32 MiB
   maxStackBytes: 512 * 1024, // 512 KiB
+  loadTimeoutMs: 5_000,
   initTimeoutMs: 5_000,
   startTimeoutMs: 5_000,
   stopTimeoutMs: 3_000,
@@ -179,6 +186,7 @@ export function loadConfig(): SpcConfig {
   // 环境变量覆盖（测试 / CI 用；§10）
   plugin.limits.memoryBytes = envInt('SPC_PLUGIN_MEMORY_LIMIT', limits.memoryBytes);
   plugin.limits.maxStackBytes = envInt('SPC_PLUGIN_MAX_STACK_BYTES', limits.maxStackBytes);
+  plugin.limits.loadTimeoutMs = envInt('SPC_PLUGIN_LOAD_TIMEOUT_MS', limits.loadTimeoutMs);
   plugin.limits.initTimeoutMs = envInt('SPC_PLUGIN_INIT_TIMEOUT_MS', limits.initTimeoutMs);
   plugin.limits.startTimeoutMs = envInt('SPC_PLUGIN_START_TIMEOUT_MS', limits.startTimeoutMs);
   plugin.limits.stopTimeoutMs = envInt('SPC_PLUGIN_STOP_TIMEOUT_MS', limits.stopTimeoutMs);

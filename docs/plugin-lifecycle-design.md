@@ -151,10 +151,14 @@ export async function stop(ctx: PluginContext) {
 
 | 层 | 手段 | 抓什么 | 默认值（可配） |
 |---|---|---|---|
-| **CPU** | `runtime.setInterruptHandler(() => Date.now() > deadline)` | 死循环、无限递归、正则灾难性回溯 | init 5s / start 5s / stop 3s |
+| **CPU** | `runtime.setInterruptHandler(() => Date.now() > deadline)` | 死循环、无限递归、正则灾难性回溯 | **load 5s** / init 5s / start 5s / stop 3s |
 | **内存** | `runtime.setMemoryLimit(bytes)` | 无限分配、大数组 | 32 MiB |
 | **栈** | `runtime.setMaxStackSize(bytes)` | 深递归爆 C 栈 | 512 KiB |
 | **挂起** | **宿主 API 自带超时**（接口强制） | `await` 一个永不 resolve 的宿主调用 | 每个 API 自己定（exec 已有 `timeoutMs`） |
+
+> **`load` 是独立的一档，不是借 init 的**：**顶层代码同样是插件代码**——`while(true)` 可以就写在模块顶层。
+> 少了这一档，`runModule` 会是唯一没有 deadline 的 VM 入口，一个死循环就能把整个核心占死
+> （无超时、无审计、无恢复）。四个入口（load / init / start / stop）+ 定时器回调，各自有各自的预算。
 
 ### 4.2 QuickJS 语义（本地源码实测，`D:\git-repo\quickjs`）
 
@@ -241,7 +245,12 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 - **`stop` 抛错或超时都继续卸载**（只告警 + 审计）：绝不因一个插件卡住核心停机；
 - 卸载顺序固定：`stop` → 撤销能力登记 → `dispose`（Scope 顺序释放 handle）。
 
-**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。~~`PLUGIN_RESERVED`~~ 随 `reserved` 特性一并**退役**（v2，未发布过，不占契约位）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
+**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_LOAD_FAILED`、`PLUGIN_LOAD_TIMEOUT`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_STACK_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。~~`PLUGIN_RESERVED`~~ 随 `reserved` 特性一并**退役**（v2，未发布过，不占契约位）。
+
+> **装载失败也分"限额"与"缺陷"**：`runModule` 与钩子共用同一套归类（`classifyVmFailure` + `hookError`），
+> 于是装载期命中限额会得到 `PLUGIN_LOAD_TIMEOUT` / `PLUGIN_MEMORY_LIMIT` / `PLUGIN_STACK_LIMIT`，
+> 插件自身的错误才是 `PLUGIN_LOAD_FAILED`（带 `cause`）。混成一个码的话，靠 `code` 分支的调用方分不清
+> "该调预算"还是"该修代码"。
 
 ## 6. 安装记录（P1 最小版）
 
@@ -331,9 +340,11 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
     "limits": {
       "memoryBytes": 33554432,
       "maxStackBytes": 524288,
+      "loadTimeoutMs": 5000,
       "initTimeoutMs": 5000,
       "startTimeoutMs": 5000,
-      "stopTimeoutMs": 3000
+      "stopTimeoutMs": 3000,
+      "timerTimeoutMs": 5000
     },
     "failedRestart": "manual",
     "maxRestartAttempts": 3,

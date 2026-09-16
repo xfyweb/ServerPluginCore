@@ -18,6 +18,7 @@ process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 const { createSandbox } = await import('../sandbox.ts');
 const { SpcError } = await import('../errors.ts');
 const { hostApi } = await import('../hostApi.ts');
+const { DEFAULT_LIMITS } = await import('../config.ts');
 
 test.after(() => {
   rmSync(AUDIT_DIR, { recursive: true, force: true });
@@ -74,6 +75,45 @@ fs.write('/etc/passwd', 'x');
   );
   // D2 回归：过去这里会 Aborted(Assertion failed: list_empty(&rt->gc_obj_list))
   assert.doesNotThrow(() => sandbox.dispose());
+});
+
+test('**装载期也受 CPU 限额约束**：顶层死循环 → PLUGIN_LOAD_TIMEOUT（而不是挂死核心）', async () => {
+  // 回归背景：runModule 曾经是唯一**没有 deadline** 的 VM 入口 —— 顶层 `while(true)`
+  // 会把宿主事件循环占死：无超时、无审计、无恢复路径（核心与其它插件一起停摆）。
+  // 装载同样是插件代码，必须与钩子共用同一套限额。
+  const sandbox = await createSandbox(hostApi, {
+    ...OPTIONS,
+    limits: { ...DEFAULT_LIMITS, loadTimeoutMs: 300 },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    () => sandbox.runModule('@xfy2412/sandbox-test', 'while (true) {}'),
+    (err: unknown) => {
+      assert.ok(err instanceof SpcError);
+      assert.equal(err.code, 'PLUGIN_LOAD_TIMEOUT');
+      assert.equal(err.params.pluginId, '@xfy2412/sandbox-test');
+      return true;
+    },
+  );
+  // 旁证：确实按 loadTimeoutMs 到点，而不是拖到别的预算
+  assert.ok(Date.now() - started < 3_000, '装载超时没有按 loadTimeoutMs 生效');
+  assert.doesNotThrow(() => sandbox.dispose());
+});
+
+test('装载结束后 deadline 被复位（不会把后续钩子一起掐掉）', async () => {
+  const sandbox = await createSandbox(hostApi, {
+    ...OPTIONS,
+    limits: { ...DEFAULT_LIMITS, loadTimeoutMs: 300 },
+  });
+  // 装载：用满一小会儿但没超时
+  await sandbox.runModule(
+    '@xfy2412/sandbox-test',
+    'export async function init() { const t = Date.now(); while (Date.now() - t < 400) {} }',
+  );
+  // init 自己忙等 400ms。若装载的 deadline 没复位（仍是刚才那个 300ms 的点），
+  // 这一步会**立刻**被判超时 —— 那正是"设了 deadline 却忘了复位"的典型症状。
+  await sandbox.callHook('init', 3_000);
+  sandbox.dispose();
 });
 
 test('白名单外的模块被拒（零环境权力的执行点）', async () => {

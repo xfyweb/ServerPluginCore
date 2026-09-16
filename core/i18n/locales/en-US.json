@@ -46,6 +46,7 @@
   "err.INTERNAL": "Internal error",
   "err.UNEXPECTED": "Unexpected internal error",
   "err.PLUGIN_LOAD_FAILED": "Plugin load failed: {pluginId} ({cause})",
+  "err.PLUGIN_LOAD_TIMEOUT": "Plugin load timed out: {pluginId} (top-level code exceeded the {hook} budget)",
 
   "err.UNAUTHENTICATED": "Unauthenticated: session token invalid or expired",
   "err.CHALLENGE_USED": "Challenge already used or invalid",

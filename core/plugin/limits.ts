@@ -20,8 +20,12 @@
 import { isFail, type QuickJSRuntime } from 'quickjs-emscripten';
 import type { PluginLimits } from '../config';
 
-/** 会被计时的钩子（timer 指定时器回调，见 hostApi 的 timers.every） */
-export type HookName = 'init' | 'start' | 'stop' | 'timer';
+/**
+ * 会被计时的阶段。
+ * `load` = **模块求值**（`runModule`），`timer` = 定时器回调（见 hostApi 的 timers.every）。
+ * load 与 init 单列：顶层代码同样是插件代码，不能借 init 的预算。
+ */
+export type HookName = 'load' | 'init' | 'start' | 'stop' | 'timer';
 
 /** VM 侧失败的归类：限额命中 vs 插件自己的错误 */
 export interface VmFailure {
@@ -58,6 +62,8 @@ export function installDeadlineHandler(runtime: QuickJSRuntime): { setDeadline(m
 
 export function timeoutMsFor(hook: HookName, limits: PluginLimits): number {
   switch (hook) {
+    case 'load':
+      return limits.loadTimeoutMs;
     case 'init':
       return limits.initTimeoutMs;
     case 'start':
@@ -69,9 +75,11 @@ export function timeoutMsFor(hook: HookName, limits: PluginLimits): number {
   }
 }
 
-/** 钩子超时码（契约：只增不改；见 plugin-lifecycle-design §5 错误码表） */
+/** 阶段超时码（契约：只增不改；见 plugin-lifecycle-design §5 错误码表） */
 export function timeoutCodeFor(hook: HookName): string {
   switch (hook) {
+    case 'load':
+      return 'PLUGIN_LOAD_TIMEOUT';
     case 'init':
       return 'PLUGIN_INIT_TIMEOUT';
     case 'start':
@@ -83,9 +91,11 @@ export function timeoutCodeFor(hook: HookName): string {
   }
 }
 
-/** 钩子失败码（非限额原因） */
+/** 阶段失败码（非限额原因） */
 export function failureCodeFor(hook: HookName): string {
   switch (hook) {
+    case 'load':
+      return 'PLUGIN_LOAD_FAILED';
     case 'init':
       return 'PLUGIN_INIT_FAILED';
     case 'start':

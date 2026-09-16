@@ -46,6 +46,7 @@
   "err.INTERNAL": "内部错误",
   "err.UNEXPECTED": "未预期的内部错误",
   "err.PLUGIN_LOAD_FAILED": "插件加载失败：{pluginId}（{cause}）",
+  "err.PLUGIN_LOAD_TIMEOUT": "插件加载超时：{pluginId}（顶层代码执行超过 {hook} 阶段的限额）",
 
   "err.UNAUTHENTICATED": "未认证：会话 token 无效或已过期",
   "err.CHALLENGE_USED": "challenge 已使用或无效",
