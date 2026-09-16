@@ -357,7 +357,7 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 | `core/`（新） | keyring（域名主键 + 可选公钥 + `suspended` + 高水位含吊销累计）、状态文档拉取与**链验证**、安装/更新流、安装记录（`verifiedMeta`）、启动时文件哈希校验、源信息展示（§6.3） |
 | `sdk/schema/` | `manifest.schema.json`：`id` pattern 改 `^@[a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$`、`author.id` 格式、`dependencies.plugins[].origin`；新增 `meta.schema.json` |
 | 测试与示例 | 权限测试去掉 protectionLevel / `defaults` / official 分支；新增链式轮换、暂停、防回滚、清单校验用例 |
-| **旧 id 形态的落点**（v3 前是 `official:` / `thirdparty:`，全部改为 `@username/name`） | `core/main.ts:36`（tier 推导，整行删除）、`core/permissions/registry.ts`（`Tier` + 三处 `defaults`）、`core/permissions/check.ts`（`tier` 参数与两个码）、`sdk/types.ts:18`（注释）、`sdk/schema/manifest.schema.json:31`（`id` pattern 与 description）、`plugin/sample/manifest.json:3`、`sdk/__tests__/manifest.test.ts`（4 处）、`core/__tests__/permissions.test.ts`（6 处）、`core/__tests__/sandbox.test.ts`（4 处 + `tier`）、`core/__tests__/cli.e2e.test.ts:74` |
+| **旧 id 形态的落点**（v3 前是 `official:` / `thirdparty:`，全部改为 `@username/name`） | `core/main.ts:36`（tier 推导，整行删除）、`core/permissions/registry.ts`（`Tier` + 三处 `defaults`）、`core/permissions/check.ts`（`tier` 参数与两个码）、`sdk/types.ts:18`（注释）、`sdk/schema/manifest.schema.json:31`（`id` pattern 与 description）、`plugin/hello/manifest.json:3`（当时名为 `plugin/sample`）、`sdk/__tests__/manifest.test.ts`（4 处）、`core/__tests__/permissions.test.ts`（6 处）、`core/__tests__/sandbox.test.ts`（4 处 + `tier`）、`core/__tests__/cli.e2e.test.ts:74` |
 | i18n | `err.LEVEL_NEEDS_GRANT` → `err.NOT_GRANTED`；新增 §7.3 各码与 §6.3 吊销原因码的词条 |
 
 > 本表记录的是**签名轮当时**落地的形态。后续（P2 权限层）判定链第 3 步改为"**仅 `explicit` 档需逐点授予**"，权限点新增 `grant: auto | install | explicit` 字段——见 intent-capture §8.1/§8.2。

@@ -1,7 +1,7 @@
 // pnpm spike：走**真实链路**（记录 → 装载 → init/start → 停 → 卸载），
 // 而不是像 P1 那样"写死一个目录跑一次"（plugin-lifecycle-design.md §11 验收）。
 //
-// 首次运行会真的把内置样板插件装进状态目录（内置 = 随核心分发、默认安装，仍是普通插件）；
+// 首次运行会真的把内置示例插件装进状态目录（内置 = 随核心分发、默认安装，仍是普通插件）；
 // 之后每次运行都从 plugins.json 读记录、按 enabled 装载。
 import { join } from 'node:path';
 import { initAudit } from './audit';
@@ -9,11 +9,11 @@ import { configFile, loadConfig, pluginsFile, stateDir } from './config';
 import { manager } from './plugin/manager';
 import { registry } from './permissions/registry';
 
-const SAMPLE_ID = '@xfy2412/sample';
-const sampleDir = join(import.meta.dirname, '..', 'plugin', 'sample');
+const HELLO_ID = '@xfy2412/hello';
+const helloDir = join(import.meta.dirname, '..', 'plugin', 'hello');
 
 /** 只授予**确实注册过**的权限点：权限点不存在时"授予"是没有意义的（UNKNOWN_POINT） */
-function sampleGrants(): string[] {
+function helloGrants(): string[] {
   return registry.get('exec.template.git.version') ? ['exec.template.git.version'] : [];
 }
 
@@ -41,19 +41,19 @@ async function main() {
       ` stop=${cfg.plugin.limits.stopTimeoutMs}ms failedRestart=${cfg.plugin.failedRestart}`,
   );
 
-  // 1) 首次运行：安装内置样板插件（写记录 → 立即装载 → init/start）
-  const existing = manager.list().find((p) => p.id === SAMPLE_ID);
+  // 1) 首次运行：安装内置示例插件（写记录 → 立即装载 → init/start）
+  const existing = manager.list().find((p) => p.id === HELLO_ID);
   if (!existing) {
-    console.log(`[spc] installing ${SAMPLE_ID} from ${sampleDir} ...`);
-    await manager.install(sampleDir, { grants: sampleGrants() });
+    console.log(`[spc] installing ${HELLO_ID} from ${helloDir} ...`);
+    await manager.install(helloDir, { grants: helloGrants() });
   } else {
     // 2) 之后每次：按记录启动（startAll 幂等，已装载的会跳过）
     await manager.startAll();
   }
   printStatus();
 
-  const status = manager.status(SAMPLE_ID);
-  console.log(`[spc] sample: state=${status.state} dataDir=${status.dataDir}`);
+  const status = manager.status(HELLO_ID);
+  console.log(`[spc] hello: state=${status.state} dataDir=${status.dataDir}`);
 
   // 3) 停机：stop → 撤销能力登记 → 释放沙箱
   console.log('[spc] stopping all plugins ...');

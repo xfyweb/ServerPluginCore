@@ -1,0 +1,13 @@
+{
+  "schema": 2,
+  "id": "@xfy2412/counter",
+  "name": "Counter",
+  "version": { "code": 1, "name": "0.0.1" },
+  "description": "最小示例：init 时读自己数据目录里的计数文件、+1、写回——只用 fs 一组，最适合作为第一个插件读",
+  "runtime": { "type": "quickjs", "esm": true },
+  "entry": "main.js",
+  "permissions": [
+    { "name": "fs.read.data", "reason": "读自己的计数文件" },
+    { "name": "fs.write.data", "reason": "把自增后的计数写回" }
+  ]
+}

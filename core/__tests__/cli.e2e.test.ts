@@ -94,71 +94,71 @@ test('CLI plugin list：新状态目录下没有插件（记录驱动，不是�
 
 test('CLI plugin install：写记录 → 立即装载 → init/start 跑通', async () => {
   const r = await run(
-    ['core/cli.ts', 'plugin', 'install', 'plugin/sample', '--grant', 'exec.template.git.version'],
+    ['core/cli.ts', 'plugin', 'install', 'plugin/hello', '--grant', 'exec.template.git.version'],
     env(),
   );
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /已安装：@xfy2412\/sample/);
-  assert.match(r.stdout, /@xfy2412\/sample@0\.0\.1 \[running\]/);
+  assert.match(r.stdout, /已安装：@xfy2412\/hello/);
+  assert.match(r.stdout, /@xfy2412\/hello@0\.0\.1 \[running\]/);
   assert.match(r.stdout, /enabled=是/);
   assert.match(r.stdout, /已授予：exec\.template\.git\.version/);
   // 能力登记结果回落到记录
-  assert.match(r.stdout, /能力：.*route:\/sample/);
-  assert.match(r.stdout, /能力：.*api:\/api\/sample\/status/);
+  assert.match(r.stdout, /能力：.*route:\/hello/);
+  assert.match(r.stdout, /能力：.*api:\/api\/hello\/status/);
 });
 
 test('CLI plugin list：显示状态而不是"目录里有没有 manifest"', async () => {
   const r = await run(['core/cli.ts', 'plugin', 'list'], env());
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /@xfy2412\/sample@0\.0\.1 \[running\]/);
+  assert.match(r.stdout, /@xfy2412\/hello@0\.0\.1 \[running\]/);
 });
 
 test('CLI plugin disable / enable：状态机往返，禁用后不再装载', async () => {
-  const off = await run(['core/cli.ts', 'plugin', 'disable', '@xfy2412/sample'], env());
+  const off = await run(['core/cli.ts', 'plugin', 'disable', '@xfy2412/hello'], env());
   assert.equal(off.code, 0, off.stderr);
-  assert.match(off.stdout, /已禁用：@xfy2412\/sample/);
+  assert.match(off.stdout, /已禁用：@xfy2412\/hello/);
   assert.match(off.stdout, /\[disabled\]/);
   assert.match(off.stdout, /enabled=否/);
 
-  const on = await run(['core/cli.ts', 'plugin', 'enable', '@xfy2412/sample'], env());
+  const on = await run(['core/cli.ts', 'plugin', 'enable', '@xfy2412/hello'], env());
   assert.equal(on.code, 0, on.stderr);
   assert.match(on.stdout, /\[running\]/);
   assert.match(on.stdout, /enabled=是/);
 });
 
 test('CLI plugin status：详情含目录 / 数据目录 / 配置文件', async () => {
-  const r = await run(['core/cli.ts', 'plugin', 'status', '@xfy2412/sample'], env());
+  const r = await run(['core/cli.ts', 'plugin', 'status', '@xfy2412/hello'], env());
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /数据目录：.*data.*plugins.*xfy2412__sample/);
-  assert.match(r.stdout, /配置文件：.*config.*plugins.*xfy2412__sample\.json/);
+  assert.match(r.stdout, /数据目录：.*data.*plugins.*xfy2412__hello/);
+  assert.match(r.stdout, /配置文件：.*config.*plugins.*xfy2412__hello\.json/);
 });
 
 test('CLI plugin grant/revoke：只接受具体权限点（通配被拒），并提示需要 reload', async () => {
-  const bad = await run(['core/cli.ts', 'plugin', 'grant', '@xfy2412/sample', 'kv.*'], env());
+  const bad = await run(['core/cli.ts', 'plugin', 'grant', '@xfy2412/hello', 'kv.*'], env());
   assert.notEqual(bad.code, 0);
   assert.match(bad.stderr, /授权不接受通配/);
 
   const revoked = await run(
-    ['core/cli.ts', 'plugin', 'revoke', '@xfy2412/sample', 'exec.template.git.version'],
+    ['core/cli.ts', 'plugin', 'revoke', '@xfy2412/hello', 'exec.template.git.version'],
     env(),
   );
   assert.equal(revoked.code, 0, revoked.stderr);
   assert.match(revoked.stdout, /⚠ 授权\/配置已变更，需要 reload 才生效/);
 
-  const reloaded = await run(['core/cli.ts', 'plugin', 'reload', '@xfy2412/sample'], env());
+  const reloaded = await run(['core/cli.ts', 'plugin', 'reload', '@xfy2412/hello'], env());
   assert.equal(reloaded.code, 0, reloaded.stderr);
   assert.match(reloaded.stdout, /\[running\]/);
   assert.doesNotMatch(reloaded.stdout, /需要 reload 才生效/);
 });
 
 test('CLI plugin uninstall：内置插件同样可卸载（v2 取消 reserved），记录随之消失', async () => {
-  const r = await run(['core/cli.ts', 'plugin', 'uninstall', '@xfy2412/sample'], env());
+  const r = await run(['core/cli.ts', 'plugin', 'uninstall', '@xfy2412/hello'], env());
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /已卸载：@xfy2412\/sample/);
+  assert.match(r.stdout, /已卸载：@xfy2412\/hello/);
   const list = await run(['core/cli.ts', 'plugin', 'list'], env());
-  assert.doesNotMatch(list.stdout, /@xfy2412\/sample/);
+  assert.doesNotMatch(list.stdout, /@xfy2412\/hello/);
   // 卸载后 status 报 NOT_FOUND（记录真的没了，不是只改了状态）
-  const st = await run(['core/cli.ts', 'plugin', 'status', '@xfy2412/sample'], env());
+  const st = await run(['core/cli.ts', 'plugin', 'status', '@xfy2412/hello'], env());
   assert.notEqual(st.code, 0);
   assert.match(st.stderr, /插件不存在/);
 });

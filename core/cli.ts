@@ -92,7 +92,7 @@ async function acquireToken(): Promise<string> {
   return sess.body.token;
 }
 
-/** 插件 id 进 URL：`@xfy2412/sample` → `%40xfy2412%2Fsample` */
+/** 插件 id 进 URL：`@xfy2412/hello` → `%40xfy2412%2Fhello` */
 const idPath = (id: string): string => encodeURIComponent(id);
 
 function printPlugin(p: PluginView): void {

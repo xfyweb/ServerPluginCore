@@ -50,7 +50,7 @@ export function pluginConfigDir(): string {
 }
 
 /**
- * 插件 ID → 目录名（§1.4）：`@xfy2412/sample` → `xfy2412__sample`。
+ * 插件 ID → 目录名（§1.4）：`@xfy2412/hello` → `xfy2412__hello`。
  * 映射唯一且可读；同时是路径收敛的**唯一入口**——所有由 ID 拼出来的路径都必须过这里，
  * 否则 ID 里的 `/` 或 `..` 就能逃出数据目录。
  */

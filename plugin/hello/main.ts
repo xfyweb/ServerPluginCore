@@ -1,4 +1,4 @@
-// 样板插件：演示 P1.5 装载契约（init / start / stop + ctx）与宿主 API 的几条主线
+// 示例插件：演示 P1.5 装载契约（init / start / stop + ctx）与宿主 API 的几条主线
 //
 // 它不是"最小示例"，而是**可验收的活体**：pnpm spike 会真的把它装起来、跑起来、停下去。
 // 权限面刻意覆盖三条不同的授权路径：
@@ -48,7 +48,7 @@ export async function start(ctx: PluginContext) {
   const seconds = Number(ctx.config.heartbeatSeconds ?? 30);
   heartbeat = timers.every(seconds * 1000, () => {
     const at = Date.now();
-    events.publish('sample.heartbeat', { at }); // topic 必须已在 manifest 声明
+    events.publish('hello.heartbeat', { at }); // topic 必须已在 manifest 声明
     kv.set('lastHeartbeatAt', at);
   });
   ctx.logger.info(`started (heartbeat every ${seconds}s)`);

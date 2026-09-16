@@ -51,7 +51,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 ```ts
 interface PluginContext {
-  pluginId: string;                     // 如 @xfy2412/sample
+  pluginId: string;                     // 如 @xfy2412/hello
   version: { code: number; name: string };
   dataDir: string;                      // 宿主创建并保证存在；插件唯一可写位置
   manifest: Readonly<Manifest>;         // 只读副本（自查声明用，改不了）
@@ -61,7 +61,7 @@ interface PluginContext {
 }
 ```
 
-- `dataDir` 规则：`<SPC_DATA_DIR ?? <cwd>/.spc>/data/plugins/<sanitized-id>/`，其中 `sanitized-id = pluginId.replace(/^@/, '').replace(/\//g, '__')`（`@xfy2412/sample` → `xfy2412__sample`；该映射唯一且可读）。
+- `dataDir` 规则：`<SPC_DATA_DIR ?? <cwd>/.spc>/data/plugins/<sanitized-id>/`，其中 `sanitized-id = pluginId.replace(/^@/, '').replace(/\//g, '__')`（`@xfy2412/hello` → `xfy2412__hello`；该映射唯一且可读）。
 - `logger` P1 转发到宿主 console（带插件前缀）；P2-4 日志聚合器接管后落聚合流；**日志等级可按插件覆盖**（P2-4）。
 - `config` 是**只读快照**：插件改不了自己的配置，写配置属管理员/面板动作（见 §1.6）。
 
@@ -168,7 +168,7 @@ export async function stop(ctx: PluginContext) {
 
 VM 在等宿主 Promise 时处于 asyncify 挂起状态、**不执行代码**，中断轮询不会发生 → "卡住的 await"只能用宿主侧超时兜。因此：
 
-> **契约（对宿主 API 作者）**：任何可能阻塞或依赖外部输入的宿主 API **必须自带超时**（`exec.run` 的 `timeoutMs` 是第一个样板）。
+> **契约（对宿主 API 作者）**：任何可能阻塞或依赖外部输入的宿主 API **必须自带超时**（`exec.run` 的 `timeoutMs` 是第一个示例）。
 
 ### 4.4 job 泵（async 钩子能跑起来的前提）
 
@@ -250,13 +250,13 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 {
   "pluginsSchema": 1,
   "plugins": [{
-    "id": "@xfy2412/sample",
-    "dir": "plugin/sample",
+    "id": "@xfy2412/hello",
+    "dir": "plugin/hello",
     "version": { "code": 1, "name": "0.0.1" },
     "enabled": true,
     "grants": ["fs.write.home", "exec.template.git.version"],
-    "capabilities": ["route:/sample", "api:/api/sample/*"],
-    "configPath": "config/plugins/xfy2412__sample.json",
+    "capabilities": ["route:/hello", "api:/api/hello/*"],
+    "configPath": "config/plugins/xfy2412__hello.json",
     "state": "stopped",
     "installedAt": "2026-09-15T00:00:00Z",
     "lastError": null,

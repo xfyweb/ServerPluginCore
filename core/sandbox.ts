@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import {
   isFail,
   isSuccess,
@@ -22,6 +23,7 @@ import {
   type HookName,
   type VmFailure,
 } from './plugin/limits';
+import { isRegistered, normalizeSpecifier, shimFileName } from './sandbox-modules/registry';
 
 /** 沙箱对象（P1.5） */
 export interface Sandbox {
@@ -39,6 +41,9 @@ export interface Sandbox {
 /** 宿主 API 的模块正文来自真实文件（可评审 / 可高亮 / 可单测），运行时只生成导出清单。 */
 const HOST_API_SOURCE = readFileSync(new URL('./sandbox-modules/host-api.js', import.meta.url), 'utf8');
 const EXPORTS_MARKER = '// __SPC_EXPORTS__';
+
+/** Node 内建名单：只用于把"沙箱尚未支持"与"模块名写错"的报错文案区分开 */
+const BUILTIN_MODULES = new Set(builtinModules);
 
 /**
  * 由 host-api.js **自己实现**的方法组（需要 JSON 编解码 / 回调注册），
@@ -190,13 +195,34 @@ function exportLines(apiKeys: string[]): string {
 
 /**
  * 沙箱模块白名单：specifier → 源码。未登记一律拒绝（零环境权力的执行点）。
- * P2 官方模块仿真在此登记：`node:fs` / `node:path` / `node:events` …（各自对应一个真实文件）。
+ *
+ * 两类来源：
+ *   · `@host/api`——**能力面**，导出清单按本次装配的方法组动态生成（正文来自 host-api.js）；
+ *   · **仿真模块**（`node:path` / `node:events` …）——正文来自 `sandbox-modules/node-*.js`，
+ *     **整文件直出、不做任何替换**。这不是省事，是硬约束：它们必须能被构建层内联进插件产物
+ *     （CJS 依赖里的 require 无法标记为外部，见 build-layer-evidence §3.2），
+ *     所以**不能有随插件而变的占位符**。能力一律运行时从 `globalThis.__host` 取。
  */
 function moduleSource(moduleName: string, apiKeys: string[]): string | null {
   if (moduleName === '@host/api') {
     return HOST_API_SOURCE.replace(EXPORTS_MARKER, exportLines(apiKeys));
   }
+  if (isRegistered(moduleName)) {
+    return shimSource(normalizeSpecifier(moduleName));
+  }
   return null;
+}
+
+/** shim 源码按需读取 + 缓存（一个模块一个真实文件，见 registry.ts 的文件名约定） */
+const shimCache = new Map<string, string>();
+function shimSource(canonical: string): string {
+  let source = shimCache.get(canonical);
+  if (source === undefined) {
+    const url = new URL(`./sandbox-modules/${shimFileName(canonical)}`, import.meta.url);
+    source = readFileSync(url, 'utf8');
+    shimCache.set(canonical, source);
+  }
+  return source;
 }
 
 /**
@@ -258,7 +284,14 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   runtime.setModuleLoader((moduleName: string): string => {
     const src = moduleSource(moduleName, Object.keys(api));
     if (src === null) {
-      throw new Error(`[sandbox] module not allowed: ${moduleName}`);
+      // 报错文案要能区分"沙箱尚未支持"与"写错了模块名"——前者是仿真排期问题，
+      // 后者是作者笔误，把他引向"去装个包"是误导（build-layer-evidence §4.4-2）。
+      const isBuiltin = BUILTIN_MODULES.has(normalizeSpecifier(moduleName));
+      throw new Error(
+        isBuiltin
+          ? `[sandbox] module not allowed: ${moduleName}（沙箱尚未支持该 Node 内建，见 docs/module-emulation-design.md）`
+          : `[sandbox] module not allowed: ${moduleName}`,
+      );
     }
     return src;
   });

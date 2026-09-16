@@ -27,7 +27,7 @@ $ pnpm spike
 HelloWorld
 ```
 
-> 注：该日志是 v3 之前的 spike 运行记录，示例 id 当时为 `official:sample`；现行为 `@xfy2412/sample`（见 plugin-signature-design.md §8）。
+> 注：该日志是 v3 之前的 spike 运行记录，示例 id 当时为 `official:sample`；现行为 `@xfy2412/hello`（见 plugin-signature-design.md §8）。
 
 - 插件（ESM）在 QuickJS 沙箱内执行，`import { write } from '@host/api'` 经 `runtime.setModuleLoader` 解析；
 - 宿主函数写入 `~/test.txt`，内容 `HelloWorld`；
@@ -102,7 +102,7 @@ pnpm verify:sandbox   # scripts/verify-quickjs-patch.mjs
 core/main.ts                          # 入口：加载插件 → 建沙箱 → 执行
 core/sandbox.ts                       # QuickJS 沙箱封装（asyncify + @host/api 注入）
 core/hostApi.ts                       # 宿主 API（spike：无鉴权 fs.write）
-plugin/sample/{manifest.json, main.ts}# 样板插件（ESM）
+plugin/hello/{manifest.json, main.ts}# 样板插件（ESM）
 scripts/verify-quickjs-patch.mjs      # 补丁回归测试
 patches/quickjs-emscripten-core.patch # 上游 bug 补丁（随仓库提交）
 ```

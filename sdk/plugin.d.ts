@@ -14,7 +14,7 @@ declare module '@spc/sdk' {
   }
 
   export interface PluginContext {
-    /** 如 @xfy2412/sample */
+    /** 如 @xfy2412/hello */
     pluginId: string;
     version: { code: number; name: string };
     /** 宿主创建并保证存在；插件唯一可写位置（fs 权限点的作用域） */

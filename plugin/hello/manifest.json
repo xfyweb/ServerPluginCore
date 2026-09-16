@@ -1,9 +1,9 @@
 {
   "schema": 2,
-  "id": "@xfy2412/sample",
-  "name": "Sample Plugin",
+  "id": "@xfy2412/hello",
+  "name": "Hello Plugin",
   "version": { "code": 1, "name": "0.0.1" },
-  "description": "样板插件：演示装载契约（init/start/stop + ctx）、数据目录写入、kv、定时器与 exec 模板调用",
+  "description": "综合示例：装载契约（init/start/stop + ctx）、配置读取、数据目录读写、kv、定时器、事件发布与 exec 模板调用——想一次看全宿主 API 就从这里开始",
   "runtime": { "type": "quickjs", "esm": true },
   "entry": "main.ts",
   "permissions": [
@@ -36,10 +36,10 @@
     }
   },
   "exports": {
-    "routes": [{ "path": "/sample", "title": "样板插件", "icon": "sparkles", "order": 10 }],
-    "webApis": [{ "path": "/api/sample/status", "permission": "lifecycle.health" }],
+    "routes": [{ "path": "/hello", "title": "示例插件", "icon": "sparkles", "order": 10 }],
+    "webApis": [{ "path": "/api/hello/status", "permission": "lifecycle.health" }],
     "events": {
-      "publish": [{ "topic": "sample.heartbeat", "classification": "public" }]
+      "publish": [{ "topic": "hello.heartbeat", "classification": "public" }]
     }
   }
 }

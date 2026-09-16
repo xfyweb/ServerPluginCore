@@ -17,7 +17,7 @@
   "cli.plugin.status.fail": "查询插件失败（{code}）",
   "cli.plugin.op.fail": "操作失败（{code}）",
   "cli.plugin.grant.fail": "授权操作失败（{code}）",
-  "cli.plugin.id.required": "缺少插件 ID（如 @xfy2412/sample）",
+  "cli.plugin.id.required": "缺少插件 ID（如 @xfy2412/hello）",
   "cli.plugin.grant.usage": "用法：spc plugin grant|revoke <插件 ID> <权限点>...（不支持通配）",
   "cli.plugin.granted": "已授予：{id}",
   "cli.plugin.revoked": "已撤销：{id}",

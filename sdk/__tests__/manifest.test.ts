@@ -36,8 +36,8 @@ const validFull = {
 /** 最小合法清单（仅必填字段，spike 插件形态） */
 const validMinimal = {
   schema: 2,
-  id: '@xfy2412/sample',
-  name: 'Sample Plugin',
+  id: '@xfy2412/hello',
+  name: 'Hello Plugin',
   version: { code: 1, name: '0.0.1' },
   runtime: { type: 'quickjs' },
   permissions: [{ name: 'fs.write.data' }],

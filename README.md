@@ -55,22 +55,22 @@ ServerPluginCore 是一个**插件化的服务器管理平台核心**。核心�
 ```bash
 pnpm install
 pnpm spike              # 真实链路：写安装记录 → 装载 → init/start → stop → 卸载
-pnpm test               # 186 例
+pnpm test               # 226 例
 pnpm verify:sandbox     # 验证 QuickJS 补丁有效（8/8）
 ```
 
 `pnpm spike` 的典型输出：
 
 ```text
-[spc] installing @xfy2412/sample from plugin/sample ...
-[@xfy2412/sample] init: dataDir=/…/.spc/data/plugins/xfy2412__sample
-[@xfy2412/sample] core=0.0.0 api=1
-[@xfy2412/sample] record=hello #1 bytes=9
-[@xfy2412/sample] files=[kv.json(file),started.log(file)]
-[@xfy2412/sample] git: git version 2.x
-[@xfy2412/sample] started (heartbeat every 30s)
+[spc] installing @xfy2412/hello from plugin/hello ...
+[@xfy2412/hello] init: dataDir=/…/.spc/data/plugins/xfy2412__hello
+[@xfy2412/hello] core=0.0.0 api=1
+[@xfy2412/hello] record=hello #1 bytes=9
+[@xfy2412/hello] files=[kv.json(file),started.log(file)]
+[@xfy2412/hello] git: git version 2.x
+[@xfy2412/hello] started (heartbeat every 30s)
 [spc] plugins=1
-  · @xfy2412/sample@0.0.1 [running] enabled=true reserved=true grants=[exec.template.git.version]
+  · @xfy2412/hello@0.0.1 [running] enabled=true grants=[exec.template.git.version] caps=[route:/hello,api:/api/hello/status,event:hello.heartbeat]
 [spc] stopping all plugins ...
 [spc] done.
 ```
@@ -85,7 +85,7 @@ pnpm verify:sandbox     # 验证 QuickJS 补丁有效（8/8）
 ```bash
 pnpm daemon                    # 起核心（127.0.0.1，ed25519 握手鉴权）
 pnpm spc plugin list           # 另一个终端
-pnpm spc plugin status @xfy2412/sample
+pnpm spc plugin status @xfy2412/hello
 ```
 
 ## 插件类型
@@ -168,7 +168,9 @@ pnpm spike         # 端到端跑一遍装载链路
 | `core/` | 核心：沙箱宿主、宿主 API、权限、审计、生命周期、CLI/HTTP |
 | `core/plugin/` | 装载器与状态机（`loader` / `manager` / `records` / `capabilities` / `limits` / `config`） |
 | `sdk/` | manifest JSON Schema、类型声明（`@host/api`、`@spc/sdk`）、校验器 |
-| `plugin/sample/` | 样板插件（演示 ctx、数据目录、kv、定时器与 exec 模板） |
+| `plugin/hello/` | **综合示例插件**：ctx、配置、数据目录、kv、定时器、事件与 exec 模板——想一次看全宿主 API 从这里开始 |
+| `plugin/counter/` | **最小示例插件**：只用 `fs` 一组，读写自己的数据目录（读计数 → +1 → 写回） |
+| `tools/` | 取证工具（esbuild 行为矩阵、两道闸探针、依赖面实测）——**不参与 `pnpm test`**，见 `tools/README.md` |
 | `docs/` | 契约、ADR 与设计文档 |
 
 **两条硬规矩**：

@@ -17,7 +17,7 @@
   "cli.plugin.status.fail": "plugin query failed ({code})",
   "cli.plugin.op.fail": "operation failed ({code})",
   "cli.plugin.grant.fail": "grant operation failed ({code})",
-  "cli.plugin.id.required": "plugin ID required (e.g. @xfy2412/sample)",
+  "cli.plugin.id.required": "plugin ID required (e.g. @xfy2412/hello)",
   "cli.plugin.grant.usage": "Usage: spc plugin grant|revoke <plugin ID> <point>... (no wildcards)",
   "cli.plugin.granted": "Granted: {id}",
   "cli.plugin.revoked": "Revoked: {id}",
