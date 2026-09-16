@@ -109,6 +109,12 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
       { dir: '/a', base: 'b.txt' },
       { root: '/', base: 'b.txt' },
       { name: 'b', ext: '.txt' },
+      // ext **不带点**时 Node 会自动补点 —— 少了它就会拼出 `btxt` 这种错误路径且不报错
+      { name: 'b', ext: 'txt' },
+      { ext: 'txt' },
+      { ext: '.txt' },
+      { name: 'b', ext: 'a.b' },
+      { dir: '/a', name: 'b', ext: 'txt' },
       { base: 'b.txt' },
       { dir: '/a' },
       { root: '/' },
@@ -293,6 +299,54 @@ describe('仿真 node:events —— 与 node:events 对齐', async () => {
     const e = new shim.EventEmitter();
     const real = new nodeEvents.EventEmitter();
     assert.equal(e.getMaxListeners(), real.getMaxListeners());
+  });
+
+  it('`removeAllListeners(undefined)` 只删名为 undefined 的事件，**不是全清**', () => {
+    // 真实形态是 `e.removeAllListeners(opts.event)`，opts.event 可能恰好是 undefined。
+    // 用"判 undefined"实现的话会把**所有**监听器静默拆掉（破坏性且难查）。
+    for (const EE of [shim.EventEmitter, nodeEvents.EventEmitter]) {
+      const e = new EE();
+      e.on('a', () => {});
+      e.on('b', () => {});
+      e.removeAllListeners(undefined);
+      assert.equal(e.listenerCount('a'), 1, `${EE.name}: 'a' 的监听器不该被清`);
+      assert.equal(e.listenerCount('b'), 1);
+      e.removeAllListeners(); // 无参才是全清
+      assert.equal(e.listenerCount('a'), 0);
+      assert.equal(e.listenerCount('b'), 0);
+    }
+  });
+
+  it('`listenerCount(type, null)` 与不传等价（Node 用 `listener != null`）', () => {
+    for (const EE of [shim.EventEmitter, nodeEvents.EventEmitter]) {
+      const e = new EE();
+      const f = () => {};
+      e.on('x', f);
+      e.on('x', f);
+      assert.equal(e.listenerCount('x', null), 2);
+      assert.equal(e.listenerCount('x', undefined), 2);
+    }
+  });
+
+  it("`emit('error')` 无监听器：非 Error 值包成 ERR_UNHANDLED_ERROR（带 context）", () => {
+    for (const EE of [shim.EventEmitter, nodeEvents.EventEmitter]) {
+      // Error 实例原样抛出（不包装）
+      const boom = new Error('boom');
+      assert.throws(
+        () => new EE().emit('error', boom),
+        (e: any) => e === boom,
+      );
+      // 非 Error 值：Node 包成带 code 与 context 的 Error
+      for (const value of ['str', undefined]) {
+        try {
+          new EE().emit('error', value);
+          assert.fail('应当抛');
+        } catch (e: any) {
+          assert.equal(e.code, 'ERR_UNHANDLED_ERROR', `${EE.name}: code 不符`);
+          assert.equal(e.context, value, `${EE.name}: context 不符`);
+        }
+      }
+    }
   });
 });
 

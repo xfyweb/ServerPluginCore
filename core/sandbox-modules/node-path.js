@@ -261,6 +261,15 @@ export function parse(path) {
   return result;
 }
 
+/**
+ * `format` 里 ext 的**补点**：Node 的约定是 ext 不带点时自动补一个
+ * （`{name:'b', ext:'txt'}` → `b.txt`，`{ext:'txt'}` → `.txt`）。
+ * 少了这一步会拼出 `btxt` 这种**错误的路径**，而且不报错——典型的静默错值。
+ */
+function formatExt(ext) {
+  return ext ? (ext.charCodeAt(0) === DOT ? ext : '.' + ext) : '';
+}
+
 export function format(pathObject) {
   if (pathObject === null || typeof pathObject !== 'object') {
     const err = new TypeError(
@@ -271,7 +280,7 @@ export function format(pathObject) {
     throw err;
   }
   const dir = pathObject.dir || pathObject.root;
-  const base = pathObject.base || (pathObject.name || '') + (pathObject.ext || '');
+  const base = pathObject.base || (pathObject.name || '') + formatExt(pathObject.ext);
   if (!dir) return base;
   if (dir === pathObject.root) return dir + base;
   return dir + '/' + base;

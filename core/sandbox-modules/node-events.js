@@ -24,6 +24,11 @@ function assertListener(fn, name) {
   }
 }
 
+/** 非 Error 值在 `Unhandled error. (…)` 里的展示形式（对齐 Node：字符串带引号） */
+function describe(value) {
+  return typeof value === 'string' ? "'" + value + "'" : String(value);
+}
+
 export class EventEmitter {
   constructor(options) {
     this._events = Object.create(null);
@@ -90,7 +95,10 @@ export class EventEmitter {
   }
 
   removeAllListeners(event) {
-    if (event === undefined) this._events = Object.create(null);
+    // 用 `arguments.length` 而不是判 undefined：Node 里**显式传 undefined** 只是删名为
+    // `undefined` 的那个事件，而**不传参**才是"全清"。写成判 undefined 会让
+    // `e.removeAllListeners(opts.event)`（opts.event 恰好是 undefined）**静默拆掉所有监听器**。
+    if (arguments.length === 0) this._events = Object.create(null);
     else delete this._events[event];
     return this;
   }
@@ -99,13 +107,19 @@ export class EventEmitter {
    * 返回"当时有没有监听器"。
    * `'error'` 且无监听器时**必须抛出**——Node 靠这条把未处理的错误暴露出来，
    * 静默返回 false 会让依赖以为"错误已处理"。
+   * 非 Error 值要包成带 `ERR_UNHANDLED_ERROR` 与 `context` 的错误（Node 的形状），
+   * 否则靠 `e.code` / `e.context` 分支的调用方会走错路。
    */
   emit(event, ...args) {
     const list = this._list(event);
     if (event === 'error') {
       if (list === undefined || list.length === 0) {
         const err = args[0];
-        throw err instanceof Error ? err : new Error('Unhandled error.' + (err === undefined ? '' : ' (' + String(err) + ')'));
+        if (err instanceof Error) throw err;
+        const wrapped = new Error('Unhandled error. (' + describe(err) + ')');
+        wrapped.code = 'ERR_UNHANDLED_ERROR';
+        wrapped.context = err;
+        throw wrapped;
       }
     }
     if (list === undefined || list.length === 0) return false;
@@ -129,7 +143,9 @@ export class EventEmitter {
   listenerCount(event, fn) {
     const list = this._list(event);
     if (list === undefined) return 0;
-    if (fn === undefined) return list.length;
+    // Node 用 `listener != null`：`null` 与"不传"**等价**。
+    // 只判 undefined 的话，把可能为 null 的引用透传进来会得到 0 → 误判"没人监听"。
+    if (fn === undefined || fn === null) return list.length;
     return list.filter((l) => l === fn || l[kOriginal] === fn).length;
   }
 
