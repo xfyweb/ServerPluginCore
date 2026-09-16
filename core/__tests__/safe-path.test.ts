@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { closeSync, fstatSync, mkdtempSync, mkdirSync, openSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertInodeMatch, PathError, validatePath } from '../fs/safe-path';
+import { assertInodeMatch, isWindowsDeviceName, PathError, validatePath } from '../fs/safe-path';
 import { parse, sep } from 'node:path';
 
 const root = mkdtempSync(join(tmpdir(), 'spc-path-'));
@@ -59,6 +59,49 @@ test('F3: /dev /proc /sys 被拒', () => {
   assert.throws(() => validatePath('/dev/null', ROOTS), PathError);
   assert.throws(() => validatePath('/proc/self/status', ROOTS), PathError);
   assert.throws(() => validatePath('/sys/kernel', ROOTS), PathError);
+});
+
+// S-3 回归：Windows 保留设备名。纯函数与平台无关，判定规则在此固定下来。
+test('S-3: isWindowsDeviceName 命中保留设备名（大小写 / 扩展名 / 上标变体）', () => {
+  const hit = ['nul', 'NUL', 'Nul', 'con', 'prn', 'aux', 'com1', 'COM9', 'lpt1', 'LPT9',
+    'nul.txt', 'con.tar.gz', 'aux.', 'COM\u00b9', 'LPT\u00b2', 'COM\u00b3'];
+  for (const name of hit) {
+    assert.equal(isWindowsDeviceName(name), true, `应命中：${JSON.stringify(name)}`);
+  }
+});
+
+test('S-3: isWindowsDeviceName 不误伤形近普通名', () => {
+  const miss = ['console.txt', 'nullable', 'com10', 'com0', 'lpt0', 'my.nul', 'nul2', 'con-sole', ''];
+  for (const name of miss) {
+    assert.equal(isWindowsDeviceName(name), false, `不应命中：${JSON.stringify(name)}`);
+  }
+});
+
+/**
+ * 平台分支用例（两个方向都要测：漏判 = 不变量被绕开，误判 = 正常插件写不了文件）。
+ * 设备名只在 Windows 上是设备对象；POSIX 上 `nul` 就是普通文件名。
+ */
+const windowsOnly = { skip: process.platform === 'win32' ? false : 'Windows 专有语义' };
+const posixOnly = { skip: process.platform === 'win32' ? 'Windows 上必须拒绝设备名' : false };
+
+test('S-3: Windows 上数据目录内的设备名被拒（含子目录 / 带扩展名）', windowsOnly, () => {
+  for (const rel of ['nul', 'NUL', 'nul.txt', 'com1', 'lpt9.log', join('sub', 'aux'), join('sub', 'con.txt')]) {
+    assert.throws(
+      () => validatePath(join(root, rel), ROOTS),
+      { name: 'PathError', code: 'SPECIAL_PATH_DENIED' },
+      `应拒：${rel}`,
+    );
+  }
+});
+
+test('S-3: Windows 上形近普通文件名不被误伤', windowsOnly, () => {
+  const v = validatePath(join(root, 'console.txt'), ROOTS);
+  assert.equal(v.path, join(root, 'console.txt'));
+});
+
+test('S-3: POSIX 上设备名是普通文件名（不误伤）', posixOnly, () => {
+  const v = validatePath(join(root, 'nul'), ROOTS);
+  assert.equal(v.path, join(root, 'nul'));
 });
 
 // F4：大小限制（hostApi 层验证，这里是单元级存在性确认）

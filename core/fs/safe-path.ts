@@ -26,6 +26,23 @@ export class PathError extends SpcError {
 /** 特殊路径黑名单（F3）：拒绝设备/内核接口/系统目录 */
 const FORBIDDEN_PREFIXES = ['/dev', '/proc', '/sys', '/etc', '/boot', '/lost+found'];
 
+/**
+ * Windows **保留设备名**（F3 的 Windows 分支）。
+ *
+ * 为什么必须有：`<dataDir>\nul`、`con`、`com1` 在 Windows 上是**设备对象**而不是文件——
+ * 写进去的字节会进核心控制台（`con`）/并口（`lpt1`）/被静默丢弃（`nul`），
+ * 而 `readdir` 里**看不到它**。于是"插件唯一可写位置 = 自己数据目录"这条不变量被绕开
+ * （`fs.write.data` 是 scope=self，本来就没有管理员授予那道闸）。
+ *
+ * 判定要点：**只看基名**（`sub/nul` 同样中招）、**大小写不敏感**、**带扩展名也算**（`nul.txt`）。
+ * 名字表对齐 Node `lib/path.js` 的 `WINDOWS_RESERVED_NAMES`（契约宗主），含上标变体 `COM¹/LPT²`。
+ * 纯函数，与平台无关——平台判断留给调用方，这样它可以在任何开发机上被单测。
+ */
+const WIN32_DEVICE_RE = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(\..*)?$/i;
+export function isWindowsDeviceName(segment: string): boolean {
+  return WIN32_DEVICE_RE.test(segment);
+}
+
 /** 打开后校验用：预检的 inode（F5 TOCTOU / F7 硬链接） */
 export interface ExpectedInode {
   dev: number;
@@ -118,8 +135,11 @@ export function validatePath(requested: string, roots: string[]): PathValidation
     final = join(realParent, basename(abs));
   }
 
-  // 5) 特殊路径黑名单（F3）
-  if (FORBIDDEN_PREFIXES.some((p) => final.startsWith(p))) {
+  // 5) 特殊路径黑名单（F3）：POSIX 前缀 + **Windows 设备名**（后者只在 Windows 上生效——
+  //    在 Linux 上 `nul` 是合法文件名，无条件拒绝会误伤正常插件）
+  const windowsDevice =
+    process.platform === 'win32' && final.split(/[\\/]/).some(isWindowsDeviceName);
+  if (windowsDevice || FORBIDDEN_PREFIXES.some((p) => final.startsWith(p))) {
     throw new PathError('SPECIAL_PATH_DENIED', { path: final });
   }
 
