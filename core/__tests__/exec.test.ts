@@ -343,24 +343,41 @@ test('沙箱端到端：钩子预算会压低 exec 自己的超时（S-2：阻�
     '@xfy2412/exec-test',
     `
 import { exec } from '@host/api';
-export function init() { exec.run('core:t-slow.run'); }
+export function init() {
+  try { exec.run('core:t-slow.run'); console.log('NO-THROW'); }
+  catch (e) { console.log('CODE ' + e.code + ' BUDGET ' + (e.params && e.params.timeoutMs)); }
+}
 `,
   );
-  const started = Date.now();
-  await assert.rejects(
-    () => sandbox.callHook('init', 100),
-    (err: unknown) => {
-      assert.ok(err instanceof SpcError);
-      assert.equal(err.code, 'PLUGIN_INIT_FAILED');
-      // 被**预算**掐掉（宿主方法的超时封顶），而不是等模板自己那 300ms
-      assert.equal(err.params.cause, 'EXEC_TIMEOUT');
-      return true;
-    },
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+  let outcome = '';
+  try {
+    await sandbox.callHook('init', 100);
+    outcome = 'resolved';
+  } catch (err) {
+    outcome = err instanceof SpcError ? err.code : 'unknown';
+  } finally {
+    console.log = origLog;
+    sandbox.dispose();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+
+  // ① 关键断言，**与墙钟无关**：exec 拿到的生效超时是钩子预算（~100ms），而不是模板的 300ms。
+  //    报的是生效值这件事本身就有判别力——没有预算封顶时这里会是 300。
+  const m = /CODE EXEC_TIMEOUT BUDGET (\d+)/.exec(logs.join('\n'));
+  assert.ok(m, `插件应当看到 EXEC_TIMEOUT，实际日志：${JSON.stringify(logs.join('\n'))}`);
+  const budget = Number(m![1]);
+  assert.ok(budget > 0 && budget <= 100, `生效超时应被压到 ≤100ms，实测 ${budget}ms`);
+
+  // ② 钩子的收场：exec 吃掉了整个预算 → 要么按墙钟超时收场，要么刚好没超。
+  //    具体错误码由 sandbox.test.ts 的忙等用例**确定性地**钉住（那边不涉及进程），
+  //    这里不重复断言码，免得把 CI 负载变成红灯。
+  assert.ok(
+    outcome === 'resolved' || outcome === 'PLUGIN_INIT_TIMEOUT',
+    `钩子结局异常：${outcome}`,
   );
-  const elapsed = Date.now() - started;
-  sandbox.dispose();
-  rmSync(dataDir, { recursive: true, force: true });
-  assert.ok(elapsed < 280, `应被 capMs 掐在 ~100ms，实测 ${elapsed}ms`);
 });
 
 test('沙箱：无参数模板用单实参调用（桥把 undefined 当字符串的坑已归一化）', async () => {
