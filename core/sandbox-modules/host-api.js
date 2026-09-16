@@ -171,12 +171,27 @@ const __jsonBin = (fn) => (...args) => {
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 };
 
+/**
+ * 文本参数必须**真的是字符串**。
+ * 校验必须放在这一层（沙箱侧）：`__marshal` 会把非字符串 JSON 化，宿主那边再查就已经晚了
+ * ——`byteLength(new Uint8Array([1,2,3]))` 会先被变成字符串 `"1,2,3"`，于是静默数出 5。
+ * 错误码用 Node 的形状（对外像 Node，对内才是我们的码，见 module-emulation-design §7）。
+ */
+const __requireString = (v, what) => {
+  if (typeof v !== 'string') {
+    const e = new TypeError('The "' + what + '" argument must be of type string');
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    throw e;
+  }
+  return v;
+};
+
 export const bytes = {
   /** 字符串 → 字节（返回 Uint8Array；与 Node 的 `Buffer.from(str, enc)` 同语义） */
   fromString(text, encoding) {
     return __bin(globalThis.__host['bytes.fromString'])(
-      String(text),
-      encoding === undefined ? 'utf8' : String(encoding),
+      __requireString(text, 'text'),
+      encoding === undefined ? 'utf8' : __requireString(encoding, 'encoding'),
     );
   },
   /** 字节 → 字符串（接受 Uint8Array / ArrayBuffer / Buffer） */
@@ -184,14 +199,14 @@ export const bytes = {
     // 用 __jsonBin 而不是 __json：参数里带二进制，不能被 __marshal JSON 化（见 __jsonBin 注释）
     return __jsonBin(globalThis.__host['bytes.toString'])(
       __toAB(data),
-      encoding === undefined ? 'utf8' : String(encoding),
+      encoding === undefined ? 'utf8' : __requireString(encoding, 'encoding'),
     );
   },
   /** 字符串按某编码编码后有多少字节（不需要先编码出来） */
   byteLength(text, encoding) {
     return __jsonBin(globalThis.__host['bytes.byteLength'])(
-      String(text),
-      encoding === undefined ? 'utf8' : String(encoding),
+      __requireString(text, 'text'),
+      encoding === undefined ? 'utf8' : __requireString(encoding, 'encoding'),
     );
   },
 };

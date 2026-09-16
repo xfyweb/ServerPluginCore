@@ -434,6 +434,24 @@ console.log('HEX ' + bytes.toString(bytes.fromString('a\\uD800b', 'utf8'), 'hex'
     );
   });
 
+  it('**非字符串文本参数要被拒**（而不是 `String()` 后静默算错）', async () => {
+    // `byteLength(new Uint8Array([1,2,3]))` 曾经去数字符串 `"1,2,3"` 的长度（5）——静默错值。
+    // 校验在**沙箱侧包装器**里做（`__marshal` 之后宿主就看不到原值了），错误码用 Node 形状。
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+const cases = [
+  () => bytes.byteLength(new Uint8Array([1, 2, 3])),
+  () => bytes.fromString({}),
+  () => bytes.fromString(null),
+  () => bytes.fromString('x', 123),
+];
+const r = [];
+for (const f of cases) { try { f(); r.push('NO-THROW'); } catch (e) { r.push(e.code); } }
+console.log(r.join(','));
+`);
+    assert.match(out, /ERR_INVALID_ARG_TYPE,ERR_INVALID_ARG_TYPE,ERR_INVALID_ARG_TYPE,ERR_INVALID_ARG_TYPE/);
+  });
+
   it('未知编码 → 抛错，码是宿主契约码 ENCODING_UNKNOWN', async () => {
     const out = await runInSandbox(`
 import { bytes } from '@host/api';

@@ -63,6 +63,19 @@ function asBuffer(value: HostArg): Buffer {
   return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 }
 
+/**
+ * 文本参数必须**真的是字符串**。
+ * 用 `String(value)` 兜底会把"类型传错"变成**静默错值**——例如 `byteLength(new Uint8Array([1,2,3]))`
+ * 会去数字符串 `"1,2,3"` 的长度（5），而 Node 的 `Buffer.byteLength` 对同一个输入给 3。
+ * 静默算错比响亮报错危险得多，所以这里一律拒绝。
+ */
+function asText(value: HostArg | undefined): string {
+  if (typeof value !== 'string') {
+    throw new SpcError('INVALID_ARGS', { reason: 'expected-string', got: typeof value });
+  }
+  return value;
+}
+
 /** 宿主 API 的每插件上下文（由装载器提供） */
 export interface PluginHostContext {
   pluginId: string;
@@ -362,7 +375,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     'bytes.fromString': {
       permission: 'bytes.encode',
       binaryResult: true,
-      fn: (text: HostArg, encoding?: HostArg) => Buffer.from(String(text), assertEncoding(encoding)),
+      fn: (text: HostArg, encoding?: HostArg) => Buffer.from(asText(text), assertEncoding(encoding)),
     },
     'bytes.toString': {
       permission: 'bytes.decode',
@@ -370,7 +383,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     },
     'bytes.byteLength': {
       permission: 'bytes.encode',
-      fn: (text: HostArg, encoding?: HostArg) => Buffer.byteLength(String(text), assertEncoding(encoding)),
+      fn: (text: HostArg, encoding?: HostArg) => Buffer.byteLength(asText(text), assertEncoding(encoding)),
     },
 
     // ---- exec：**只能调用已注册模板**（没有自由命令）。两种写法都接受：----
