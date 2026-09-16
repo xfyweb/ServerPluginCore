@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import {
   isFail,
@@ -266,19 +266,42 @@ function moduleSource(moduleName: string, apiKeys: string[]): string | null {
   if (isRegistered(moduleName)) {
     return shimSource(normalizeSpecifier(moduleName));
   }
+  // shim 之间可以互相 import（`./node-assert.js`）：构建层由 esbuild 内联（同目录相对引用）。
+  // 沙箱里要注意 **QuickJS 交给我们的是解析后的名字**，不是源码里写的那个：
+  // 相对 specifier 按"父模块名的目录部分"解析，而我们的模块名是**规范名**
+  // （`node:assert/strict`），于是 `./node-assert.js` 会变成 `node:assert/node-assert.js`。
+  // 判据因此落在**基名**上：`…/node-<名字>.js` 且该文件确实在 sandbox-modules/ ⇒ 服务它。
+  // 安全性：只有基名参与拼接，`..` / 绝对路径 / 带盘符的名字都拼不出 `node-*.js` 这个形状。
+  const base = SHIM_BASENAME.exec(moduleName)?.[1];
+  if (base !== undefined && shimFileExists(base)) {
+    return shimSourceForFile(base);
+  }
   return null;
+}
+
+/** 只认"基名是本目录下真实存在的 node-*.js"这一种形状（见 moduleSource 的注释） */
+const SHIM_BASENAME = /(?:^|\/)(node-[a-z0-9-]+\.js)$/;
+
+/** sandbox-modules/ 下真实存在的文件（readdir 一次 + 缓存）：基名不能凭想象放行 */
+let shimDirFiles: Set<string> | undefined;
+function shimFileExists(fileName: string): boolean {
+  shimDirFiles ??= new Set(readdirSync(new URL('./sandbox-modules/', import.meta.url)));
+  return shimDirFiles.has(fileName);
 }
 
 /** shim 源码按需读取 + 缓存（一个模块一个真实文件，见 registry.ts 的文件名约定） */
 const shimCache = new Map<string, string>();
-function shimSource(canonical: string): string {
-  let source = shimCache.get(canonical);
+function shimSourceForFile(fileName: string): string {
+  let source = shimCache.get(fileName);
   if (source === undefined) {
-    const url = new URL(`./sandbox-modules/${shimFileName(canonical)}`, import.meta.url);
-    source = readFileSync(url, 'utf8');
-    shimCache.set(canonical, source);
+    source = readFileSync(new URL(`./sandbox-modules/${fileName}`, import.meta.url), 'utf8');
+    shimCache.set(fileName, source);
   }
   return source;
+}
+
+function shimSource(canonical: string): string {
+  return shimSourceForFile(shimFileName(canonical));
 }
 
 /**

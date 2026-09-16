@@ -21,6 +21,12 @@ export interface SandboxModule {
   readonly needsHost: boolean;
   /** 一句话说明；构建期报错文案与文档从这里取，避免两处各写一份 */
   readonly note: string;
+  /**
+   * 复用另一个 shim 文件（别名条目）。
+   * 缺省按 `shimFileName` 的约定生成；只有"同一个实现服务多个 specifier"时才需要它
+   * （如 `path/posix` 与 `path` 在 POSIX 基线下是**同一份**实现）。
+   */
+  readonly shimFile?: string;
 }
 
 /**
@@ -39,6 +45,19 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     note: 'POSIX 语义（沙箱路径语义固定为 posix，与"暂不支持 Windows 部署"一致）',
   },
   {
+    canonical: 'path/posix',
+    stage: 'P2-A',
+    needsHost: false,
+    shimFile: 'node-path.js', // 别名：POSIX 基线下 `path/posix` 就是 `path` 本身
+    note: '子路径入口；与 `path` 同一份实现（Node 里它就是 posix 实现那个对象）',
+  },
+  {
+    canonical: 'path/win32',
+    stage: 'P2-A',
+    needsHost: false,
+    note: '入口存在但方法**一律抛错**：Windows 路径语义未实现，不静默给 posix 结果（同 `path.win32`）',
+  },
+  {
     canonical: 'events',
     stage: 'P2-A',
     needsHost: false,
@@ -49,6 +68,12 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     stage: 'P2-A',
     needsHost: false,
     note: '常用断言子集（依赖常拿它做参数校验）',
+  },
+  {
+    canonical: 'assert/strict',
+    stage: 'P2-A',
+    needsHost: false,
+    note: '严格断言入口（宽松方法被严格方法覆盖，默认导出**可调用**）——与 `assert` 不是同一份 shim',
   },
   {
     canonical: 'tty',
@@ -89,7 +114,9 @@ export function sandboxModule(spec: string): SandboxModule | undefined {
 /**
  * 规范名 → shim 文件名（**约定**，构建层与沙箱共用）。
  * `path` → `node-path.js`；`fs/promises` → `node-fs-promises.js`（子路径的 `/` 变 `-`）。
+ * 别名条目（`shimFile`）优先——它们的文件名不必与规范名一一对应。
  */
 export function shimFileName(canonical: string): string {
-  return `node-${normalizeSpecifier(canonical).replace(/\//g, '-')}.js`;
+  const norm = normalizeSpecifier(canonical);
+  return BY_CANONICAL.get(norm)?.shimFile ?? `node-${norm.replace(/\//g, '-')}.js`;
 }

@@ -6,9 +6,9 @@
 // 加载方式：读**文件内容**再按 data: URL 求值，而不是 import 路径。理由：
 //   · 沙箱 loader 服务的就是这份源码文本，构建层内联的也是这份字节——测的就是**真实产物**
 //   · 不需要给项目开 `allowJs`（shim 是 .js，TS 不做类型检查，但我们比的是**值**）
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { strict as assert } from 'node:assert';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -20,11 +20,24 @@ const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-modules-'));
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 after(() => rmSync(AUDIT_DIR, { recursive: true, force: true }));
 
+/**
+ * shim 的临时加载目录：**逐字节拷**一份 `node-*.js`，再按 `file:` 导入。
+ *
+ * 为什么要拷而不是就地 `data:` URL 求值：shim 之间可以互相 import
+ * （`node-assert-strict.js` → `./node-assert.js`），而 data: URL 里**相对引用无法解析**。
+ * 拷贝保证测的仍是产物字节；`package.json` 只为让 `.js` 按 ESM 解析（本仓库没有 `"type": "module"`）。
+ */
+const SHIM_DIR = mkdtempSync(join(tmpdir(), 'spc-shims-'));
+writeFileSync(join(SHIM_DIR, 'package.json'), '{"type":"module"}\n');
+const SHIM_SRC_DIR = fileURLToPath(new URL('../sandbox-modules/', import.meta.url));
+for (const f of readdirSync(SHIM_SRC_DIR)) {
+  if (f.startsWith('node-') && f.endsWith('.js')) copyFileSync(join(SHIM_SRC_DIR, f), join(SHIM_DIR, f));
+}
+after(() => rmSync(SHIM_DIR, { recursive: true, force: true }));
+
 /** 按文件内容加载 shim（返回 any：我们要比的是运行时值，不是类型） */
 async function loadShim(fileName: string): Promise<any> {
-  const src = readFileSync(new URL(`../sandbox-modules/${fileName}`, import.meta.url), 'utf8');
-  const url = 'data:text/javascript;base64,' + Buffer.from(src, 'utf8').toString('base64');
-  return import(url);
+  return import(pathToFileURL(join(SHIM_DIR, fileName)).href);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -53,6 +66,23 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
     'foo/../../bar', '/foo/../../bar', 'a/b/../c/', './a', '../a', 'foo/', 'a//b', '...', '/..',
     'a/./b', '/a/./b/', 'a/b/c/../../..', '/..', '//foo//bar',
   ]);
+
+  // A4：`relative` 走的是 `resolve`，所以**继承虚拟根兜底**——有意差异，用测试钉住而不是留给下一个人猜
+  it('relative 的相对参数按**虚拟根**解析（与 Node 的 cwd 语义不同），绝对-绝对与 Node 一致', () => {
+    // 沙箱里没有"当前工作目录"：相对参数先按 '/' 解析（否则结果会随宿主 cwd 变，插件根本没法推理）
+    assert.equal(shim.relative('a', '/b'), '../b');
+    assert.equal(shim.relative('a/b', '/a/c'), '../c');
+    assert.equal(shim.relative('/x', '/x/y/z'), 'y/z');
+    // 两个都是绝对路径时不经过虚拟根 → 必须与 Node 逐字相同
+    for (const [f, t] of [
+      ['/a/b', '/a/c'],
+      ['/a/b/c', '/a'],
+      ['/', '/a/b'],
+      ['/a/b', '/a/b'],
+    ]) {
+      assert.equal(shim.relative(f, t), node.relative(f, t), `relative(${f}, ${t}) 不一致`);
+    }
+  });
 
   unary('dirname', [
     '', '.', '..', '/', '//', '/foo', '//foo', '/foo/bar', 'foo/bar', 'foo', '/a/b/', 'a/',
@@ -390,6 +420,87 @@ describe('仿真模块登记表', async () => {
     assert.equal(reg.shimFileName('node:path'), 'node-path.js');
     assert.equal(reg.shimFileName('fs/promises'), 'node-fs-promises.js');
   });
+
+  // B1 回归：这几个子路径入口**在 Node 里真实存在**，缺了会让依赖在装载期就失败
+  it('子路径入口齐全：assert/strict、path/posix、path/win32', () => {
+    for (const spec of ['node:assert/strict', 'assert/strict', 'node:path/posix', 'path/posix', 'node:path/win32', 'path/win32']) {
+      assert.equal(reg.isRegistered(spec), true, `${spec} 应当已登记`);
+    }
+    // 别名条目：path/posix 复用 path 的实现（POSIX 基线下本来就是同一个对象）
+    assert.equal(reg.shimFileName('path/posix'), 'node-path.js');
+    assert.equal(reg.shimFileName('path/win32'), 'node-path-win32.js');
+    assert.equal(reg.shimFileName('assert/strict'), 'node-assert-strict.js');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// assert/strict 与 path/win32（B1 的子路径入口）
+// ─────────────────────────────────────────────────────────────
+describe('仿真 node:assert/strict —— 与 node:assert/strict 对齐', async () => {
+  const shim = await loadShim('node-assert-strict.js');
+  const nodeStrict: any = (await import('node:assert/strict')).default;
+
+  it('默认导出**可调用**（Node 里 `assert/strict` 本身就是函数）', () => {
+    assert.equal(typeof shim.default, 'function');
+    assert.equal(typeof nodeStrict, 'function');
+    assert.doesNotThrow(() => shim.default(true));
+    assert.throws(() => shim.default(false), (e: any) => e.name === 'AssertionError');
+  });
+
+  it('四个宽松名字指向**严格**实现（比 Node 弱就是静默漏判）', () => {
+    for (const [loose, strict] of [
+      ['equal', 'strictEqual'],
+      ['notEqual', 'notStrictEqual'],
+      ['deepEqual', 'deepStrictEqual'],
+      ['notDeepEqual', 'notDeepStrictEqual'],
+    ]) {
+      assert.equal(shim[loose], shim[strict], `${loose} 应当就是 ${strict}`);
+      assert.equal(nodeStrict[loose], nodeStrict[strict], `Node 的 ${loose} 是 ${strict}`);
+    }
+    // 判别力：宽松 equal 放过的 `1 == '1'`，strict 必须拒
+    assert.throws(() => shim.equal(1, '1'), (e: any) => e.name === 'AssertionError');
+    assert.throws(() => nodeStrict.equal(1, '1'), (e: any) => e.name === 'AssertionError');
+  });
+
+  it('导出面：不自造名字，未实现的 Node 名字显式列出来（不假装有）', () => {
+    const ours = Object.keys(shim).filter((k) => k !== 'default');
+    const nodeNames = new Set(Object.keys(nodeStrict));
+    for (const k of ours) assert.ok(nodeNames.has(k), `shim 导出了 Node 没有的 ${k}`);
+    const missing = [...nodeNames].filter((k) => k !== 'default' && !ours.includes(k)).sort();
+    // 这三个属于更宽的 assert 面（P2 补），列出来是为了"缺了就是缺了"，而不是让人以为齐了
+    assert.deepEqual(missing, ['Assert', 'CallTracker', 'partialDeepStrictEqual']);
+  });
+});
+
+describe('仿真 node:path/win32 —— 入口存在但方法明确抛错', async () => {
+  const shim = await loadShim('node-path-win32.js');
+  const nodeWin32: any = (await import('node:path')).win32;
+
+  it('sep / delimiter 与 Node 的 win32 一致', () => {
+    assert.equal(shim.sep, nodeWin32.sep);
+    assert.equal(shim.delimiter, nodeWin32.delimiter);
+  });
+
+  it('每个方法都抛 ERR_NOT_SUPPORTED_IN_SANDBOX（不静默给 posix 结果）', async () => {
+    const methods = ['resolve', 'normalize', 'isAbsolute', 'join', 'relative', 'dirname', 'basename', 'extname', 'format', 'parse'];
+    for (const m of methods) {
+      // format 收的是对象（Node 对字符串会抛 ERR_INVALID_ARG_TYPE），其余收字符串
+      const args: unknown[] = m === 'format' ? [{ dir: '/a', base: 'b' }] : ['/a', 'b'];
+      assert.equal(typeof shim[m], 'function', `${m} 应当是函数`);
+      assert.throws(
+        () => shim[m](...args),
+        (e: any) => e.code === 'ERR_NOT_SUPPORTED_IN_SANDBOX',
+        `${m} 应当明确抛错`,
+      );
+      // Node 的实现是能用的——差异是**有意的**（沙箱只有 POSIX），这里把差异钉住
+      assert.doesNotThrow(() => nodeWin32[m](...args), `Node 的 ${m} 不该抛`);
+    }
+    // 命名导出与默认导出是同一个对象上的同一批函数
+    assert.equal(shim.join, shim.default.join);
+    // 与 `path.win32` 是**同一个对象**（不是两份实现）：drift 会在这里立刻暴露
+    const pathShim = await loadShim('node-path.js');
+    assert.equal(shim.default, pathShim.win32);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -627,6 +738,27 @@ console.log('CONST ' + constants.F_OK);
     assert.match(out, /EVT ok/);
     assert.match(out, /TTY false/);
     assert.match(out, /CONST 0/);
+  });
+
+  // B1 回归：子路径入口在**沙箱里**也要能装载（登记表 + loader + shim 的相对 import 三者都得对）
+  it('子路径入口在沙箱里可装载：path/posix、path/win32、assert/strict', async () => {
+    const out = await runInSandbox(`
+import { join as posixJoin } from 'node:path/posix';
+import win32 from 'node:path/win32';
+import strict from 'node:assert/strict';
+console.log('POSIX ' + posixJoin('/a', 'b'));
+let code = 'NO-THROW';
+try { win32.join('/a', 'b'); } catch (e) { code = e.code; }
+console.log('WIN32 ' + code + ' ' + win32.sep);
+try { strict.equal(1, '1'); console.log('STRICT weak'); } catch (e) { console.log('STRICT ' + e.name); }
+strict.equal(1, 1);
+console.log('STRICT-OK');
+`);
+    assert.match(out, /POSIX \/a\/b/);
+    assert.match(out, /WIN32 ERR_NOT_SUPPORTED_IN_SANDBOX \\/);
+    // 关键：strict 的 equal 必须是严格版（宽松版会走到 'STRICT weak'）
+    assert.match(out, /STRICT AssertionError/);
+    assert.match(out, /STRICT-OK/);
   });
 
   it('未登记的 node 内建 → 报错指出"沙箱尚未支持"，而不是让作者以为写错了', async () => {

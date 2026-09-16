@@ -286,6 +286,13 @@ export function format(pathObject) {
   return dir + '/' + base;
 }
 
+/**
+ * `relative` **继承了 `resolve` 的虚拟根兜底**——这是有意保留的差异，写在这里以免被当成 bug：
+ * 两个参数里只要有一个是相对的，它就先按虚拟根 `/` 解析（沙箱里没有"当前工作目录"这个概念，
+ * 见 `resolve` 的说明），于是 `relative('a', '/b')` 得到 `'../b'`；
+ * 而 Node 会按 `process.cwd()` 解析相对参数，结果是**随 cwd 变化**的。
+ * 两个参数都是绝对路径时与 Node 逐字一致（不经过虚拟根）。
+ */
 export function relative(from, to) {
   assertPath(from, 'from');
   assertPath(to, 'to');
