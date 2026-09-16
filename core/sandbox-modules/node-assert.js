@@ -34,6 +34,10 @@ export class AssertionError extends Error {
 
 /** 内部抛错助手（公开的 `fail()` 是另一回事，见文件末） */
 function failWith(message, actual, expected, operator) {
+  // **message 传 Error 时原样抛出它**（Node 的 innerFail 行为）：
+  // 包成 AssertionError 会让抛出类型与 code 全变，`if (e instanceof MyError)` 这类分支失效。
+  // 一处在源头挡掉，所有断言（ok/equal/fail/…）就都有了这个语义。
+  if (message instanceof Error) throw message;
   throw new AssertionError({ message, actual, expected, operator });
 }
 
@@ -182,41 +186,71 @@ function isDeepEqual(a, b, memo) {
 
 // ── 公开断言 ──
 
+/**
+ * 二元断言的**缺参**检查。
+ * 漏写一个参数时 Node 抛 `ERR_MISSING_ARGS`；不查的话 `notXxx(x)` 会**静默通过**
+ * ——"断言失效"比"断言失败"危险得多，所以每条二元断言都要先过这一关。
+ * 用 `arguments.length` 而不是判 undefined：显式传 `undefined` 是合法的比较值。
+ */
+function requireArgs(count) {
+  if (count < 2) {
+    const err = new TypeError('The "actual" and "expected" arguments must be specified');
+    err.code = 'ERR_MISSING_ARGS';
+    throw err;
+  }
+}
+
 export function ok(value, message) {
-  if (!value) failWith(message, false, true, '==');
+  // `actual` 放**原值**：Node 的 `ok(0)` 给的是 `actual: 0` 而不是 `false`，
+  // 于是靠 `err.actual` 分支的调用方分得清"值是 0"与"值缺席"。
+  if (!value) failWith(message, value, true, '==');
 }
 
 export function strictEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   if (!Object.is(actual, expected)) failWith(message, actual, expected, 'strictEqual');
 }
 
 export function notStrictEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   if (Object.is(actual, expected)) failWith(message, actual, expected, 'notStrictEqual');
 }
 
 export function equal(actual, expected, message) {
+  requireArgs(arguments.length);
+  // **NaN 是特例**：`equal(NaN, NaN)` 在 Node 里**通过**（尽管 `NaN == NaN` 为 false），
+  // 而 `notEqual(NaN, NaN)` 反而失败。照搬 `==` 会把这两个判定都弄反。
   // eslint-disable-next-line eqeqeq
-  if (actual != expected) failWith(message, actual, expected, '==');
+  if (actual != expected && (!Number.isNaN(actual) || !Number.isNaN(expected))) {
+    failWith(message, actual, expected, '==');
+  }
 }
 
 export function notEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   // eslint-disable-next-line eqeqeq
-  if (actual == expected) failWith(message, actual, expected, '!=');
+  if (actual == expected || (Number.isNaN(actual) && Number.isNaN(expected))) {
+    failWith(message, actual, expected, '!=');
+  }
 }
 
 export function deepStrictEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   if (!isDeepStrictEqual(actual, expected)) failWith(message, actual, expected, 'deepStrictEqual');
 }
 
 export function notDeepStrictEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   if (isDeepStrictEqual(actual, expected)) failWith(message, actual, expected, 'notDeepStrictEqual');
 }
 
 export function deepEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   if (!isDeepEqual(actual, expected)) failWith(message, actual, expected, 'deepEqual');
 }
 
 export function notDeepEqual(actual, expected, message) {
+  requireArgs(arguments.length);
   if (isDeepEqual(actual, expected)) failWith(message, actual, expected, 'notDeepEqual');
 }
 
@@ -224,9 +258,19 @@ export function notDeepEqual(actual, expected, message) {
 function expectedErrorMatcher(expected) {
   if (expected === undefined) return () => true;
   if (typeof expected === 'function') {
-    // 构造器还是校验函数？Node 用"是否 Error 的子类"来区分
-    if (expected === Error || expected.prototype instanceof Error) return (e) => e instanceof expected;
-    return (e) => !!expected(e);
+    // 三条判据**都要**，少一条就会在某个形态上崩或误判：
+    //   · 类 / 有原型的构造器 → 用 `instanceof`；
+    //   · 类但没命中 → 直接不匹配（**不能退化成调用它**：类当函数调会抛 TypeError）；
+    //   · 普通函数（含**箭头函数**，它没有 `prototype`）→ 当校验函数调，Node 要求**严格返回 `true`**。
+    // 顺序上先看 `hasProto`：对箭头函数做 `instanceof` 本身就会抛 TypeError。
+    const src = Function.prototype.toString.call(expected);
+    const isClass = src.startsWith('class');
+    const hasProto = expected.prototype !== undefined && expected.prototype !== null;
+    return (e) => {
+      if (hasProto && e instanceof expected) return true;
+      if (isClass) return false;
+      return expected(e) === true;
+    };
   }
   if (expected instanceof RegExp) return (e) => expected.test(String(e && e.message));
   if (typeof expected === 'object' && expected !== null) {
@@ -247,6 +291,12 @@ function expectedErrorMatcher(expected) {
 
 export function throws(fn, expected, message) {
   if (typeof fn !== 'function') failWith('The "fn" argument must be of type function', fn, undefined, 'throws');
+  // 字符串第二参是 **message**，不是 expected（Node 的 expectsError 就这么处理）。
+  // 不认这一条的话，`assert.throws(fn, 'should throw')` 这种常见写法会被判失败——反向漏判。
+  if (typeof expected === 'string') {
+    message = expected;
+    expected = undefined;
+  }
   const matches = expectedErrorMatcher(expected);
   let caught;
   let threw = false;
@@ -262,14 +312,27 @@ export function throws(fn, expected, message) {
 
 export function doesNotThrow(fn, expected, message) {
   if (typeof fn !== 'function') failWith('The "fn" argument must be of type function', fn, undefined, 'doesNotThrow');
+  if (typeof expected === 'string') {
+    message = expected;
+    expected = undefined;
+  }
   try {
     fn();
   } catch (e) {
-    if (expected === undefined || expectedErrorMatcher(expected)(e)) failWith(message, e, undefined, 'doesNotThrow');
+    if (!expected || expectedErrorMatcher(expected)(e)) {
+      failWith(message, e, expected, 'doesNotThrow');
+    }
+    // **不匹配 → 原错误继续抛**。这是 Node 的 expectsNoError 行为，也是这条断言唯一的用处：
+    // 吞掉它等于把真实故障藏起来（"我检查过了没问题"，其实是有问题、只是长得不一样）。
+    throw e;
   }
 }
 
 export async function rejects(fn, expected, message) {
+  if (typeof expected === 'string') {
+    message = expected;
+    expected = undefined;
+  }
   const matches = expectedErrorMatcher(expected);
   let caught;
   let threw = false;
@@ -284,10 +347,17 @@ export async function rejects(fn, expected, message) {
 }
 
 export async function doesNotReject(fn, expected, message) {
+  if (typeof expected === 'string') {
+    message = expected;
+    expected = undefined;
+  }
   try {
     await (typeof fn === 'function' ? fn() : fn);
   } catch (e) {
-    if (expected === undefined || expectedErrorMatcher(expected)(e)) failWith(message, e, undefined, 'doesNotReject');
+    if (!expected || expectedErrorMatcher(expected)(e)) {
+      failWith(message, e, expected, 'doesNotReject');
+    }
+    throw e; // 同上：不匹配就让它继续冒泡
   }
 }
 
@@ -324,7 +394,9 @@ export function doesNotMatch(value, regExp, message) {
 }
 
 export function fail(message) {
-  throw new AssertionError({ message: message === undefined ? 'Failed' : String(message), operator: 'fail' });
+  // 走 failWith：于是 `fail(new Error('orig'))` 会**原样抛出那个 Error**（Node 行为），
+  // 而不是包成 AssertionError —— 包了的话类型与 code 都变，靠 `instanceof` 分支的调用方失效。
+  failWith(message === undefined ? 'Failed' : message, undefined, undefined, 'fail');
 }
 
 // ── 默认导出：本身可调用，且挂满成员（与 Node 一致） ──

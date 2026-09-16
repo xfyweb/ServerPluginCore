@@ -640,6 +640,31 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
     ['equal(1,"1")', (a) => a.equal(1, '1')],
     ['equal(1,2)', (a) => a.equal(1, 2)],
     ['notEqual(1,2)', (a) => a.notEqual(1, 2)],
+    // 缺参：漏写一个参数必须报 ERR_MISSING_ARGS —— 否则 `notXxx(x)` 会**静默通过**（断言失效）
+    ['equal(1) 缺参', (a) => a.equal(1)],
+    ['strictEqual(1) 缺参', (a) => a.strictEqual(1)],
+    ['notEqual(1) 缺参', (a) => a.notEqual(1)],
+    ['notStrictEqual(1) 缺参', (a) => a.notStrictEqual(1)],
+    ['deepEqual(1) 缺参', (a) => a.deepEqual(1)],
+    ['deepStrictEqual(1) 缺参', (a) => a.deepStrictEqual(1)],
+    ['notDeepEqual(1) 缺参', (a) => a.notDeepEqual(1)],
+    ['notDeepStrictEqual(1) 缺参', (a) => a.notDeepStrictEqual(1)],
+    // NaN 是特例：`equal(NaN,NaN)` 通过、`notEqual(NaN,NaN)` 失败（与 `==` 的直觉相反）
+    ['equal(NaN,NaN)', (a) => a.equal(NaN, NaN)],
+    ['notEqual(NaN,NaN)', (a) => a.notEqual(NaN, NaN)],
+    ['equal(NaN,1)', (a) => a.equal(NaN, 1)],
+    // doesNotThrow 的错误**不匹配时必须重抛原错误** —— 吞掉它等于把真实故障藏起来
+    ['doesNotThrow(fn,TypeError) 抛 RangeError', (a) => a.doesNotThrow(() => { throw new RangeError('x'); }, TypeError)],
+    ['doesNotThrow(fn,/boom/) 抛 nope', (a) => a.doesNotThrow(() => { throw new Error('nope'); }, /boom/)],
+    ['doesNotThrow(fn,TypeError) 不抛', (a) => a.doesNotThrow(() => {}, TypeError)],
+    ['doesNotThrow(fn) 抛错', (a) => a.doesNotThrow(() => { throw new Error('x'); })],
+    // 字符串第二参是 message（`throws(fn, 'should throw')` 是常见写法）
+    ['throws(fn,"msg") 字符串当 message', (a) => a.throws(() => { throw new Error('x'); }, 'should throw')],
+    ['throws(fn,()=>1) 校验函数须严格 true', (a) => a.throws(() => { throw new Error('x'); }, () => 1)],
+    ['throws(fn,()=>true)', (a) => a.throws(() => { throw new Error('x'); }, () => true)],
+    // message 传 Error → 原样抛出那个 Error（不是包成 AssertionError）
+    ['fail(new Error)', (a) => a.fail(new Error('orig'))],
+    ['strictEqual(1,2,new Error)', (a) => a.strictEqual(1, 2, new Error('custom'))],
     ['deepStrictEqual(NaN,NaN)', (a) => a.deepStrictEqual(NaN, NaN)],
     ['deepStrictEqual(-0,0)', (a) => a.deepStrictEqual(-0, 0)],
     ['deepStrictEqual(1,"1")', (a) => a.deepStrictEqual(1, '1')],
@@ -677,6 +702,20 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
   it('同一批表达式：抛/不抛与 error.code/operator 逐条一致', () => {
     for (const [label, run] of CASES) {
       assert.equal(outcome(() => run(shim)), outcome(() => run(nodeAssert)), `${label} 不一致`);
+    }
+  });
+
+  it('`ok` 的 actual 是**原值**（`ok(0)` → 0，不是 false）', () => {
+    // 靠 `err.actual` 分支的调用方要能分清"值是 0/''/null"与"值缺席"
+    for (const a of [shim, nodeAssert]) {
+      for (const value of [0, '', null, undefined, false]) {
+        try {
+          a.ok(value);
+          assert.fail('应当抛 AssertionError');
+        } catch (e: any) {
+          assert.equal(e.actual, value, `ok(${String(value)}) 的 actual 不一致`);
+        }
+      }
     }
   });
 
