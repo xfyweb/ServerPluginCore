@@ -128,4 +128,72 @@ export const timers = {
   },
 };
 
+/**
+ * bytes：**宿主代工的编解码**（utf8 / latin1 / ascii / base64 / base64url / hex / utf16le）。
+ *
+ * 为什么走宿主（module-emulation-design §3.2）：QuickJS 没有 `TextEncoder`/`TextDecoder`，
+ * 沙箱内只能逐字节手写（实测 ≈2.6 MB/s）；更要紧的是**保真**——交给宿主就是交给 Node，
+ * 畸形输入的语义天然一致，不必复刻。
+ *
+ * **二进制通道的约定**：返回 **`ArrayBuffer` = 数据**，返回**字符串 = 错误信封**
+ * （失败路径一律回字符串，所以按类型就能区分，不需要额外的标记位）。
+ */
+const __toAB = (v) => {
+  if (v instanceof ArrayBuffer) return v;
+  if (ArrayBuffer.isView(v)) {
+    // 整块视图直接复用底层 buffer（不拷贝），否则切出对应区间
+    return v.byteOffset === 0 && v.byteLength === v.buffer.byteLength
+      ? v.buffer
+      : v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+  }
+  const e = new TypeError('The "data" argument must be a TypedArray or ArrayBuffer');
+  e.code = 'ERR_INVALID_ARG_TYPE';
+  throw e;
+};
+
+/** 二进制参数不能走 __marshal（那会 JSON 化），其余照旧 */
+const __marshalBin = (a) => (ArrayBuffer.isView(a) || a instanceof ArrayBuffer ? __toAB(a) : __marshal(a));
+
+const __bin = (fn) => (...args) => {
+  const raw = fn(...args.map(__marshalBin));
+  if (typeof raw === 'string') return __unwrap(raw); // 错误信封 → __unwrap 抛；意外字符串原样返回
+  return new Uint8Array(raw);
+};
+
+/**
+ * **参数走二进制通道、结果按 JSON 解码**。
+ * 不能直接用 `__json`：它会先用 `__marshal` 处理参数，而 `__marshal` 把非字符串 **JSON 化**——
+ * `ArrayBuffer` 会变成字符串（`JSON.stringify(new ArrayBuffer(2))` 是 `"{}"`），
+ * 到宿主就成了个字符串参数（实测踩到过：宿主报 INVALID_ARGS expected-bytes）。
+ */
+const __jsonBin = (fn) => (...args) => {
+  const raw = __unwrap(fn(...args.map(__marshalBin)));
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+};
+
+export const bytes = {
+  /** 字符串 → 字节（返回 Uint8Array；与 Node 的 `Buffer.from(str, enc)` 同语义） */
+  fromString(text, encoding) {
+    return __bin(globalThis.__host['bytes.fromString'])(
+      String(text),
+      encoding === undefined ? 'utf8' : String(encoding),
+    );
+  },
+  /** 字节 → 字符串（接受 Uint8Array / ArrayBuffer / Buffer） */
+  toString(data, encoding) {
+    // 用 __jsonBin 而不是 __json：参数里带二进制，不能被 __marshal JSON 化（见 __jsonBin 注释）
+    return __jsonBin(globalThis.__host['bytes.toString'])(
+      __toAB(data),
+      encoding === undefined ? 'utf8' : String(encoding),
+    );
+  },
+  /** 字符串按某编码编码后有多少字节（不需要先编码出来） */
+  byteLength(text, encoding) {
+    return __jsonBin(globalThis.__host['bytes.byteLength'])(
+      String(text),
+      encoding === undefined ? 'utf8' : String(encoding),
+    );
+  },
+};
+
 // __SPC_EXPORTS__

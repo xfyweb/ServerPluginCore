@@ -46,10 +46,10 @@ const EXPORTS_MARKER = '// __SPC_EXPORTS__';
 const BUILTIN_MODULES = new Set(builtinModules);
 
 /**
- * 由 host-api.js **自己实现**的方法组（需要 JSON 编解码 / 回调注册），
- * 导出清单生成器不再为它们产出 `__wrap` 版本，否则会重复声明标识符。
+ * 由 host-api.js **自己实现**的方法组：需要 JSON 编解码（kv）、回调注册（timers）、
+ * 或**二进制解包**（bytes）——导出清单生成器不再为它们产出 `__wrap` 版本，否则会重复声明标识符。
  */
-const SELF_IMPLEMENTED_GROUPS = new Set(['kv', 'timers']);
+const SELF_IMPLEMENTED_GROUPS = new Set(['kv', 'timers', 'bytes']);
 
 /**
  * 返回值需要 JSON 解码的方法组：桥只有字符串，这些组的返回值是对象/数组/数字，
@@ -126,13 +126,46 @@ function hostErrorPayload(code: string, params?: Record<string, string>): string
   });
 }
 
+/** 宿主方法参数：字符串走常规通道，**字节**走二进制通道（每次跨界一次拷贝，实测非零拷贝） */
+export type HostArg = string | Uint8Array;
+
+/**
+ * 把宿主实现返回的字节规整成"**恰好覆盖这些字节**"的 ArrayBuffer。
+ *
+ * ⚠️ **不能写 `view.slice()`**：`Buffer.prototype.slice` 是**共享内存**的（语义同 `subarray`），
+ * 与 `Uint8Array.prototype.slice`（复制）不同名同义不同物。池化 Buffer（`Buffer.from` 小对象
+ * 走 8KB 池）上 `slice().buffer` 仍是**整块池**——那会把同池里**属于别人的字节**一起送进沙箱。
+ * 实测踩到过：沙箱收到的"5 字节"实际是 8192 字节池内容，里面混着构建工具的 source map。
+ *
+ * 所以这里用 `new Uint8Array(view)`：走 TypedArray 构造（复制），与 Buffer 的原型无关。
+ */
+function toExactBytes(result: unknown): ArrayBufferLike {
+  const view = result instanceof Uint8Array ? result : new Uint8Array(result as ArrayBufferLike);
+  if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) return view.buffer;
+  return new Uint8Array(view).buffer;
+}
+
 /** 宿主方法：声明所需权限点 + 实现（权限检查在宿主侧强制，D3） */
 export interface HostMethod {
   /** 静态权限点 */
   permission?: string;
   /** 动态解析本次调用所需的权限点（如 exec.run 按模板 ID 解析）；返回 null 表示目标非法 */
   permissionFor?: (args: string[]) => string | null;
-  fn: (...args: string[]) => unknown;
+  /**
+   * 实现。参数是字符串或**字节**（二进制通道，见 `HostArg`）。
+   *
+   * 这里刻意用**方法语法**而不是 `fn: (...) => ...` 属性：方法参数在 TS 里是**双变**的，
+   * 于是既有那批 `(path: string, ...) => ...` 处理器不必逐个加类型收窄。
+   * 实践中二进制只会流到 `binaryResult` 那类方法——`@host/api` 的 `__marshal` 只产出字符串，
+   * 只有 `bytes` 组自己走二进制通道；插件若绕过包装层直接调 `__host[...]` 传字节，
+   * 处理器里的路径/字符串校验会照常抛错，不会静默算错。
+   */
+  fn(...args: HostArg[]): unknown;
+  /**
+   * 返回值是**字节**：桥走 `newArrayBuffer` 而不是 JSON 信封。
+   * 失败时仍回传 JSON 字符串信封——沙箱侧按「ArrayBuffer = 数据 / 字符串 = 错误」区分。
+   */
+  binaryResult?: boolean;
 }
 export type HostApi = Record<string, HostMethod>;
 
@@ -305,7 +338,35 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     const wrapped = scope.manage(
       vm.newFunction(`host.${name}`, (...args) => {
         const start = Date.now();
-        const strings = args.map((h) => vm.getString(h)); // spike：仅处理字符串参数
+        // 参数读取：按 **VM 侧类型**判别。二进制走 getArrayBuffer 并拷出来
+        // （返回的 Lifetime 释放后视图即失效，不能直接交出去）；其余按字符串。
+        // ⚠️ 不能一律 getString：对 ArrayBuffer 它**不报错**，而是返回字面量
+        //    "[object ArrayBuffer]"——那会把二进制静默变成一串垃圾（见 module-emulation-design §3.2）。
+        // ⚠️ 也不能对任何 object 都调 getArrayBuffer：**它只认 ArrayBuffer，不认 TypedArray 视图**，
+        //    而且失败时报的是 "Couldn't allocate memory to get ArrayBuffer"（读起来像 OOM，极具误导）。
+        //    契约是"二进制参数必须是 ArrayBuffer"（`@host/api` 侧由 __toAB 保证），这里给明确的错。
+        const raw: HostArg[] = [];
+        for (const h of args) {
+          if (vm.typeof(h) !== 'object') {
+            raw.push(vm.getString(h));
+            continue;
+          }
+          let view;
+          try {
+            view = vm.getArrayBuffer(h);
+          } catch {
+            return vm.newString(
+              hostErrorPayload('INVALID_ARGS', { reason: 'binary-arg-not-arraybuffer' }),
+            );
+          }
+          try {
+            raw.push(Uint8Array.from(view.value));
+          } finally {
+            view.dispose();
+          }
+        }
+        // 权限解析与审计只用字符串形态：字节只记长度，不记内容
+        const strings = raw.map((a) => (typeof a === 'string' ? a : `[bytes:${a.byteLength}]`));
         const callDigest = digest(JSON.stringify(strings));
 
         // ① 解析本次调用的权限点（动态点如 exec.run 由模板 ID / 原生写法匹配决定）
@@ -358,8 +419,11 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
 
         // ③ 执行宿主实现
         try {
-          const result = method.fn(...strings);
-          const serialized = JSON.stringify(result ?? null);
+          const result = method.fn(...raw);
+          // 二进制结果走 newArrayBuffer（一次拷贝）；其余仍是 JSON 文本信封。
+          // 失败路径**一律**回字符串信封，于是沙箱侧可以按「ArrayBuffer = 数据 / 字符串 = 错误」区分。
+          const bytes = method.binaryResult ? toExactBytes(result) : null;
+          const serialized = bytes ? null : JSON.stringify(result ?? null);
           audit({
             ts: Date.now(),
             pluginId: options.pluginId,
@@ -372,10 +436,10 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
               code: check.code,
               paramsDigest: digestParams(check.params),
             },
-            resultBytes: Buffer.byteLength(serialized),
+            resultBytes: bytes ? bytes.byteLength : Buffer.byteLength(serialized as string),
             durationMs: Date.now() - start,
           });
-          return vm.newString(serialized);
+          return bytes ? vm.newArrayBuffer(bytes) : vm.newString(serialized as string);
         } catch (err) {
           // 宿主错误 → 英文码 + 参数摘要入审计；插件面拿到 code/params（未分类错误记 INTERNAL）
           const shape = toErrorShape(err) ?? { code: 'INTERNAL' };

@@ -113,6 +113,27 @@ registry.register({
   executionLevel: 'medium',
 });
 
+// bytes 组：宿主代工的**编解码**（utf8 / latin1 / ascii / base64 / base64url / hex / utf16le）。
+// scope=self 的理由：它不碰任何资源——输入是调用方给的字符串/字节，输出还给调用方，
+// 「够不着别人」这个 self 的定义成立，因此**声明即用**，不进管理员审批面。
+registry.register({
+  name: 'bytes.encode',
+  group: 'bytes',
+  description: '字符串 → 字节（含长度计算）',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
+registry.register({
+  name: 'bytes.decode',
+  group: 'bytes',
+  description: '字节 → 字符串',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
 registry.register({
   name: 'timers.schedule',
   group: 'timers',

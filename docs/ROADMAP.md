@@ -74,12 +74,22 @@
 
 ## P2：命令任务模型 + 构建层 + 驱动插件
 
+> **顺序与开源触发点（已定，2026-09）**：**先把模块仿真做完 → 再做构建层 → 构建层能产出插件文件、能构建，即开源**，请广大开发者参与插件开发。
+> 理由：仿真是能力插件的**前提**（核心不提供 fs/exec，插件无从落地）；构建层是插件**可分发**的前提。两者都就绪之前开源，来的开发者会卡在"写得出但装不上"。
+
 1. **命令执行任务模型**（api-contract §4.1，参考 MCSManager）：exec.spawn → TaskHandle（wait/output/kill）、世代号防竞态、取消三层链（杀进程树）、优雅停止契约、输出环形缓冲 + 截断标记；**进程管理器**（process.* 组：长驻进程状态机 + 崩溃自动重启）——MC 管理场景的落地；
 2. **构建流水线**（设计见 **docs/build-layer-design.md**，证据见 **docs/build-layer-evidence.md**）：依赖闭包静态解析（含传递）→ 内建登记表校验（两道闸：① 未登记内建 / 原生模块 → **构建失败**，已登记内建 → **内联仿真正文**；② 产物自检）→ esbuild 单文件 ESM bundle → 产物事实写进清单文件。**依赖不分级**（ADR-005 §7 v2：装完之后不存在"加载依赖"这个动作，勾选拦不住任何东西）。**esbuild 行为与依赖面已实测**（27 个包、417 处运行期欠条 = 413 字面量 + 4 动态）；
 3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，协作插件地基）；
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
 5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
-6. **官方模块仿真**（docs/module-emulation-design.md）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖——P2-A 纯计算模块（path/util/events/assert/url）+ 桥契约（信封/对象化/异步 await）+ 构建期 builtin 校验；P2-B `node:fs`/`fs/promises`/`process`/`os`（作用域=数据目录 + errno 映射）；P2-C 最小 `buffer`/`crypto` 摘要。**交付物**：`core/sandbox-modules/<name>.js`（一模块一文件）+ `core/sandbox.ts` 的 loader 注册表（骨架已在 P1 落成）+ 各模块行为对齐测试；
+6. **官方模块仿真**（docs/module-emulation-design.md，**当前最高优先**）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖。
+   **原则：语法与行为对齐 Node——Node 是契约宗主**；用对齐测试守住（同一输入喂真 Node 与 shim 比输出），无法对齐的一律**明确报错**，不给近似值。
+   - **已完成（P2-A 前半）**：`path`（POSIX）/ `events` / `assert` / `tty` / `constants` + **登记表**（`core/sandbox-modules/registry.ts`，构建层将来共用）+ loader 接线 + 对齐测试骨架（`core/__tests__/sandbox-modules.test.ts`）；
+   - **待做**：P2-A 余下 `util` / `url`。⚠️ **`url` 的前提已变**——实测 QuickJS **没有** `URL`/`URLSearchParams`，不能"包装内置"，只能自实现或走宿主（且**禁止**启用 `quickjs-libc` 的 std：它带 fs/进程/curl，是能力泄漏）；
+   - **P2-B**：`fs` + `fs/promises`（作用域=数据目录 + errno 映射）、`process`/`os` 只读、**`buffer`（最小集）** 与 **`string_decoder`**——后两者**字节存沙箱、编解码宿主代工**（module-emulation-design §3.2），同时落地**公开的 `bytes` 方法组**与桥的**二进制通道**（`getArrayBuffer`/`newArrayBuffer`，实测为**每方向一次拷贝**，非零拷贝）；
+   - **P2-C**：`crypto` 摘要（`buffer` 已提前到 P2-B）；
+   - **交付物**：`core/sandbox-modules/*.js`（一模块一真实文件）+ 登记表 + 各模块对齐测试；
+   - **排期依据是实测**（`tools/dep-survey.mjs --set utils --coverage`）：P2-A 在当前样本里解锁 **0** 个包（是**前置**、不是解锁项），真正的杠杆在 P2-B；`stream` 是单模块收益最高的（单独补它解锁 5 个包，且按包拆开多为 1–2 个属性）；
 7. **权限档位落地**（intent-capture §8.1/§8.2）：`PermissionPoint.grant` 三档（`auto` / `install` / `explicit`）+ 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）+ 判定链第 3 步改为"**仅 `explicit` 需逐点授予**"（`auto`/`install` 审计记 `installed-grant`）；升级新增的 `install`/`explicit` 点走**增量同意**；
 8. **CLI 完善**（依赖管理约定的后半，plugin-lifecycle-design §5）：① **维护模式守护进程**——主进程停止时由 CLI 临时拉起，不触发装载、只处理 CLI 事件、30 秒无交互自动退出；② 卸载/禁用的**依赖树级联确认**（最多向下追溯 3 层，确认后连带**禁用**依赖方）；
 9. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。

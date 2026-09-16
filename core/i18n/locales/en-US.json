@@ -63,6 +63,8 @@
   "err.FILE_TOO_LARGE": "File too large: {bytes} > {limit} bytes",
   "err.TARGET_TOO_LARGE": "Target file too large (overwrite refused): {path}",
 
+  "err.ENCODING_UNKNOWN": "Unsupported encoding: {encoding}",
+
   "err.UNKNOWN_POINT": "Unknown permission: {permission}",
   "err.NOT_DECLARED": "Plugin did not declare permission: {permission}",
   "err.NOT_GRANTED": "Permission not granted: {permission} (scope=host capabilities require per-point admin grant)",

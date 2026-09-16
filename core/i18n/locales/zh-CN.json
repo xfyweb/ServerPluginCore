@@ -63,6 +63,8 @@
   "err.FILE_TOO_LARGE": "文件过大：{bytes} > {limit} bytes",
   "err.TARGET_TOO_LARGE": "目标文件过大（拒绝覆盖）：{path}",
 
+  "err.ENCODING_UNKNOWN": "不支持的编码：{encoding}",
+
   "err.UNKNOWN_POINT": "未知权限点：{permission}",
   "err.NOT_DECLARED": "插件未声明权限：{permission}",
   "err.NOT_GRANTED": "未授予权限：{permission}（scope=host 的能力需管理员逐点授予）",

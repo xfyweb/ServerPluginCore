@@ -99,6 +99,7 @@ interface EventResult {
 | **timers** | `timers.every` `timers.clear` | `timers.schedule` | `every`/`clear` ✅ / `cron` P2 | 宿主侧调度，插件不保活（定时器 unref）；回调在沙箱内执行、与钩子同样限额；卸载时宿主自动清掉 |
 | **events** | `events.publish`（订阅走 manifest 声明） | `events.publish` | ✅（总线本体 P2） | topic 必须已在 manifest `exports.events.publish` 声明，否则 `EVENT_TOPIC_NOT_DECLARED`；同一 topic 只能有一个发布者 |
 | **lifecycle（宿主 API）** | `lifecycle.health` `lifecycle.version` | `lifecycle.health` `lifecycle.version` | ✅ | 心跳、契约协商；**插件自身钩子（宿主→插件）方向相反，见 §4.2 与 plugin-lifecycle-design.md** |
+| **bytes（编解码）** | `bytes.fromString` `bytes.toString` `bytes.byteLength` | `bytes.encode` `bytes.decode` | P2-B | **宿主代工的编解码**（utf8 / latin1 / base64 / hex）：沙箱侧**字节存本地**（`Uint8Array` 子类），只有编解码整块过桥。**为什么代工**：QuickJS 没有 `TextEncoder`，沙箱内纯 JS 逐字节只有 ≈2.6 MB/s；而且交给宿主即**天然与 Node 逐字节一致**（畸形输入不必复刻）。它**不是 `node:buffer` 的私有细节**——仿真模块与插件作者用**同一批**方法。详见 module-emulation-design §3.2 |
 | **audit** | （无需插件调用） | — | ✅ | 宿主对每个调用落审计（§8） |
 
 - **作用域**：上表除 `exec.template.*`（`scope: host`，必须管理员逐点授予）外，其余全部 `scope: self`——碰的都是插件自己的数据/自己的调度，安装即生效（见 intent-capture §8.1 的三档模型，`grant` 档位落地位于 P2）；

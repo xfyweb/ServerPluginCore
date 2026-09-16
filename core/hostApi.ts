@@ -19,7 +19,7 @@ import {
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { SpcError, toErrorShape } from './errors';
 import { assertInodeMatch, validatePath } from './fs/safe-path';
-import type { HostApi, SandboxBridge } from './sandbox';
+import type { HostApi, HostArg, SandboxBridge } from './sandbox';
 import { ensureDir } from './config';
 import { VERSION } from './version';
 
@@ -40,6 +40,28 @@ const MAX_LIST_ENTRIES = 1000;
 const MAX_KV_KEYS = 1000;
 const MAX_KV_VALUE_BYTES = 256 * 1024;
 const KV_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,256}$/;
+
+/**
+ * 编码名 —— **以宿主 Node 为准**（`Buffer.isEncoding`），不自己维护清单。
+ * Node 支持哪些编码、别名怎么归一化（`ucs2`/`ucs-2`/`utf16le`、`binary`/`latin1`…）
+ * 都直接问宿主，两边才不会漂移（module-emulation-design §1「Node 是契约宗主」）。
+ *
+ * 抛的是**平台契约码** `ENCODING_UNKNOWN`；`node:buffer` 仿真层负责把它翻译成
+ * Node 的 `ERR_UNKNOWN_ENCODING`（§7 的 errno 映射模式：对内是我们的码，对外像 Node）。
+ */
+function assertEncoding(enc: HostArg | undefined): BufferEncoding {
+  const name = enc === undefined ? 'utf8' : String(enc);
+  if (!Buffer.isEncoding(name)) throw new SpcError('ENCODING_UNKNOWN', { encoding: name });
+  return name as BufferEncoding;
+}
+
+/** 桥送来的字节是 `Uint8Array`；包一层 Buffer **视图**（不拷贝）好直接复用 Node 的解码器 */
+function asBuffer(value: HostArg): Buffer {
+  if (typeof value === 'string') {
+    throw new SpcError('INVALID_ARGS', { reason: 'expected-bytes', got: 'string' });
+  }
+  return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+}
 
 /** 宿主 API 的每插件上下文（由装载器提供） */
 export interface PluginHostContext {
@@ -328,6 +350,27 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     'lifecycle.health': {
       permission: 'lifecycle.health',
       fn: () => ({ ok: true, pluginId: ctx.pluginId, at: Date.now() }),
+    },
+
+    // ---- bytes：**宿主代工的编解码**（utf8 / latin1 / ascii / base64 / base64url / hex / utf16le）----
+    //
+    // 为什么放宿主而不是沙箱内实现（module-emulation-design §3.2）：
+    //   · QuickJS **没有 TextEncoder/TextDecoder**，沙箱内只能逐字节手写（实测 ≈2.6 MB/s）；
+    //   · 更要紧的是**保真**——交给宿主就是交给 Node，畸形输入（孤立代理项、非法 base64）
+    //     的语义天然一致，不需要我们复刻，也不会在边角上漂移。
+    // 沙箱侧的字节仍存在本地（Uint8Array 子类），只有**编解码整块**过桥（每方向一次拷贝）。
+    'bytes.fromString': {
+      permission: 'bytes.encode',
+      binaryResult: true,
+      fn: (text: HostArg, encoding?: HostArg) => Buffer.from(String(text), assertEncoding(encoding)),
+    },
+    'bytes.toString': {
+      permission: 'bytes.decode',
+      fn: (data: HostArg, encoding?: HostArg) => asBuffer(data).toString(assertEncoding(encoding)),
+    },
+    'bytes.byteLength': {
+      permission: 'bytes.encode',
+      fn: (text: HostArg, encoding?: HostArg) => Buffer.byteLength(String(text), assertEncoding(encoding)),
     },
 
     // ---- exec：**只能调用已注册模板**（没有自由命令）。两种写法都接受：----

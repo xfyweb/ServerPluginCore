@@ -330,6 +330,181 @@ describe('仿真模块登记表', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// 桥的二进制通道 + @host/api bytes 组
+// ─────────────────────────────────────────────────────────────
+describe('桥的二进制通道（@host/api bytes 组）', async () => {
+  const { createSandbox } = await import('../sandbox.ts');
+  const { hostApi } = await import('../hostApi.ts');
+
+  /** 跑一段插件代码并回收 console 输出（二进制不便直接回传，用日志带出来） */
+  async function runInSandbox(code: string): Promise<string> {
+    const sandbox = await createSandbox(hostApi, {
+      pluginId: '@spc-test/bytes',
+      permissions: ['bytes.encode', 'bytes.decode'],
+      grants: [],
+    });
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule('@spc-test/bytes', code);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    return logs.join('\n');
+  }
+
+  const SAMPLE = 'héllo→世界';
+
+  it('utf8 编码：字节数 / hex / base64 与宿主 Node 逐项一致', async () => {
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+const b = bytes.fromString(${JSON.stringify(SAMPLE)}, 'utf8');
+console.log('LEN ' + b.length + ' ' + bytes.byteLength(${JSON.stringify(SAMPLE)}, 'utf8'));
+console.log('HEX ' + bytes.toString(b, 'hex'));
+console.log('B64 ' + bytes.toString(b, 'base64'));
+console.log('BACK ' + bytes.toString(b, 'utf8'));
+`);
+    const expected = Buffer.from(SAMPLE, 'utf8');
+    assert.match(out, new RegExp(`LEN ${expected.length} ${expected.length}`));
+    assert.match(out, new RegExp(`HEX ${expected.toString('hex')}`));
+    assert.match(out, new RegExp(`B64 ${expected.toString('base64')}`));
+    assert.match(out, /BACK héllo→世界/);
+  });
+
+  it('编码别名与宿主 Node 一致（ucs2 / utf16le / latin1 / binary / base64url / ascii / hex）', async () => {
+    const encs = ['ucs2', 'utf16le', 'latin1', 'binary', 'base64url', 'ascii', 'hex', 'utf-8'];
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+const r = [];
+for (const e of ${JSON.stringify(encs)}) {
+  try { r.push(e + '=' + bytes.toString(bytes.fromString('Ab9', e), e)); }
+  catch (err) { r.push(e + '!=' + err.code); }
+}
+console.log(r.join('|'));
+`);
+    const mine = out.trim().split('|');
+    encs.forEach((e, i) => {
+      const expected = Buffer.from('Ab9', e as BufferEncoding).toString(e as BufferEncoding);
+      assert.equal(mine[i], `${e}=${expected}`, `编码 ${e} 与 Node 不一致`);
+    });
+  });
+
+  it('**非法 UTF-8 字节的解码与 Node 同一套语义**（畸形输入才是重点）', async () => {
+    // 这是对齐测试的核心价值：自己实现 utf8 最容易在"非法序列怎么替换"上偏，
+    // 而走宿主就"本来一样"，不必复刻规则。
+    // 用的字节是 WTF-8 编码的孤立代理项（ED A0 80）——Node 在这里逐字节判非法、吐 3 个 U+FFFD。
+    const bad = [0x61, 0xed, 0xa0, 0x80, 0x62];
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+const bad = new Uint8Array(${JSON.stringify(bad)});
+const s = bytes.toString(bad, 'utf8');
+console.log('DEC ' + s);
+console.log('REENC ' + bytes.toString(bytes.fromString(s, 'utf8'), 'hex'));
+`);
+    const decoded = Buffer.from(bad).toString('utf8');
+    assert.ok(out.includes(`DEC ${decoded}`), `实际输出：${out.slice(0, 200)}`);
+    assert.ok(out.includes(`REENC ${Buffer.from(decoded, 'utf8').toString('hex')}`), out.slice(0, 200));
+  });
+
+  it('**已知的桥属性（记录在案，不是待修 bug）**：字符串参数过桥按 UTF-8 走', async () => {
+    // 桥的字符串通道是 UTF-8（JS_ToCString）：孤立代理项被编成 WTF-8 三字节，
+    // 宿主解码时逐字节判非法 → **3 个** U+FFFD；而 Node 直接编码字符串时只给 1 个。
+    // 现实影响很小：只有把字符串从代理对中间切开才会产生孤立代理项，那本就是调用方的 bug。
+    // 这条测试是"守门"：哪天桥换成 UTF-16 传递，它会红，提醒把注释与文档一起改。
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+console.log('HEX ' + bytes.toString(bytes.fromString('a\\uD800b', 'utf8'), 'hex'));
+`);
+    assert.ok(out.includes('HEX 61efbfbdefbfbdefbfbd62'), out.slice(0, 200));
+    assert.equal(
+      Buffer.from('a\uD800b', 'utf8').toString('hex'),
+      '61efbfbd62',
+      '宿主 Node 的行为应与桥不同——若相同，说明这条"已知属性"已不成立',
+    );
+  });
+
+  it('未知编码 → 抛错，码是宿主契约码 ENCODING_UNKNOWN', async () => {
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+try { bytes.fromString('x', 'nope'); console.log('NO-THROW'); }
+catch (e) { console.log('CAUGHT ' + e.code); }
+`);
+    assert.match(out, /CAUGHT ENCODING_UNKNOWN/);
+  });
+
+  it('字节 → 字符串：Uint8Array / ArrayBuffer / 带 offset 的视图都要正确', async () => {
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+const u8 = new Uint8Array([104, 105]);            // 'hi'
+console.log('U8 ' + bytes.toString(u8, 'utf8'));
+console.log('AB ' + bytes.toString(u8.buffer, 'utf8'));
+// 带 offset 的视图：桥必须只取该区间，不能把整块 buffer 送过去
+const big = new Uint8Array([0, 104, 105, 0]);
+console.log('VIEW ' + bytes.toString(big.subarray(1, 3), 'utf8'));
+`);
+    assert.match(out, /U8 hi/);
+    assert.match(out, /AB hi/);
+    assert.match(out, /VIEW hi/);
+  });
+
+  it('**成本回归守门**：二进制通道必须显著快于字符串通道', async () => {
+    // 为什么用**相对比较**而不是绝对阈值：
+    //   ① 绝对毫秒数随机器波动，容易 flaky；
+    //   ② 实测"跨界底价"≈0.2ms/次，**小载荷下两条通道测不出差别**（都被底价盖住）；
+    //   ③ 而"二进制比字符串快多少倍"是**架构性质**——把二进制改走 base64/字符串，
+    //      这个比值会从 ~20x 塌到 1x 附近。这是最省事又不容易误报的守门方式。
+    //
+    // 实测（同机）：1 MB 宿主→沙箱 二进制 ≈0.84ms / 字符串 ≈19ms ⇒ ~22x；4 MB ⇒ ~34x。
+    // 这里留足余量只要求 5x——真正要抓的是"塌到 1x"那种结构性回归。
+    const { createSandbox } = await import('../sandbox.ts');
+    const N = 1024 * 1024;
+
+    async function measure(method: string, binaryResult: boolean): Promise<number> {
+      const api = {
+        [method]: binaryResult
+          ? { permission: 'bytes.encode', binaryResult: true, fn: () => new Uint8Array(N) }
+          : { permission: 'bytes.encode', fn: () => 'x'.repeat(N) },
+      };
+      const sandbox = await createSandbox(api, {
+        pluginId: '@spc-test/bridge-cost',
+        permissions: ['bytes.encode'],
+        grants: [],
+      });
+      const logs: string[] = [];
+      const orig = console.log;
+      console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+      try {
+        await sandbox.runModule(
+          '@spc-test/bridge-cost',
+          `
+const H = globalThis.__host;
+const s = [];
+// 取值不必多：这条守的是"塌到 1x"的结构性回归，5x 的余量下精度够用，跑太久不值
+for (let r = 0; r < 3; r++) { const t = Date.now(); for (let i = 0; i < 4; i++) H[${JSON.stringify(method)}](); s.push(Date.now() - t); }
+console.log(JSON.stringify(s));
+`,
+        );
+      } finally {
+        console.log = orig;
+        sandbox.dispose();
+      }
+      const samples = JSON.parse(logs.join('\n').trim()) as number[];
+      return [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+    }
+
+    const binMs = await measure('bridgecost.bin', true);
+    const strMs = await measure('bridgecost.str', false);
+    assert.ok(
+      strMs >= binMs * 5,
+      `二进制 ${binMs}ms vs 字符串 ${strMs}ms（比值 ${(strMs / binMs).toFixed(1)}x < 5x）——` +
+        '二进制通道可能被改成走字符串/base64 了，见 tools/bridge-bench.mjs',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
 // 仿真模块的装载链路
 // ─────────────────────────────────────────────────────────────
 describe('仿真模块的装载链路（真实 QuickJS 沙箱）', async () => {

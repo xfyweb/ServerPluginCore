@@ -16,10 +16,20 @@ const file = path.join('.', 'data', 'config.json');
 const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 ```
 
+**首要原则：语法与行为对齐 Node——Node 是契约宗主**
+
+仿真的语义**以 Node 为准**，不以"我们实现起来方便"为准：依赖是按 Node 写的，我们偏一点它们就错一点。
+
+- 语义有歧义时**查 Node 源码定义**（工作区备有 Node 源码），不靠推理或记忆；
+- 用**对齐测试**守住：同一输入喂真 Node 与 shim，比输出（`core/__tests__/sandbox-modules.test.ts`）；
+- 确实无法对齐的（沙箱真的没有那个东西），**明确报错**并在实现头注释写明"故意不同"及其理由，**绝不静默给一个近似值**。
+
 **非目标**（明确不做，避免误解）：
 - 不是"在沙箱里跑真实 Node"：没有真 `process`、没有原生 addon、没有 `child_process`/`worker_threads`；
 - 不改变权限模型：仿真是**接口形状的兼容**，能力仍由 `@host/api` + 权限注册表强制（零环境权力不变）；
 - 不追求 100% API 覆盖：按真实插件需求逐块扩展（清单见 §3），未登记的模块**在构建期就报错**。
+
+**宿主 API 一律公开**：仿真模块内部用到什么宿主方法，插件作者就应该能直接用同一个方法——仿真存在的意义是**照顾依赖与开发者的早期适应**，不是造一套藏起来的私有通道。
 
 ## 2. 兼容性天花板（先认账）
 
@@ -48,7 +58,8 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | **P2-B** | `node:fs` + `node:fs/promises` | `fs.read.data` / `fs.write.data` | 作用域 = 插件数据目录（+ 显式授予的额外目录）；errno 映射见 §7 |
 | P2-B | `node:process` | 只读 | 冻结子集：`platform` / `arch` / `version` / `versions`（仿真值）/ `nextTick` / `env`（默认空，§13-1） |
 | P2-B | `node:os` | 只读 | `platform` / `arch` / `EOL` / `tmpdir`（宿主值） |
-| **P2-B** | `node:buffer` | 无 | 最小 `Buffer`：`from` / `alloc` / `concat` / `toString(enc)` / `write`；编码 `utf8`/`base64`/`hex`。**已定提前到 P2-B（原 P2-C），随 `fs` 的二进制读写一起**——理由：构建期口径低估了它（只要求"引用了就得有"），而它是二进制的通用货币，`fs` 一支持二进制就必然需要 |
+| **P2-B** | `node:buffer` | 无（编解码走宿主，不碰资源） | **最小集（已定）**：`from` / `alloc` / `allocUnsafe` / `concat` / `isBuffer` / `byteLength` + 实例 `toString` / `slice` / `subarray` / `equals` / `compare` / 数值读写。**字节存沙箱（`Uint8Array` 子类），编解码宿主代工**——见 §3.2。已从 P2-C 提前到 P2-B（构建期口径低估了它；它是二进制的通用货币，`fs` 一支持二进制就必然需要） |
+| **P2-B** | `node:string_decoder` | 无（宿主代工） | `StringDecoder`——流式 utf8 解码的**状态机放宿主**（跨 chunk 的不完整多字节序列由 Node 处理）。实测需求面 7 个包，与 buffer 共用同一条代工通道 |
 | P2-C | `node:crypto` | `crypto.hash`（待注册） | 只做摘要（sha256/md5）与 `randomUUID`；加密原语走宿主，不在沙箱内自实现 |
 | 后置 | `node:stream` / `node:zlib` / `node:string_decoder` … | 视需求 | 按真实插件需求逐块评估，一律"先登记后可用" |
 
@@ -87,6 +98,86 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 |---|---|---|
 | **`Buffer` 要不要提前** | **提前到 P2-B**，随 `fs` 的二进制读写一起（构建期口径低估了它） | §3 清单已改 |
 | **`fs` 回调风格要不要支持** | **支持**（薄包装，非第二套实现）；必须照做"回调不同步触发" | §8 |
+
+### 3.2 宿主代工：哪些数据处理放宿主（以 `Buffer` 为例）
+
+**结论：字节存沙箱，编解码宿主代工。**
+
+三条理由，**第一条最重要**：
+
+1. **保真**——编解码交给宿主 = 宿主就是 Node，**天然逐字节一致**。这类实现的难点从来不是主流程，而是**畸形输入**：孤立代理项怎么替换、`Buffer.from(str,'base64')` 的宽松性、`toString('utf8')` 遇到非法序列怎么办。自己实现必然逐条漂移，而且很难测全；走宿主则**不需要复刻**；
+2. **性能**——实测：沙箱内纯 JS 逐字节处理只有 **≈2.6 MB/s**（1 MB 循环 395 ms，Node 原生约 1 ms），而 **QuickJS 没有 `TextEncoder`/`TextDecoder`**，不代工就只能纯 JS 逐字节；
+3. **存储必须留沙箱**——索引 `buf[i]`、`subarray`、`DataView` 都是原生操作。字节若放宿主（不透明 id），随机访问就得逐字节跨界，比 395 ms 更糟。
+
+分工：
+
+| `Buffer` 的面 | 放哪 | 依据（实测） |
+|---|---|---|
+| 字节存储（`class Buffer extends Uint8Array`） | **沙箱** | QuickJS 支持类型化数组子类化，`instanceof` 正常 |
+| `length` / `buf[i]` / 迭代 | **沙箱** | 原生 |
+| `subarray` / `slice` / `set` / `fill` / `copy` | **沙箱** | 原生，且 `subarray` 共享底层、`slice` 复制——语义已实测正确 |
+| `readUInt32LE` 一类数值读写 | **沙箱** | `DataView` 原生，字节序 LE |
+| **`toString(enc)` / `Buffer.from(str, enc)` / `byteLength`** | **宿主代工** | 无 `TextEncoder` + 保真 |
+| `concat` / `compare` / `equals` / `indexOf` | 沙箱优先，大块可代工 | 小块跨界不划算，阈值待实现期量 |
+| **`StringDecoder`（流式）** | **宿主代工** | 状态机（跨 chunk 的不完整序列）放宿主更稳 |
+
+**参考量级**：Node 侧 `lib/buffer.js` 1539 行 + `lib/internal/buffer.js` 1154 行 + `lib/string_decoder.js` 146 行
+——这就是"自己实现"要复刻并逐条对齐的量。
+
+**桥的二进制通道已具备**（行为是实测的，不是读注释推断的）：
+
+| 原语 | 实测行为 |
+|---|---|
+| `vm.newArrayBuffer(bytes)` | 宿主 → 沙箱，**一次拷贝**；沙箱侧读出来 `instanceof ArrayBuffer` 为真 |
+| `vm.getArrayBuffer(handle)` | 沙箱 → 宿主，**一次拷贝**——把宿主侧返回的视图改掉，**沙箱内看不到变化**，所以不是共享内存 |
+| `vm.typeof(handle)` | 二进制是 `'object'`、字符串是 `'string'` ⇒ **用它判别参数类型** |
+| ⚠️ `vm.getString(二进制handle)` | **不报错**，返回字面量 `"[object ArrayBuffer]"` —— 桥若不做类型判别，会把二进制**静默变成这串垃圾**（当前桥是字符串专用，加二进制时必须先判别） |
+
+**实测成本**（`tools/bridge-bench.mjs`，1 MB/4 MB 档，7 轮取中位）：
+
+| 载荷 | 调用开销（跨界底价） | 宿主→沙箱（二进制） | 沙箱→宿主（二进制） | **字符串通道** |
+|---|---|---|---|---|
+| 0 B | **0.21 ms** | 0.23 ms | 0.22 ms | 0.21 ms |
+| 1 KB | 0.21 ms | 0.22 ms | 0.23 ms | 0.23 ms |
+| 64 KB | 0.21 ms | 0.28 ms（221 MB/s） | 0.30 ms（208 MB/s） | 1.34 ms（47 MB/s） |
+| 1 MB | 0.19 ms | **0.84 ms（1185 MB/s）** | 1.06 ms（941 MB/s） | **19.2 ms（52 MB/s）** |
+| 4 MB | 0.25 ms | **2.13 ms（1882 MB/s）** | 2.25 ms（1778 MB/s） | **71.8 ms（56 MB/s）** |
+
+**三条读数**
+
+1. **二进制通道比字符串通道快 20–34 倍**（1 MB：0.84 ms vs 19.2 ms；4 MB：2.1 ms vs 71.8 ms）；
+   比"沙箱内自己逐字节"（≈2.6 MB/s）快约 **700 倍**。"走二进制而不是 base64/字符串"这个选择因此是**量出来的**，不是偏好；
+2. **跨界底价 ≈0.2 ms/次**，且**它盖住了一切小载荷**：≤1 KB 时两条通道完全测不出差别。
+   推论有两条——① 字符串通道**不会**因为"只传小数据"就更划算；② 守门测试**必须用相对比较**（见下）；
+3. 单次 memcpy 的实际带宽约 **1.2–1.9 GB/s**。**早先文档里写的"1 MB ≈ 0.1 ms"是我估的，实测慢了约 6 倍**
+   （1 MB 总耗时 0.84 ms，扣掉 0.2 ms 底价 ⇒ 纯传输 ≈ 0.65 ms）。
+   方向没估错（确实是"很快"），但**量级从没量过就写进了文档**——所以现在这些数都标了出处与档位。
+
+**成本回归的守门方式**（`core/__tests__/sandbox-modules.test.ts`）：
+
+**用相对比较，不用绝对阈值**——1 MB 二进制 vs 1 MB 字符串，断言**二进制至少快 5 倍**（实测 ~22x，留足余量）。
+理由：绝对毫秒数随机器波动易 flaky，且小载荷下被底价盖住测不出；而"二进制比字符串快多少倍"是**架构性质**，
+把二进制改走 base64/字符串会让这个比值**从 ~20x 塌到 1x**，一测就中。
+数值留档在 `tools/bridge-bench.mjs`——**改动二进制通道后必须重跑它**。
+
+> 这条通道**不是 `node:buffer` 的私有实现细节**，而是 P2-B 的公共基础设施——`fs` 的二进制读写、
+> 将来的 `zlib`（压缩输出）、`crypto` 摘要的输出都要它。宿主编解码方法本身也**公开**（见 §1 末条）。
+
+**实现期踩到的四个坑（都实测过，记下来免得再踩）**
+
+| # | 坑 | 后果 | 正解 |
+|---|---|---|---|
+| **1** | **`Buffer.prototype.slice` 是共享内存的**（语义同 `subarray`），与 `Uint8Array.prototype.slice`（复制）**同名不同义** | ⚠️ **安全相关**：池化 Buffer（`Buffer.from` 的小对象走 8 KB 池）上 `slice().buffer` 仍是**整块池** → 把**同池里属于别人的字节**一起送进沙箱。实测：本要 5 字节，实际送出 8192 字节，里面混着构建工具的 source map | 用 `new Uint8Array(view)` 复制（走 TypedArray 构造，与 Buffer 的原型无关） |
+| **2** | 宿主对 `__host[...]` 的返回值**一律 `JSON.stringify`**，字符串结果回来是**带引号**的 | 少一步 `JSON.parse` 就把引号一起交给插件（实测 `bytes.toString` 返回了 `"hi"`） | 用 `__json` 系列包装器 |
+| **3** | `@host/api` 的 `__marshal` 会把**非字符串 JSON 化** | 二进制参数经 `__wrap`/`__json` 进去会变成字符串（`JSON.stringify(new ArrayBuffer(2))` === `"{}"`，外面再套 `__spcJson:`），宿主收到的是字符串参数 | 二进制参数必须走 `__marshalBin`（`__jsonBin` 即"参数二进制、结果 JSON"） |
+| **4** | **`vm.getArrayBuffer(handle)` 只认 `ArrayBuffer`，不认 `Uint8Array` 视图**；且失败时报 `"Couldn't allocate memory to get ArrayBuffer"` | 报错**读起来像 OOM**，把"类型传错"误导成"内存不够"（实测踩到：只按 `typeof === 'object'` 判别，把 `Uint8Array` 也当二进制送进去了） | 桥先 `try/catch`，失败返回明确的 `INVALID_ARGS`（`reason: binary-arg-not-arraybuffer`）；契约写死：**二进制参数必须是 `ArrayBuffer`**（`@host/api` 侧由 `__toAB` 保证） |
+
+**一条桥的固有限制（记录在案，不是待修 bug）**：**字符串通道是 UTF-8**（`JS_ToCString`），
+因此**不成对的代理项过不去**——会被编成 WTF-8 三字节，宿主解码时逐字节判非法，
+变成 **3 个 U+FFFD**（而 Node 直接编码该字符串时只给 1 个）。
+影响很小（只有把字符串从代理对中间切开才会产生孤立代理项，那本就是调用方的 bug），
+但**它意味着"字符串参数在桥上不是无损的"**——将来若有需求，得换成 UTF-16 传递。
+守门测试见 `sandbox-modules.test.ts`：哪天桥改成 UTF-16 传递，它会红，提醒同步改这里。
 
 ## 4. specifier 规则
 
