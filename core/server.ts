@@ -49,7 +49,6 @@ function httpStatusFor(code: string): number {
   if (code === 'PLUGIN_NOT_FOUND') return 404;
   if (code === 'UNAUTHENTICATED' || code === 'PERMISSION_DENIED' || code === 'NOT_GRANTED') return 403;
   if (
-    code === 'PLUGIN_RESERVED' ||
     code === 'PLUGIN_DISABLED' ||
     code === 'PLUGIN_ALREADY_RUNNING' ||
     code === 'PLUGIN_EXPORT_INVALID'
@@ -153,11 +152,10 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // POST /api/plugins/install { dir, reserved?, grants?, start? }
+    // POST /api/plugins/install { dir, grants?, start? }
     if (req.method === 'POST' && path === '/api/plugins/install') {
       const body = (await readBody(req)) as {
         dir?: unknown;
-        reserved?: unknown;
         grants?: unknown;
         start?: unknown;
       };
@@ -166,7 +164,6 @@ const server = createServer(async (req, res) => {
         return;
       }
       const view = await manager.install(body.dir, {
-        reserved: body.reserved === true,
         grants: asStringArray(body.grants),
         start: body.start !== false,
       });

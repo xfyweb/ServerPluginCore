@@ -136,7 +136,6 @@
   "err.PLUGIN_TIMER_TIMEOUT": "Plugin timer callback timed out ({pluginId}): interrupted",
   "err.PLUGIN_DISABLED": "Plugin is disabled: {pluginId}",
   "err.PLUGIN_ALREADY_RUNNING": "Plugin is already running: {pluginId}",
-  "err.PLUGIN_RESERVED": "Reserved/built-in plugin cannot be uninstalled: {pluginId} (disable is allowed)",
   "err.PLUGIN_DISPOSED": "Plugin sandbox already disposed: {pluginId}",
   "err.PLUGIN_CONFIG_INVALID": "Invalid plugin config: {pluginId} ({reason})",
 

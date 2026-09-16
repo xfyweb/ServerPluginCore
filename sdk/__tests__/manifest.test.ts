@@ -28,7 +28,7 @@ const validFull = {
     },
   },
   dependencies: {
-    npm: [{ name: 'zod', version: '3.x', tier: 'whitelist' }],
+    npm: [{ name: 'zod', version: '3.x' }],
     plugins: [{ id: '@xfy2412/base', version: '>=0.1.0' }],
   },
 };
@@ -124,12 +124,18 @@ test('非法：未知字段（additionalProperties: false）', () => {
   assert.ok(r.errors.some((e) => e.includes('foo')));
 });
 
-test('非法：dependencies.npm.tier 枚举外', () => {
-  const r = validateManifest({
+test('合法：dependencies.npm 只声明 name/version（v2 起无 tier）', () => {
+  const ok = validateManifest({
     ...validMinimal,
-    dependencies: { npm: [{ name: 'x', version: '1.0.0', tier: 'admin' }] },
+    dependencies: { npm: [{ name: 'x', version: '1.0.0' }] },
   });
-  assert.equal(r.ok, false);
+  assert.equal(ok.ok, true, JSON.stringify(ok.errors));
+  // `tier` 已随"依赖不分信任档"删除（ADR-005 §7 v2）：再写它 = 未知字段
+  const stale = validateManifest({
+    ...validMinimal,
+    dependencies: { npm: [{ name: 'x', version: '1.0.0', tier: 'whitelist' }] },
+  });
+  assert.equal(stale.ok, false);
 });
 
 test('非法：manifest 里出现 signature 字段（v2 起签名属于交付信封）', () => {

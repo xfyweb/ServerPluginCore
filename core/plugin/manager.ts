@@ -45,7 +45,6 @@ export interface PluginView {
   state: PluginState;
   grants: string[];
   capabilities: string[];
-  reserved: boolean;
   lastError: PluginErrorRecord | null;
   restartAttempts: number;
   dataDir: string;
@@ -56,7 +55,6 @@ export interface PluginView {
 }
 
 export interface InstallOptions {
-  reserved?: boolean;
   grants?: string[];
   /** 安装后是否立即装载（默认 true：安装清单即授权，见 intent-capture §8.1） */
   start?: boolean;
@@ -113,7 +111,6 @@ export class PluginManager {
       state: record.state,
       grants: [...record.grants],
       capabilities: [...record.capabilities],
-      reserved: record.reserved,
       lastError: record.lastError,
       restartAttempts: record.restartAttempts,
       dataDir: pluginDataDir(record.id),
@@ -367,7 +364,6 @@ export class PluginManager {
       const file = loadRecords();
       const existing = findRecord(file, manifest.id);
       const record = newRecord(manifest, dir, {
-        reserved: opts.reserved ?? existing?.reserved ?? false,
         grants: opts.grants ?? existing?.grants ?? [],
         origin: existing?.origin ?? null,
         signedBy: existing?.signedBy ?? null,
@@ -417,13 +413,12 @@ export class PluginManager {
     });
   }
 
-  /** 卸载：reserved 不可卸载（可禁用）；数据目录与配置值保留（§12-3 倾向） */
+  /** 卸载：数据目录与配置值保留（§12-3 倾向）；v2 起没有 reserved 例外 */
   uninstall(id: string): Promise<void> {
     return this.withLock(async () => {
       const file = loadRecords();
       const record = findRecord(file, id);
       if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
-      if (record.reserved) throw new SpcError('PLUGIN_RESERVED', { pluginId: id });
       // 被别的（已启用）插件依赖时不许卸载：先禁用/卸载依赖方
       this.assertNotInUse(id, 'uninstall');
       await this.stopAndUnload(id, 'uninstall');

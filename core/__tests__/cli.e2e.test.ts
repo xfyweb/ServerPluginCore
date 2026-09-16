@@ -94,14 +94,13 @@ test('CLI plugin list：新状态目录下没有插件（记录驱动，不是�
 
 test('CLI plugin install：写记录 → 立即装载 → init/start 跑通', async () => {
   const r = await run(
-    ['core/cli.ts', 'plugin', 'install', 'plugin/sample', '--reserved', '--grant', 'exec.template.git.version'],
+    ['core/cli.ts', 'plugin', 'install', 'plugin/sample', '--grant', 'exec.template.git.version'],
     env(),
   );
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /已安装：@xfy2412\/sample/);
   assert.match(r.stdout, /@xfy2412\/sample@0\.0\.1 \[running\]/);
   assert.match(r.stdout, /enabled=是/);
-  assert.match(r.stdout, /reserved=是/);
   assert.match(r.stdout, /已授予：exec\.template\.git\.version/);
   // 能力登记结果回落到记录
   assert.match(r.stdout, /能力：.*route:\/sample/);
@@ -152,12 +151,16 @@ test('CLI plugin grant/revoke：只接受具体权限点（通配被拒），并
   assert.doesNotMatch(reloaded.stdout, /需要 reload 才生效/);
 });
 
-test('CLI plugin uninstall：reserved 插件被拒（PLUGIN_RESERVED），记录仍在', async () => {
+test('CLI plugin uninstall：内置插件同样可卸载（v2 取消 reserved），记录随之消失', async () => {
   const r = await run(['core/cli.ts', 'plugin', 'uninstall', '@xfy2412/sample'], env());
-  assert.notEqual(r.code, 0);
-  assert.match(r.stderr, /不可卸载/);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已卸载：@xfy2412\/sample/);
   const list = await run(['core/cli.ts', 'plugin', 'list'], env());
-  assert.match(list.stdout, /@xfy2412\/sample/);
+  assert.doesNotMatch(list.stdout, /@xfy2412\/sample/);
+  // 卸载后 status 报 NOT_FOUND（记录真的没了，不是只改了状态）
+  const st = await run(['core/cli.ts', 'plugin', 'status', '@xfy2412/sample'], env());
+  assert.notEqual(st.code, 0);
+  assert.match(st.stderr, /插件不存在/);
 });
 
 test('CLI about：输出品牌与构建指纹（本地信息，无需 daemon）', async () => {

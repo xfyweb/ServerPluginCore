@@ -241,7 +241,7 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 - **`stop` 抛错或超时都继续卸载**（只告警 + 审计）：绝不因一个插件卡住核心停机；
 - 卸载顺序固定：`stop` → 撤销能力登记 → `dispose`（Scope 顺序释放 handle）。
 
-**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_RESERVED`、`PLUGIN_FILE_MISMATCH`（P4 预留）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
+**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。~~`PLUGIN_RESERVED`~~ 随 `reserved` 特性一并**退役**（v2，未发布过，不占契约位）。（加载期求值失败沿用已有的 `PLUGIN_LOAD_FAILED`。）
 
 ## 6. 安装记录（P1 最小版）
 
@@ -257,7 +257,6 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
     "grants": ["fs.write.home", "exec.template.git.version"],
     "capabilities": ["route:/sample", "api:/api/sample/*"],
     "configPath": "config/plugins/xfy2412__sample.json",
-    "reserved": false,
     "state": "stopped",
     "installedAt": "2026-09-15T00:00:00Z",
     "lastError": null,
@@ -273,7 +272,7 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 
 - **记录由 daemon 拥有**（写操作必须经过 daemon），CLI 只读时可离线读取；
 - 同一 `id` 只有一条记录；`dir` 为绝对路径或相对核心工作目录的相对路径（写入时归一化为绝对路径）；
-- `reserved: true` = 内置/保留插件（**可禁用、不可卸载**），普通插件可卸载（`uninstall` 对 reserved 报 `PLUGIN_RESERVED`）；
+- ~~`reserved: true` = 内置/保留插件（**可禁用、不可卸载**）~~ —— **v2 取消**：**内置只表示"随核心分发、默认安装"**，它仍是普通插件——可禁用、可卸载、**可独立于核心更新**。原 `reserved` 借自 AstrBot 的 `builtin_stars`，那里的前提是"内置插件几乎不更新"，对本项目不成立（我们的内置插件就是普通插件，跟着生态一起更新）。因此 `uninstall` 不再有 `PLUGIN_RESERVED` 这条拒绝路径；
 - `capabilities` 是"该插件登记了哪些能力"的清单（撤销依据 + 展示 + 审计）；
 - 插件配置值不在本文件，单独存 `config/plugins/<sanitized-id>.json`（见 §1.6）。
 
@@ -382,7 +381,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 14. 插件配置：缺省值填充、非法值被拒（`PLUGIN_CONFIG_INVALID`）、`ctx.config` 只读（插件写入无效、不污染宿主）；
 15. 能力登记幂等：连续两次 `reload` 后登记表与 `capabilities` 完全一致（撤销后重建，不叠加）；
 16. 并发：同时发起同一插件的两个 `load`/`reload` → 锁串行，终态一致且无重复登记；
-17. `reserved` 插件：可 `disable`，`uninstall` 被拒（`PLUGIN_RESERVED`）。
+17. ~~`reserved` 插件：可 `disable`，`uninstall` 被拒~~ → **v2 取消 `reserved`**（内置 = 随核心分发、可卸载、可独立更新），改为验证：内置插件同样能 `uninstall` 且记录被移除。
 
 **验收**：以上全绿 + `pnpm spike` 走"记录 → 装载 → init/start → stop"真实链路且输出与现在等价；`spc plugin list` 显示状态。
 
@@ -407,7 +406,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `StarMetadata.star_handler_full_names` 记录该插件注册了哪些 handler | 记录里的 `capabilities: string[]`（§3、§6） |
 | 重载前把 handler 还原成 raw、再重新绑定，防重复叠加 | `reload` 先撤销全部能力登记再重建（幂等，§3） |
 | `inactivated_plugins` ⇒ 不实例化插件类（`star_cls = None`） | `disabled` ⇒ 连 bundle 都不加载（零求值，§3） |
-| `reserved` 插件在 `builtin_stars`，不可卸载 | 记录 `reserved: true` ⇒ 可禁用、不可卸载（§6） |
+| `reserved` 插件在 `builtin_stars`，不可卸载 | **不采纳**（v2）：内置只表示"随核心分发、默认安装"，仍可禁用/卸载/独立更新（§6） |
 | 单插件 `try/except` 包住整段装载，失败进 `failed_plugin_dict` 并清理状态后**继续下一个** | 逐个 try/catch，失败进 `failed` + `lastError`，继续装载其它插件（§5） |
 | `reload_failed_plugin(dir_name)` 专治失败插件 | `failed` + `spc plugin reload <id>`（默认不自动重启；`failedRestart=auto` 可选） |
 | `_terminate_plugin`：不在跑就跳过；`__del__` 丢 executor 并捕获异常；terminate 抛错只告警、继续卸载 | `stop` 抛错/超时都继续卸载，随后强制 `dispose`（§5） |

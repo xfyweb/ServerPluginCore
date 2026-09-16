@@ -54,8 +54,6 @@ export interface PluginRecord {
   /** 该插件登记了哪些能力（撤销依据 + 展示 + 审计）：route:/x · api:/api/x · event:t · theme:id */
   capabilities: string[];
   configPath: string;
-  /** 内置/保留插件：可禁用、不可卸载 */
-  reserved: boolean;
   state: PluginState;
   installedAt: string;
   lastError: PluginErrorRecord | null;
@@ -103,7 +101,6 @@ export function validateRecord(raw: unknown): string[] {
   if (!isStringArray(r.grants)) errors.push('grants: string[] required');
   if (!isStringArray(r.capabilities)) errors.push('capabilities: string[] required');
   if (typeof r.configPath !== 'string') errors.push('configPath: string required');
-  if (typeof r.reserved !== 'boolean') errors.push('reserved: boolean required');
   if (typeof r.state !== 'string' || !PLUGIN_STATES.includes(r.state as PluginState)) {
     errors.push(`state: must be one of ${PLUGIN_STATES.join('|')}`);
   }
@@ -182,7 +179,7 @@ export function dropRecord(file: PluginsFile, id: string): boolean {
 export function newRecord(
   manifest: Manifest,
   dir: string,
-  opts: { reserved?: boolean; grants?: string[]; origin?: string | null; signedBy?: string | null } = {},
+  opts: { grants?: string[]; origin?: string | null; signedBy?: string | null } = {},
 ): PluginRecord {
   // ID 必须先过 sanitize：它同时是数据目录/配置文件名，非法 ID 不能写进记录
   sanitizePluginId(manifest.id);
@@ -194,7 +191,6 @@ export function newRecord(
     grants: opts.grants ?? [],
     capabilities: [],
     configPath: pluginConfigPath(manifest.id),
-    reserved: opts.reserved ?? false,
     state: 'installed',
     installedAt: new Date().toISOString(),
     lastError: null,

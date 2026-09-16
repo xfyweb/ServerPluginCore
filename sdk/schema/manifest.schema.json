@@ -455,14 +455,13 @@
       "additionalProperties": false,
       "properties": {
         "npm": {
-          "description": "依赖三层：whitelist(L1 平台托管) / user-opt-in(L2 用户放行)；原生模块与重型二进制不进此表(L3)",
+          "description": "npm 依赖声明。构建期由**构建器**解析真实闭包并做能力检查（能带/不能带）；**没有信任分级**，也不产生任何用户放行动作——见 ADR-005 §7 v2",
           "type": "array",
           "items": {
             "type": "object",
             "required": [
               "name",
-              "version",
-              "tier"
+              "version"
             ],
             "additionalProperties": false,
             "properties": {
@@ -475,12 +474,6 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64
-              },
-              "tier": {
-                "enum": [
-                  "whitelist",
-                  "user-opt-in"
-                ]
               }
             }
           }

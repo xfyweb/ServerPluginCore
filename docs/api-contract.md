@@ -278,7 +278,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 - `id` 为**市场内唯一**的发布者命名空间 `@<username>/<name>`；跨市场全局唯一性由完整引用 `<origin>/@<username>/<name>` 提供（plugin-signature-design.md §8）；
 - `author.id`（可选）= `<username>@<源域名>`；填写时须与 `id` 的命名空间和源域名一致，否则 `AUTHOR_MISMATCH`；
 - `dependencies.plugins[]`：`{ id, origin?, version? }`——同源依赖省略 `origin`，跨源依赖必须写明；缺少的源**不会自动添加**，只会提示管理员（plugin-signature-design.md §7.1）；
-- `dependencies.npm.tier`：`whitelist`（L1，平台托管）/ `user-opt-in`（L2，需用户放行）；原生模块与重型二进制不进此表（L3 禁区）；
+- `dependencies.npm[]`：npm 依赖**声明**（`{ name, version }`）。**没有 `tier` 字段**——依赖不分信任档（ADR-005 §7 v2）：真实闭包由**构建器**解析，构建期只做"能不能带"的能力检查，不产生任何用户放行动作（旧 `tier` 枚举与 `protectionLevel` 同因删除：判定链不读的字段不留）；
 - `runtime.type`：`quickjs`（默认）| `node-child`（子进程档）；ESM-only 全后端统一。
 
 ## 10. API 扩展注册点（驱动插件机制）

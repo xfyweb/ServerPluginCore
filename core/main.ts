@@ -1,7 +1,7 @@
 // pnpm spike：走**真实链路**（记录 → 装载 → init/start → 停 → 卸载），
 // 而不是像 P1 那样"写死一个目录跑一次"（plugin-lifecycle-design.md §11 验收）。
 //
-// 首次运行会真的把内置样板插件装进状态目录（reserved ⇒ 可禁用、不可卸载）；
+// 首次运行会真的把内置样板插件装进状态目录（内置 = 随核心分发、默认安装，仍是普通插件）；
 // 之后每次运行都从 plugins.json 读记录、按 enabled 装载。
 import { join } from 'node:path';
 import { initAudit } from './audit';
@@ -22,7 +22,7 @@ function printStatus(): void {
   console.log(`[spc] plugins=${rows.length}`);
   for (const p of rows) {
     console.log(
-      `  · ${p.id}@${p.version.name} [${p.state}] enabled=${p.enabled} reserved=${p.reserved}` +
+      `  · ${p.id}@${p.version.name} [${p.state}] enabled=${p.enabled}` +
         ` grants=[${p.grants.join(',')}] caps=[${p.capabilities.join(',')}]`,
     );
     if (p.lastError) console.log(`    lastError=${p.lastError.code}`);
@@ -45,7 +45,7 @@ async function main() {
   const existing = manager.list().find((p) => p.id === SAMPLE_ID);
   if (!existing) {
     console.log(`[spc] installing ${SAMPLE_ID} from ${sampleDir} ...`);
-    await manager.install(sampleDir, { reserved: true, grants: sampleGrants() });
+    await manager.install(sampleDir, { grants: sampleGrants() });
   } else {
     // 2) 之后每次：按记录启动（startAll 幂等，已装载的会跳过）
     await manager.startAll();

@@ -8,7 +8,6 @@
 //   theme   主题包：声明式设计令牌 + 资源 + 受限样式，无 JS、无沙箱（v3 由"面板插件"降级而来）
 export type PluginType = 'ability' | 'driver' | 'hook' | 'theme';
 export type RuntimeType = 'quickjs' | 'node-child';
-export type DependencyTier = 'whitelist' | 'user-opt-in';
 /** 前端形态：declarative = 核心渲染组件树；iframe = 插件 bundle 在隔离 iframe 内运行 */
 export type FrontendMode = 'declarative' | 'iframe';
 /** 意图负载形状（核心代理按此校验；资源内容默认不随意图下发） */
@@ -139,10 +138,14 @@ export interface Manifest {
     };
   };
   dependencies?: {
+    /**
+     * npm 依赖**声明**。构建期由构建器解析真实闭包并做能力检查（能带 / 不能带）。
+     * **没有信任分级**（无 `tier`）：勾选拦不住已经内联进 bundle 的依赖，分级又建立在
+     * 不可信的声明之上——整套已退化为构建期能力检查（ADR-005 §7 v2）。
+     */
     npm?: {
       name: string;
       version: string;
-      tier: DependencyTier;
     }[];
     plugins?: {
       id: string;

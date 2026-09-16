@@ -96,7 +96,7 @@
 
 7. **`reason` 字段**：每个权限请求附一行"为什么需要"，安装时展示给用户——安装风险提示的实体内容（对应 Android 安装时的权限用途说明），也是审核时的评审材料（ADR-001 v3 审核）。
 
-8. **`dependencies.npm`（D8 载体）**：每项带 `tier`——`whitelist`（L1 平台托管，构建层锁定版本+签名）/ `user-opt-in`（L2 用户显式放行）；原生模块与重型二进制不进此表（L3 禁区，ADR-005 §7）。装依赖与插件安装分离，需显式授权。manifest 里声明的是"意图"，宿主侧白名单才是"批准"——与权限同一哲学。
+8. **`dependencies.npm`（D8 载体）**：npm 依赖**声明**（`{ name, version }`）。**没有 `tier`**——依赖不分信任档（ADR-005 §7 v2）：勾选拦不住内联的依赖、分级又建立在不可信的声明上，所以整套退化成**构建期能力检查**（能带 / 不能带）+ 把**真实闭包**（构建器算出来的，不是声明的）写进产物元数据供人查看。`dependencies.plugins`（插件间依赖）是另一回事，它走运行时检查（plugin-lifecycle-design §5）。
 
 9. **`configSchema`（插件配置声明，P1.5）**：声明用户可调参数（JSON Schema 子集：`string | number | boolean | enum | array`，带 `default`/`description`，敏感字段标 `secret: true`）。值存在宿主侧 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`，装载时按 schema 校验并补默认值，以**只读快照** `ctx.config` 注入（插件不能改自己的配置）。面板据此渲染配置表单（P3）。详见 plugin-lifecycle-design.md §1.6。
 

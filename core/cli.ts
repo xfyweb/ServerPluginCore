@@ -20,7 +20,6 @@ interface PluginView {
   state: string;
   grants: string[];
   capabilities: string[];
-  reserved: boolean;
   lastError: { code: string; at: number } | null;
   restartAttempts: number;
   dataDir: string;
@@ -104,7 +103,6 @@ function printPlugin(p: PluginView): void {
       state: p.state,
       enabled: p.enabled ? t('cli.yes') : t('cli.no'),
       type: p.type,
-      reserved: p.reserved ? t('cli.yes') : t('cli.no'),
     }),
   );
   if (p.grants.length > 0) console.log(t('cli.plugin.grants', { grants: p.grants.join(', ') }));
@@ -133,14 +131,12 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
   if (sub === 'install') {
     const dir = args.find((a) => !a.startsWith('--'));
     if (!dir) throw new Error(t('cli.plugin.install.usage'));
-    const reserved = args.includes('--reserved');
     const grants: string[] = [];
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--grant' && args[i + 1]) grants.push(args[i + 1]);
     }
     const r = (await httpJson('POST', '/api/plugins/install', token, {
       dir: resolve(dir),
-      reserved,
       grants,
     })) as { status: number; body: { plugin: PluginView } };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.install.fail');

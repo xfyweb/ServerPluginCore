@@ -136,7 +136,6 @@
   "err.PLUGIN_TIMER_TIMEOUT": "插件定时器回调超时（{pluginId}）：已强制中断",
   "err.PLUGIN_DISABLED": "插件已禁用：{pluginId}",
   "err.PLUGIN_ALREADY_RUNNING": "插件已在运行：{pluginId}",
-  "err.PLUGIN_RESERVED": "内置/保留插件不可卸载：{pluginId}（可禁用）",
   "err.PLUGIN_DISPOSED": "插件沙箱已释放：{pluginId}",
   "err.PLUGIN_CONFIG_INVALID": "插件配置非法：{pluginId}（{reason}）",
 

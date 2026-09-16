@@ -373,7 +373,6 @@ test('记录：install 写 plugins.json（结构合法）、重复 install 保�
   assert.equal(rec.origin, null);
   assert.equal(rec.signedBy, null);
   assert.equal(rec.verifiedMeta, null);
-  assert.equal(rec.reserved, false);
   assert.equal(rec.configPath.endsWith(`config/plugins/${sanitized(first.id)}.json`) || rec.configPath.endsWith(`config\\plugins\\${sanitized(first.id)}.json`), true);
 
   const second = await manager.install(dir);
@@ -695,15 +694,16 @@ test('并发：同一插件的两个 reload 同时发起 → 锁串行，终态�
   await manager.disable(id('concurrent'));
 });
 
-// ---------------- 25 reserved ----------------
+// ---------------- 25 内置插件（v2：没有 reserved 例外）----------------
 
-test('reserved 插件：可 disable，uninstall 被拒（PLUGIN_RESERVED）', async () => {
-  const dir = makePlugin('reserved', `export function init(){}`);
-  await manager.install(dir, { reserved: true });
-  assert.equal(manager.status(id('reserved')).reserved, true);
-  assert.equal((await manager.disable(id('reserved'))).state, 'disabled');
-  await rejects(() => manager.uninstall(id('reserved')), 'PLUGIN_RESERVED');
-  // 非 reserved 的可以卸载（记录消失）
+test('内置插件同样是普通插件：可 disable、可 uninstall（v2 取消 reserved）', async () => {
+  const dir = makePlugin('builtin', `export function init(){}`);
+  await manager.install(dir);
+  assert.equal((await manager.disable(id('builtin'))).state, 'disabled');
+  // v1 这里会被 PLUGIN_RESERVED 拒绝；v2 起"内置"只表示随核心分发，不构成卸载豁免
+  await manager.uninstall(id('builtin'));
+  await rejects(() => manager.status(id('builtin')), 'PLUGIN_NOT_FOUND');
+  // 普通插件的卸载路径不变（记录消失）
   const normal = makePlugin('uninstallable', `export function init(){}`);
   await manager.install(normal);
   await manager.uninstall(id('uninstallable'));
