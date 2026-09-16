@@ -20,7 +20,7 @@
 工具失败不是"测试挂了"，是"**结论的保质期到了**"：esbuild 升级、生态变化都可能让旧结论失效，
 这时应当重跑工具、重读数据，而不是改工具让它通过。
 
-## 三个工具
+## 四个工具
 
 ### `esbuild-probe.mjs` —— esbuild 行为矩阵
 
@@ -46,9 +46,10 @@ node tools/gate-probe.mjs
 关键发现：CJS 依赖**必须内联仿真**（标 external 会退化成运行期欠条）；朴素正则
 `__require\s*\(` 会误报辅助函数定义行，可靠判据是标记字符串 `"Dynamic require of "`。
 
-### `dep-survey.mjs` —— 依赖面实测
+### `dep-survey.mjs` —— 依赖面实测 + 构建闸覆盖度
 
-回答：真实 npm 生态里哪些包会留下"运行期才解析模块"的欠条，以及那些欠条**该归谁管**。
+回答两件事：真实 npm 生态里哪些包会留下"运行期才解析模块"的欠条；**按当前仿真清单，能过几个、
+下一个该补谁**。
 
 **不自包含**——它需要一个装了样本包的取样目录（工具**不替你装包**，避免把几十个包拉进仓库）：
 
@@ -58,14 +59,42 @@ mkdir ../_deps-survey && cd ../_deps-survey && npm init -y
 npm i --registry=https://registry.npmmirror.com esbuild zod lodash ws express ...
 
 # 2) 回到仓库跑（默认读 ../_deps-survey）
-node tools/dep-survey.mjs
-node tools/dep-survey.mjs --packages zod,ws,pg     # 自定义清单
-node tools/dep-survey.mjs --json                   # 机器可读
+node tools/dep-survey.mjs --set utils --coverage       # 只看覆盖度
+node tools/dep-survey.mjs --set core|utils|all         # 样本集（见下）
+node tools/dep-survey.mjs --emulated p2a|p2a+|p2b|p2c  # 换仿真档位做增量对比
+node tools/dep-survey.mjs --packages zod,ws,pg         # 自定义清单
+node tools/dep-survey.mjs --json                       # 机器可读
 SPC_SURVEY_DIR=/path/to/dir node tools/dep-survey.mjs
 ```
 
-关键发现：绝大多数欠条是**内建**（= 仿真覆盖度问题，不是依赖问题）；真正非内建的只有 5 个
-名字，且**全部被自己的 `package.json` 声明为可选**。
+**两个样本集**：`core`（27 个，形态覆盖：纯计算 / IO / 服务端 / 原生加速器）用来验证规则本身；
+`utils`（43 个，插件作者真会用的：配置解析 / 文件操作 / 模板 / 校验 / 格式化 / CLI）才回答"能用什么"。
+**两个都要跑**——只看 `core` 会低估覆盖率，只看 `utils` 会漏掉服务端包的结构性问题。
+
+报告分四段：**覆盖度进展**（本档新增解锁了谁）、**下一个该补谁**（需求面 vs 单独补了能过几个）、
+**离过闸最近的包**（带每包属性数）、**未仿真模块的真实功能需求**。
+
+⚠️ 两个必须记住的口径（否则会得出反向结论）：
+
+- **"缺哪个模块" ≠ "缺多少功能"**。需求面是"多少个包引用"，实现量是"实际访问几个属性"，
+  后者还可能全来自某一个包。实测：`stream` 需求面 9 个包、并集 23 个属性，
+  但按包拆开多为 1–2 个，**23 个几乎全来自 `archiver` 一个**；
+- **覆盖度 ≠ 运行期可用**。过闸只说明"用到的模块都有仿真"，
+  **不代表仿真实现了依赖真正调用的函数**。真正的验收标准是跑通。
+
+### `dep-trace.mjs` —— 追引用链
+
+回答：某包"卡在某个模块"时，**那个引用究竟从哪条依赖链进来**。
+
+```bash
+node tools/dep-trace.mjs fs-extra stream
+node tools/dep-trace.mjs chokidar stream --dir ../_deps-survey
+node tools/dep-trace.mjs tar zlib --depth 5
+```
+
+为什么必须有它：**"A 卡在 X"不代表 A 引用了 X**。实测 `fs-extra` 被判为"卡在 `stream`"，
+追下去发现它自己根本没引用——是依赖 `graceful-fs` 带的，而后者只用了 `Stream` 和 `call`。
+不追链就会把一个极小的 shim 估成"实现整个 stream"。
 
 ## 写新工具的约定
 

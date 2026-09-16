@@ -1,7 +1,7 @@
 # 官方模块仿真设计（module emulation）
 
 - 状态：**设计草案（2026-09）**；实现：P2-A（纯计算模块 + 桥契约）→ P2-B（fs / process / os）→ P2-C（buffer / crypto）
-- 关联：ADR-005 §5（模块表面契约：**注入面 = 安全边界**）、api-contract §2/§5、exec-sandbox-design.md（同为"一个真实文件 + 注册表"模式）、manifest-design.md（权限请求）、ROADMAP P2
+- 关联：ADR-005 §5（模块表面契约：**注入面 = 安全边界**）、**build-layer-evidence.md §2/§4.4（§3 清单的排期依据）**、api-contract §2/§5、exec-sandbox-design.md（同为"一个真实文件 + 注册表"模式）、manifest-design.md（权限请求）、ROADMAP P2
 - 用途：本文件是**兼容性契约 + 实现清单**——每个仿真模块"仿到什么程度、映射哪个权限点、不支持时怎么报错"都以本文件为准。
 
 ## 1. 目标与非目标
@@ -53,6 +53,33 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | 后置 | `node:stream` / `node:zlib` / `node:string_decoder` … | 视需求 | 按真实插件需求逐块评估，一律"先登记后可用" |
 
 未列入本表的模块（`node:net`、`node:http`、`node:dns`、`node:tls`、`node:cluster`、`node:child_process`、`node:worker_threads`、`node:vm`、`node:v8`、`node:module`、`node:repl` …）**一律拒绝**。
+
+### 3.1 排期依据（实测输入，2026-09）
+
+**排序依据是"哪些包被卡住 + 实际访问几个属性"，不是"Node 文档里有多少 API"。**
+理由：依赖改不了，只能迁就它；而 Node 文档描述的是全集，真实依赖只用子集。
+数据、方法与工具见 **build-layer-evidence.md §2/§4.4** 与 `tools/`（`dep-survey.mjs` 出清单，`dep-trace.mjs` 追引用链）。
+
+**实测对 §3 的四条修正**
+
+| # | 修正 | 依据 |
+|---|---|---|
+| 1 | **`node:tty` 补入 P2-A、`node:constants` 补入 P2-B** | 两者都被实测撞到（`chalk` 用 `tty`；`fs-extra`/`dockerode` 用 `constants`），成本极低。**但它们当前解锁 0 个包**（用到它们的包还缺别的）——是**前置条件，不是解锁项** |
+| 2 | **子路径内建要独立登记**：`stream/promises`、`path/win32`、`util/types`、`timers/promises` | 实测均撞到。§4 的规则本来就要求独立登记名，但**清单里一个都没列** |
+| 3 | **`stream` 从"后置"提升**（建议 P2-D） | 在 43 个小工具包样本里，**单独补 `stream` 解锁 5 个包**（`chokidar` `fast-glob` `proper-lockfile` `graceful-fs` `csv-parse`），是单个模块里最高的。而且按包拆开多为 **1–2 个属性**（`Stream` + `call`）——**小 shim 可能就够**；只有 `archiver` 真的需要完整 stream |
+| 4 | **`zlib` 按"能力型"设计，不是纯计算** | `adm-zip` 只要 4 个属性（`deflateRawSync`/`createDeflateRaw`/`inflateRawSync`/`createInflateRaw`）。压缩算法要么走宿主、要么纯 JS 实现（工作量大）⇒ 与 `fs`/`crypto` 同类：**源码静态可内联，能力运行时接上** |
+
+**两条要写进纪律的**：
+
+- **"一律拒绝"要按属性判断，不是按模块**——`node:worker_threads` 在实测里只被访问了 `threadId`
+  （`write-file-atomic` 拿它判断"在不在 worker 里"），**那不是能力**，返回 `null` 即可；
+  而 `child_process` 的 `spawn`/`spawnSync`、`net` 的 `createConnection` 确实是能力，维持禁区。
+  ⇒ 上面那句"一律拒绝"应理解为"**这些模块的能力面**一律拒绝"；
+- **`fs` 的门槛在方法面的宽度**，不在依赖了谁——`fs-extra` 一个包就用到 **41 个 `fs` 方法名**。
+  实现 5 个它照样跑不起来。
+
+**一条必须搭配的约束**：仿真模块**必须可内联**（静态、无构建期占位符、能力运行时从全局取）——
+见 §5 规则 2 的修订要求与 build-layer-evidence §4.2。
 
 ## 4. specifier 规则
 
