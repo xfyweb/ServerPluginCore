@@ -100,6 +100,14 @@ export interface PluginLimits {
   stopTimeoutMs: number;
   /** 定时器回调的 CPU 中断 deadline */
   timerTimeoutMs: number;
+  /**
+   * 单插件**同时存活**的定时器上限（`timers.every` 计数，`timers.clear` 释放）。
+   *
+   * 与 kv 键数（1000）/ fs.list 条数一样属于"宿主资源要计量"：没有它，插件可以在几秒内
+   * 创建任意多个宿主 `setInterval`（实测 5 秒 6659 个、RSS +18.9MB，且毫无报错）。
+   * 计的是**活着的**定时器而不是累计创建数——长期的"注册→回调→clear"循环不该被误伤。
+   */
+  maxTimers: number;
 }
 
 export type FailedRestart = 'manual' | 'auto';
@@ -125,6 +133,7 @@ export const DEFAULT_LIMITS: PluginLimits = {
   startTimeoutMs: 5_000,
   stopTimeoutMs: 3_000,
   timerTimeoutMs: 5_000,
+  maxTimers: 64,
 };
 
 export const DEFAULT_CONFIG: SpcConfig = {
@@ -191,6 +200,7 @@ export function loadConfig(): SpcConfig {
   plugin.limits.startTimeoutMs = envInt('SPC_PLUGIN_START_TIMEOUT_MS', limits.startTimeoutMs);
   plugin.limits.stopTimeoutMs = envInt('SPC_PLUGIN_STOP_TIMEOUT_MS', limits.stopTimeoutMs);
   plugin.limits.timerTimeoutMs = envInt('SPC_PLUGIN_TIMER_TIMEOUT_MS', limits.timerTimeoutMs);
+  plugin.limits.maxTimers = envInt('SPC_PLUGIN_MAX_TIMERS', limits.maxTimers);
   plugin.failedRestart = envFailedRestart(plugin.failedRestart);
   plugin.maxRestartAttempts = envInt('SPC_PLUGIN_MAX_RESTART_ATTEMPTS', plugin.maxRestartAttempts);
   plugin.restartBackoffMs = envInt('SPC_PLUGIN_RESTART_BACKOFF_MS', plugin.restartBackoffMs);

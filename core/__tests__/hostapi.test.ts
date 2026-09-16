@@ -15,6 +15,8 @@ process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
 const { manager } = await import('../plugin/manager.ts');
 const { SpcError } = await import('../errors.ts');
+// 动态导入（不是静态）：静态导入会被提升到上面两行环境变量赋值之前
+const { createKvStore } = await import('../hostApi.ts');
 
 const id = (n: string) => `@spc/${n}`;
 const sanitized = (p: string) => p.replace(/^@/, '').replace(/\//g, '__');
@@ -215,6 +217,82 @@ test('kv：对象/数组/数字/布尔都能存取，delete 幂等，keys 有序
   // 落盘的是真值，不是字符串
   assert.deepEqual(readKv(id('kv')).obj, { a: 1, nested: { b: [2, 3] } });
   await manager.disable(id('kv'));
+});
+
+test('kv：**总容量**受限（KV_TOTAL_LIMIT_EXCEEDED），且已有键不受影响', async () => {
+  const dir = makePlugin(
+    'kv-total',
+    `import { kv } from '@host/api';
+     export function init(){
+       const codes = [];
+       let n = 0;
+       const chunk = 'y'.repeat(250 * 1024);   // 单值 250KB（低于单值上限 256KB）
+       for (let i = 0; i < 60; i++) {
+         try { kv.set('k' + i, chunk); n++; }
+         catch (e) { codes.push('total=' + e.code); break; }
+       }
+       kv.set('probe', { n: n, codes: codes.join('|'), first: (kv.get('k0') || '').length });
+     }`,
+  );
+  await manager.install(dir);
+  const probe = readKv(id('kv-total')).probe as Record<string, unknown>;
+  // 8MiB / 250KB ≈ 33 个：写到第 34 个左右必须被拒，而不是把 256MB 的理论上限当空气
+  assert.ok(Number(probe.n) >= 30 && Number(probe.n) <= 34, `实际写入 ${probe.n} 个`);
+  assert.equal(probe.codes, 'total=KV_TOTAL_LIMIT_EXCEEDED');
+  // 超限只拒新写入，已存的值照旧可读（不是把整个 kv 废掉）
+  assert.equal(probe.first, 250 * 1024);
+  await manager.disable(id('kv-total'));
+});
+
+test('kv：合并写 —— 同一阶段内多次 set 只落盘一次，阶段结束（钩子返回）时数据已在文件里', async () => {
+  const dir = makePlugin(
+    'kv-coalesce',
+    `import { kv } from '@host/api';
+     export function init(){
+       for (let i = 0; i < 5; i++) kv.set('k' + i, i);
+     }`,
+  );
+  await manager.install(dir);
+  // install 返回 = init 阶段已结束：5 次 set 全部落盘（这就是"阶段边界落盘"的验收点）
+  const values = readKv(id('kv-coalesce'));
+  for (let i = 0; i < 5; i++) assert.equal(values[`k${i}`], i);
+  await manager.disable(id('kv-coalesce'));
+});
+
+// ---- kv 落盘策略（内部单元：写放大与原子性都是"整文件重写"逼出来的） ----
+
+test('createKvStore：set 只标脏不落盘，flushNow 才写，且内容是原子替换的', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spc-kv-store-'));
+  try {
+    const store = createKvStore(dir);
+    store.set('a', 1, 1);
+    store.set('b', 2, 1);
+    // 同步块里没有 await → setImmediate 还没机会跑：文件此刻必须**不存在**
+    // （这条断言就是"合并写"的判据；退化成"每次 set 立即重写整文件"它会立刻失败）
+    assert.equal(existsSync(join(dir, 'kv.json')), false, 'set 不该立即落盘');
+    assert.equal(store.read().a, 1, '读走内存，写没落盘也要能读到');
+
+    store.flushNow();
+    const onDisk = JSON.parse(readFileSync(join(dir, 'kv.json'), 'utf8')) as { values: Record<string, unknown> };
+    assert.deepEqual(onDisk.values, { a: 1, b: 2 });
+    // 原子替换：不留半截临时文件
+    assert.equal(existsSync(join(dir, 'kv.json.tmp')), false, '不该留下 .tmp');
+
+    // 没改动时 flushNow 是空操作（不会白写一遍）
+    const before = readFileSync(join(dir, 'kv.json'), 'utf8');
+    store.flushNow();
+    assert.equal(readFileSync(join(dir, 'kv.json'), 'utf8'), before);
+
+    // 总预算按值核算：写入即超限时拒绝，且不污染已有键
+    const store2 = createKvStore(dir);
+    assert.throws(
+      () => store2.set('big', 'x', 9 * 1024 * 1024),
+      (err: unknown) => (err as { code?: string }).code === 'KV_TOTAL_LIMIT_EXCEEDED',
+    );
+    assert.equal(store2.read().big, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('kv：键名与值大小受限（KV_KEY_INVALID / KV_VALUE_TOO_LARGE）', async () => {

@@ -143,6 +143,7 @@
   "err.PLUGIN_CONFIG_INVALID": "Invalid plugin config: {pluginId} ({reason})",
 
   "err.TIMER_INTERVAL_INVALID": "Invalid timer interval (integer 100ms–24h required): {intervalMs}",
+  "err.TIMER_LIMIT_EXCEEDED": "Too many timers (limit {limit}; clear some with timers.clear): {pluginId}",
   "err.TIMER_HANDLER_INVALID": "timers.every callback must be a function",
   "err.TIMER_UNAVAILABLE": "Timer host unavailable (sandbox not ready): {pluginId}",
 
@@ -150,6 +151,7 @@
   "err.KV_KEY_INVALID": "Invalid kv key (1–256 chars of [A-Za-z0-9_.:-]): {key}",
   "err.KV_VALUE_INVALID": "kv value is not valid JSON: {key}",
   "err.KV_VALUE_TOO_LARGE": "kv value too large: {key} ({bytes} > {limit} bytes)",
+  "err.KV_TOTAL_LIMIT_EXCEEDED": "kv total size exceeded ({bytes} > {limit} bytes)",
   "err.KV_LIMIT_EXCEEDED": "Too many kv keys: {limit}",
 
   "err.NOT_A_FILE": "Target is not a regular file: {path}",

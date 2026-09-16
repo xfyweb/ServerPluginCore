@@ -196,6 +196,14 @@ export interface SandboxBridge {
    * 40.7 秒，而且当时还被记成了**成功**。有了余额，宿主方法至少能把自己压回预算内。
    */
   remainingMs?: () => number;
+  /**
+   * 把宿主侧"待落盘状态"（当前是 kv 的合并写）强制落盘。
+   *
+   * 沙箱在**阶段边界**（`invoke` / `runModule` 结束）与 `dispose()` 时调用。
+   * 为什么要有这个落盘点：kv 改成合并写之后，"钩子返回时数据已落盘"不再是 set 的副作用，
+   * 而重启后的读取、测试里的断言、以及"卸载前不丢数据"都依赖它。
+   */
+  flush?: () => void;
 }
 
 /** 注入 ctx 的"环境事实"（能力走 @host/api，环境走 ctx，见 plugin-lifecycle-design §1.3） */
@@ -609,6 +617,19 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   }
 
   /**
+   * 阶段边界的宿主状态落盘点（kv 合并写）。
+   * 落盘失败**只记日志**：它不该盖掉钩子本身的错误（在 finally 里抛会顶掉原异常），
+   * 而失败原因（磁盘满/权限）本身也不是插件的行为。
+   */
+  function flushHostState(): void {
+    try {
+      options.bridge?.flush?.();
+    } catch (err) {
+      log('error', `宿主状态落盘失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
    * 统一的钩子/定时器回调调用：
    * 设 deadline → 调 __spcInvoke / __spcTimerInvoke → 泵 job → 读归一化状态 → 归类失败。
    */
@@ -689,6 +710,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     } finally {
       deadline.setDeadline(Number.POSITIVE_INFINITY);
       busy = false;
+      flushHostState();
     }
   }
 
@@ -731,6 +753,14 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         if (!Number.isSafeInteger(intervalMs) || intervalMs < 100 || intervalMs > 86_400_000) {
           throw new SpcError('TIMER_INTERVAL_INVALID', { intervalMs: String(intervalMs) });
         }
+        // 数量上限（宿主资源要计量）：计**活着的**定时器，clear 后名额立刻回收。
+        // 没有它，插件可以几秒内塞进成千上万个宿主 setInterval（实测 5s/6659 个、RSS +18.9MB、无报错）。
+        if (timers.size >= limits.maxTimers) {
+          throw new SpcError('TIMER_LIMIT_EXCEEDED', {
+            pluginId: options.pluginId,
+            limit: String(limits.maxTimers),
+          });
+        }
         const timerId = `t${++timerSeq}`;
         const handle = setInterval(() => {
           void runTimer(callbackId, timerId);
@@ -770,6 +800,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         result = await vm.evalCodeAsync(source, 'plugin.js', { type: 'module' });
       } finally {
         deadline.setDeadline(Number.POSITIVE_INFINITY);
+        // 顶层代码也能写 kv（装载是独立阶段），同样是落盘边界
+        flushHostState();
       }
       if (isSuccess(result)) {
         // 命名空间句柄**保留**（钩子从这里取导出），由 Scope 在 dispose 时释放
@@ -849,6 +881,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     dispose() {
       if (disposed) return; // 幂等：stop 失败路径与正常卸载路径都可能调到这里
       disposed = true;
+      // 卸载前把待落盘状态（kv）写下去：合并写之后，这是"不丢数据"的最后一道保证
+      flushHostState();
       for (const handle of timers.values()) clearInterval(handle);
       timers.clear();
       deadline.setDeadline(Number.POSITIVE_INFINITY);

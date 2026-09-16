@@ -95,8 +95,8 @@ interface EventResult {
 |---|---|---|---|---|
 | **exec（模板）** | `exec.run`（阻塞）`exec.spawn`（异步→句柄） | `exec.template.<action>.<op>` | `run` ✅ / `spawn` P2 | **无自由命令**，仅模板 + 参数校验（详 §5、§4.1）；返回值是**原始 JSON 文本**（唯一不自动解码的方法） |
 | **fs（受限）** | `fs.read` `fs.write` `fs.list` `fs.stat` | `fs.read.data` `fs.write.data` | ✅ | 作用域 = **插件数据目录**；路径收敛 + realpath；`fs.write` 在"最近存在祖先的 realpath 在数据目录内"时补建父目录；读取上限 1MB（写 64MB） |
-| **kv** | `kv.get` `kv.set` `kv.delete` `kv.keys` | `kv.read` `kv.write` | ✅ | 插件作用域持久化存储（`<dataDir>/kv.json`）；值 JSON 编解码（可存对象/数组）；键 `[A-Za-z0-9_.:-]{1,256}`、值 ≤256KB、键数 ≤1000 |
-| **timers** | `timers.every` `timers.clear` | `timers.schedule` | `every`/`clear` ✅ / `cron` P2 | 宿主侧调度，插件不保活（定时器 unref）；回调在沙箱内执行、与钩子同样限额；卸载时宿主自动清掉 |
+| **kv** | `kv.get` `kv.set` `kv.delete` `kv.keys` | `kv.read` `kv.write` | ✅ | 插件作用域持久化存储（`<dataDir>/kv.json`）；值 JSON 编解码（可存对象/数组）；键 `[A-Za-z0-9_.:-]{1,256}`、值 ≤256KB、键数 ≤1000、**总容量 ≤8MiB**；落盘是**合并写 + 原子替换**，确定性的落盘点在**阶段边界**（钩子/装载结束、卸载前）——`kv.set` 返回后读回立即可见，但同一钩子内多次写只落盘一次 |
+| **timers** | `timers.every` `timers.clear` | `timers.schedule` | `every`/`clear` ✅ / `cron` P2 | 宿主侧调度，插件不保活（定时器 unref）；回调在沙箱内执行、与钩子同样限额；卸载时宿主自动清掉；**同时存活上限 64 个**（计活着的，`clear` 即释放；超限 `TIMER_LIMIT_EXCEEDED`） |
 | **events** | `events.publish`（订阅走 manifest 声明） | `events.publish` | ✅（总线本体 P2） | topic 必须已在 manifest `exports.events.publish` 声明，否则 `EVENT_TOPIC_NOT_DECLARED`；同一 topic 只能有一个发布者 |
 | **lifecycle（宿主 API）** | `lifecycle.health` `lifecycle.version` | `lifecycle.health` `lifecycle.version` | ✅ | 心跳、契约协商；**插件自身钩子（宿主→插件）方向相反，见 §4.2 与 plugin-lifecycle-design.md** |
 | **bytes（编解码）** | `bytes.fromString` `bytes.toString` `bytes.byteLength` | `bytes.encode` `bytes.decode` | P2-B | **宿主代工的编解码**（utf8 / latin1 / base64 / hex）：沙箱侧**字节存本地**（`Uint8Array` 子类），只有编解码整块过桥。**为什么代工**：QuickJS 没有 `TextEncoder`，沙箱内纯 JS 逐字节只有 ≈2.6 MB/s；而且交给宿主即**天然与 Node 逐字节一致**（畸形输入不必复刻）。它**不是 `node:buffer` 的私有细节**——仿真模块与插件作者用**同一批**方法。详见 module-emulation-design §3.2 |

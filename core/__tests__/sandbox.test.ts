@@ -213,6 +213,52 @@ test.block();
   assert.doesNotThrow(() => sandbox.dispose());
 });
 
+// ---- S-4：宿主资源的计量（定时器数量） ----
+
+test('timers 有同时存活上限，且 clear 立即释放名额（S-4 回归）', async () => {
+  const { buildHostApi } = await import('../hostApi.ts');
+  const bridge: SandboxBridge = {};
+  const dataDir = mkdtempSync(join(tmpdir(), 'spc-timers-'));
+  const api = buildHostApi({ pluginId: '@xfy2412/sandbox-test', dataDir, bridge });
+  const sandbox = await createSandbox(api, {
+    pluginId: '@xfy2412/sandbox-test',
+    permissions: ['timers.schedule'],
+    grants: ['timers.schedule'],
+    bridge,
+    limits: { ...DEFAULT_LIMITS, maxTimers: 3 },
+  });
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import { timers } from '@host/api';
+let made = 0;
+let code = 'none';
+const ids = [];
+for (let i = 0; i < 5; i++) {
+  try { ids.push(timers.every(1000, () => {}).timerId); made++; }
+  catch (e) { code = e.code; break; }
+}
+console.log('MADE ' + made + ' CODE ' + code);
+// clear 掉一个 → 名额必须立刻回收（计"活着的"，不是累计创建数）
+timers.clear(ids[0]);
+const again = timers.every(1000, () => {});
+console.log('AFTER-CLEAR ' + (again.timerId ? 'ok' : 'no'));
+`,
+    );
+  } finally {
+    console.log = origLog;
+    sandbox.dispose();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+  const out = logs.join('\n');
+  assert.match(out, /MADE 3 CODE TIMER_LIMIT_EXCEEDED/);
+  assert.match(out, /AFTER-CLEAR ok/);
+});
+
 test('**预算穿透**：钩子里的宿主方法能看到剩余预算（exec 靠它给 spawnSync 封顶）', async () => {
   const bridge: SandboxBridge = {};
   const seen: number[] = [];

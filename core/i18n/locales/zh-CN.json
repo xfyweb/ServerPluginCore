@@ -143,6 +143,7 @@
   "err.PLUGIN_CONFIG_INVALID": "插件配置非法：{pluginId}（{reason}）",
 
   "err.TIMER_INTERVAL_INVALID": "定时器间隔非法（需 100ms–24h 的整数）：{intervalMs}",
+  "err.TIMER_LIMIT_EXCEEDED": "定时器数量超限（上限 {limit}，可先 timers.clear 释放）：{pluginId}",
   "err.TIMER_HANDLER_INVALID": "timers.every 的回调必须是函数",
   "err.TIMER_UNAVAILABLE": "定时器宿主不可用（沙箱未就绪）：{pluginId}",
 
@@ -150,6 +151,7 @@
   "err.KV_KEY_INVALID": "kv 键非法（1–256 位 [A-Za-z0-9_.:-]）：{key}",
   "err.KV_VALUE_INVALID": "kv 值不是合法 JSON：{key}",
   "err.KV_VALUE_TOO_LARGE": "kv 值过大：{key}（{bytes} > {limit} bytes）",
+  "err.KV_TOTAL_LIMIT_EXCEEDED": "kv 总容量超限（{bytes} > {limit} bytes）",
   "err.KV_LIMIT_EXCEEDED": "kv 键数量超限：{limit}",
 
   "err.NOT_A_FILE": "目标不是普通文件：{path}",

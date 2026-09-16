@@ -13,6 +13,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -39,6 +40,14 @@ const MAX_READ_BYTES = 1024 * 1024; // 1MB
 const MAX_LIST_ENTRIES = 1000;
 const MAX_KV_KEYS = 1000;
 const MAX_KV_VALUE_BYTES = 256 * 1024;
+/**
+ * 单插件 kv 的**总字节预算**（所有键的值 JSON 字节之和）。
+ *
+ * 没有它，键数上限 × 单值上限 = 理论上 256MB，而 kv 是**整文件重写**：存满后每调一次 `set`
+ * 都要同步序列化 + 写 256MB（插件可主动制造，阻塞事件循环数百 ms~秒级）。
+ * 8 MiB 把最坏一次重写压到几毫秒量级，同时够存配置/状态/计数这类真实用途。
+ */
+const MAX_KV_TOTAL_BYTES = 8 * 1024 * 1024;
 const KV_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,256}$/;
 
 /**
@@ -122,10 +131,22 @@ function ensureParentInsideDataDir(target: string, dataDir: string): void {
   mkdirSync(parent, { recursive: true });
 }
 
-/** kv：每个插件一个 <dataDir>/kv.json（懒加载 + 变更即落盘） */
-function createKvStore(dataDir: string) {
+/**
+ * kv：每个插件一个 `<dataDir>/kv.json`。
+ *
+ * 三条设计点，都是被"整文件重写"这个事实逼出来的：
+ *   · **合并写**：连续 set 只在阶段边界落盘一次（写放大可达键数×值大小）；
+ *   · **原子替换**：先写 `.tmp` 再 rename（崩在写一半不会留下半截 kv.json；与 records.ts 同法）；
+ *   · **总字节预算**：键数 1000 × 单值 256KB 理论上有 256MB，最坏一次重写要同步序列化+写这么多，
+ *     足以让插件主动阻塞事件循环数百 ms~秒级。
+ */
+export function createKvStore(dataDir: string) {
   const file = join(dataDir, 'kv.json');
   let cache: Record<string, unknown> | undefined;
+  let dirty = false;
+  let pending: NodeJS.Immediate | undefined;
+  /** 值 JSON 字节总量；-1 = 还没算过（第一次需要时按现有键算一次） */
+  let total = -1;
 
   const read = (): Record<string, unknown> => {
     if (cache) return cache;
@@ -149,12 +170,71 @@ function createKvStore(dataDir: string) {
     return cache;
   };
 
-  const flush = (): void => {
-    ensureDir(dataDir);
-    writeFileSync(file, JSON.stringify({ kvSchema: 1, values: read() }, null, 2) + '\n', 'utf8');
+  const totalBytes = (): number => {
+    if (total < 0) {
+      total = 0;
+      for (const v of Object.values(read())) total += valueBytes(v);
+    }
+    return total;
   };
 
-  return { read, flush };
+  const flushNow = (): void => {
+    if (pending) {
+      clearImmediate(pending);
+      pending = undefined;
+    }
+    if (!dirty) return;
+    ensureDir(dataDir);
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ kvSchema: 1, values: read() }, null, 2) + '\n', 'utf8');
+    renameSync(tmp, file); // 原子替换：半截文件永远不会成为 kv.json
+    dirty = false;
+  };
+
+  /**
+   * 标脏 + 兜底调度。
+   * `setImmediate` 只服务"没有生命周期"的场景（模块级 hostApi 的独立探测/单测）——
+   * 有沙箱时**确定性的落盘点**是阶段边界（`SandboxBridge.flush`，见 sandbox 的 invoke/runModule）。
+   * 光靠 immediate 不行：钩子结束时测试就会去读 kv.json，而 microtask 先于 check 阶段跑。
+   */
+  const schedule = (): void => {
+    dirty = true;
+    if (!pending) pending = setImmediate(flushNow);
+  };
+
+  const set = (key: string, value: unknown, bytes: number): void => {
+    const values = read();
+    const existed = Object.prototype.hasOwnProperty.call(values, key);
+    if (!existed && Object.keys(values).length >= MAX_KV_KEYS) {
+      throw new SpcError('KV_LIMIT_EXCEEDED', { limit: String(MAX_KV_KEYS) });
+    }
+    const next = totalBytes() - (existed ? valueBytes(values[key]) : 0) + bytes;
+    if (next > MAX_KV_TOTAL_BYTES) {
+      throw new SpcError('KV_TOTAL_LIMIT_EXCEEDED', {
+        bytes: String(next),
+        limit: String(MAX_KV_TOTAL_BYTES),
+      });
+    }
+    values[key] = value;
+    total = next;
+    schedule();
+  };
+
+  const remove = (key: string): boolean => {
+    const values = read();
+    if (!Object.prototype.hasOwnProperty.call(values, key)) return false;
+    total = totalBytes() - valueBytes(values[key]);
+    delete values[key];
+    schedule();
+    return true;
+  };
+
+  return { read, set, remove, flushNow };
+}
+
+/** 值的 JSON 编码字节数（与落盘同一套编码；只用于总量核算，不追求与文件字节完全一致） */
+function valueBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value) ?? 'null');
 }
 
 function assertKvKey(key: string): void {
@@ -171,6 +251,8 @@ function assertKvKey(key: string): void {
 export function buildHostApi(ctx: PluginHostContext): HostApi {
   const kv = createKvStore(ctx.dataDir);
   const topics = new Set<string>(ctx.declaredTopics ?? []);
+  // kv 是合并写的，落盘点在沙箱的阶段边界：把 flushNow 挂到桥上（没有桥=独立探测，走 immediate 兜底）
+  if (ctx.bridge) ctx.bridge.flush = () => kv.flushNow();
 
   return {
     // ---- fs：作用域 = 插件数据目录（路径收敛复用 safe-path 的 F1–F7）----
@@ -285,10 +367,6 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       permission: 'kv.write',
       fn: (key: string, valueJson: string) => {
         assertKvKey(key);
-        const values = kv.read();
-        if (!Object.prototype.hasOwnProperty.call(values, key) && Object.keys(values).length >= MAX_KV_KEYS) {
-          throw new SpcError('KV_LIMIT_EXCEEDED', { limit: String(MAX_KV_KEYS) });
-        }
         let decoded: unknown;
         try {
           decoded = JSON.parse(valueJson);
@@ -302,8 +380,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         if (bytes > MAX_KV_VALUE_BYTES) {
           throw new SpcError('KV_VALUE_TOO_LARGE', { key, bytes: String(bytes), limit: String(MAX_KV_VALUE_BYTES) });
         }
-        values[key] = decoded;
-        kv.flush();
+        kv.set(key, decoded, bytes);
         return { ok: true, key, bytes };
       },
     },
@@ -311,13 +388,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       permission: 'kv.write',
       fn: (key: string) => {
         assertKvKey(key);
-        const values = kv.read();
-        const existed = Object.prototype.hasOwnProperty.call(values, key);
-        if (existed) {
-          delete values[key];
-          kv.flush();
-        }
-        return { ok: true, key, existed };
+        return { ok: true, key, existed: kv.remove(key) };
       },
     },
     'kv.keys': {
