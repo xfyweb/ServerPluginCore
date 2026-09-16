@@ -6,10 +6,19 @@
 // 加载方式：读**文件内容**再按 data: URL 求值，而不是 import 路径。理由：
 //   · 沙箱 loader 服务的就是这份源码文本，构建层内联的也是这份字节——测的就是**真实产物**
 //   · 不需要给项目开 `allowJs`（shim 是 .js，TS 不做类型检查，但我们比的是**值**）
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { strict as assert } from 'node:assert';
 import { fileURLToPath } from 'node:url';
-import { describe, it } from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, describe, it } from 'node:test';
+
+// 审计写**隔离目录**：`AUDIT_DIR` 在 audit.ts 模块加载时读环境变量，而本文件对
+// sandbox/hostApi 都是动态 import（在 describe 回调里），所以在这里设就来得及。
+// 不隔离的话，跑一次测试就往仓库的 `.spc/audit/audit.jsonl` 追加——实测已涨到 100+MB。
+const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-modules-'));
+process.env.SPC_AUDIT_DIR = AUDIT_DIR;
+after(() => rmSync(AUDIT_DIR, { recursive: true, force: true }));
 
 /** 按文件内容加载 shim（返回 any：我们要比的是运行时值，不是类型） */
 async function loadShim(fileName: string): Promise<any> {
