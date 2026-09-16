@@ -22,9 +22,7 @@
 
 ## B · 入口与常量缺失
 
-| # | 问题 | 位置 | 后果 | 证 |
-|---|---|---|---|---|
-| B2 | **`constants` 只覆盖 30/234 键**，且 `O_SYMLINK` 是凭空造的（Linux 上不存在这个键） | `node-constants.js` | 缺失的 errno / 信号 / 权限位取到 `undefined` → 参与位运算**静默算错**；Node 侧是 frozen，我们可写 | ○ |
+（已清空：`constants` 已补全为 Linux 真值 235 键——取值方式是"在 Linux 上 dump 宿主 Node 的运行值"，见 `node-constants.js` 头部注释；子路径入口 `assert/strict`·`path/posix`·`path/win32` 与 E10 白名单的平台语义已修。）
 
 ## C · 测试与工程卫生
 
@@ -44,13 +42,12 @@
 - ✓ **`node:path` 对齐质量很高**：30 万组随机输入 + 173 组手工边界**零不一致**（含 `dirname('/foo')==='//'` 这类怪癖）
 - ✓ **`node:events` 4000 段随机剧本**除 A8/A9/A14/A15 外无分歧（`emit` 返回值、`prepend*` 顺序、`listeners` vs `rawListeners`、重复注册的 LIFO 删除、符号事件名、`'__proto__'` 作事件名、惰性 maxListeners）
 - ✓ **`node:tty`** 对全部非法输入与宿主一致（Node 本身也不校验参数）
-- ✓ **`node:constants` 已定义的 29 个值**与 Linux 真值逐项相符
+- ✓ **`node:constants`**：235 键（fs 56 / errno 79 / signals 33 / crypto 56 / dlopen+priority 11）逐键等于 Linux 宿主 Node v22.22.1 的运行值；`default` 与具名导出一致、已冻结；Linux 上不存在的键（`O_SYMLINK` 等）**不伪造**
 - ✓ **`assert` 的深比较主干**（Date / RegExp / Map / Set / TypedArray / ArrayBuffer / DataView / boxed / 循环引用 / getter / 不可枚举 / 稀疏数组 / `-0` / NaN / 严格模式符号键）对齐
 - ✓ **`registry.ts`**：归一化、大小写敏感、拒绝策略、文件名约定、与 `node-*.js` 的双向一致性均正确（无路径穿越风险）
 
 ## 建议的处理顺序
 
-1. **A6、A7**（深比较按 `comparisons.js` 补齐）
+1. **A6、A7**（深比较按 `comparisons.js` 补齐）——**已有一份未完成的实现**收在仓库外的 stash/补丁里（见 `_audit/HANDOFF.md`），但**没有判别用例**，必须自己验过再用
 2. **A14–A18**（events 元事件 / errorMonitor / captureRejections / 迭代器 / class 形态）
-3. **B2**（`constants` 补全：值必须有上游出处，本机是 Windows 拿不到 Linux 运行值——走内核/glibc/OpenSSL 源码）
-4. **C2–C9**（测试判别力；C3 顺手把宿主调用边界那三条负分支锁住）
+3. **C2–C9**（测试判别力；C3 顺手把宿主调用边界那三条负分支锁住 → 同时补上 S-6/S-7 缺的回归）
