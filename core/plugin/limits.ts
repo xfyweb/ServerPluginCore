@@ -47,15 +47,27 @@ export function applyLimits(
 
 /**
  * 装一个"读当前 deadline"的中断处理器，只装一次。
- * 比每次调用 `setInterruptHandler` 更省事，也不会出现"忘了摘掉"的悬挂 handler：
  * deadline = Infinity 时永不触发。
+ *
+ * `remainingMs()` 是给**宿主方法**用的（见 sandbox 的 `SandboxBridge.remainingMs`）：
+ * 中断处理器只能在解释器跑 opcode 时打断它，**拦不住宿主方法里的同步阻塞**
+ * （`spawnSync` 实测：1 秒预算的钩子里阻塞了 40.7 秒，解释器全程没在跑）。
+ * 所以宿主方法必须能问"这个阶段还剩多少预算"，再给**自己的**超时封顶。
  */
-export function installDeadlineHandler(runtime: QuickJSRuntime): { setDeadline(ms: number): void } {
+export function installDeadlineHandler(runtime: QuickJSRuntime): {
+  setDeadline(ms: number): void;
+  remainingMs(): number;
+} {
   const state = { deadline: Number.POSITIVE_INFINITY };
   runtime.setInterruptHandler(() => Date.now() > state.deadline);
   return {
     setDeadline(ms: number) {
       state.deadline = ms;
+    },
+    remainingMs() {
+      if (state.deadline === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
+      // 夹到 0：已经超时时不能返回负数（调用方会把它当"还有很久"，符号反了就是 fail-open）
+      return Math.max(0, state.deadline - Date.now());
     },
   };
 }

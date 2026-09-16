@@ -154,11 +154,23 @@ export async function stop(ctx: PluginContext) {
 | **CPU** | `runtime.setInterruptHandler(() => Date.now() > deadline)` | 死循环、无限递归、正则灾难性回溯 | **load 5s** / init 5s / start 5s / stop 3s |
 | **内存** | `runtime.setMemoryLimit(bytes)` | 无限分配、大数组 | 32 MiB |
 | **栈** | `runtime.setMaxStackSize(bytes)` | 深递归爆 C 栈 | 512 KiB |
-| **挂起** | **宿主 API 自带超时**（接口强制） | `await` 一个永不 resolve 的宿主调用 | 每个 API 自己定（exec 已有 `timeoutMs`） |
+| **挂起** | **宿主方法自带超时 + 预算封顶**（`bridge.remainingMs()`） | `await` 一个永不 resolve 的宿主调用；**同步阻塞**的宿主调用（`spawnSync`） | 每个 API 自己定（exec 已有 `timeoutMs`），且被阶段剩余预算压低 |
 
 > **`load` 是独立的一档，不是借 init 的**：**顶层代码同样是插件代码**——`while(true)` 可以就写在模块顶层。
 > 少了这一档，`runModule` 会是唯一没有 deadline 的 VM 入口，一个死循环就能把整个核心占死
 > （无超时、无审计、无恢复）。四个入口（load / init / start / stop）+ 定时器回调，各自有各自的预算。
+
+> **CPU 中断有盲区：宿主方法里的同步阻塞。** 插件一进宿主方法，解释器就停了 ——
+> `setInterruptHandler` 一次都不会被调用，中间件到点了也没人查。实测：1 秒预算的钩子里
+> 一次阻塞式 exec 跑了 **40777ms**，而且当时被记成了**成功**。两道补丁（缺一不可）：
+> 1. **预算穿透**：沙箱把"本阶段还剩多少预算"放到桥上（`SandboxBridge.remainingMs`），
+>    宿主方法给**自己的**超时封顶 —— `exec.run` 的实际超时 = `min(模板 timeoutMs, 剩余预算)`；
+> 2. **墙钟事后校验**：钩子/定时器"成功返回"时再比一次墙钟，超了按 `PLUGIN_*_TIMEOUT`
+>    上报（带 `overrunMs`），**绝不记成成功**。
+>
+> 只做 1 挡不住别的阻塞源（磁盘、锁、其它同步 API）；只做 2 则核心仍会被阻塞满一个模板超时。
+> 另外 `effectiveTimeoutMs` 把 0/负数余额夹到 1ms —— `spawnSync` 的 `timeout: 0` 是"**不超时**"，
+> 顺势传下去就是 fail-open。
 
 ### 4.2 QuickJS 语义（本地源码实测，`D:\git-repo\quickjs`）
 
@@ -172,7 +184,8 @@ export async function stop(ctx: PluginContext) {
 
 VM 在等宿主 Promise 时处于 asyncify 挂起状态、**不执行代码**，中断轮询不会发生 → "卡住的 await"只能用宿主侧超时兜。因此：
 
-> **契约（对宿主 API 作者）**：任何可能阻塞或依赖外部输入的宿主 API **必须自带超时**（`exec.run` 的 `timeoutMs` 是第一个示例）。
+> **契约（对宿主 API 作者）**：任何可能阻塞或依赖外部输入的宿主 API **必须自带超时**，且必须用
+> `bridge.remainingMs()` 把超时压到当前阶段的剩余预算之内（`exec.run` 的 `timeoutMs` 是第一个示例）。
 
 ### 4.4 job 泵（async 钩子能跑起来的前提）
 

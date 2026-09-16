@@ -405,7 +405,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         if (!req.ok) {
           throw new SpcError(req.code, req.params ?? {});
         }
-        return runTemplate(req.def, req.params);
+        return runTemplate(req.def, req.params, { capMs: ctx.bridge?.remainingMs?.() });
       },
     },
   };

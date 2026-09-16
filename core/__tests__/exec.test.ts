@@ -6,6 +6,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
+import type { SandboxBridge } from '../sandbox';
+
 import { SpcError } from '../errors';
 import { registerTemplate } from '../exec/install';
 import {
@@ -15,7 +17,7 @@ import {
   templates,
 } from '../exec/templates';
 import { buildArgv, validateParam } from '../exec/params';
-import { buildEnv, runTemplate } from '../exec/run';
+import { buildEnv, effectiveTimeoutMs, runTemplate } from '../exec/run';
 import { matchExecTemplate, resolveExecRequest, tokenizeCommand } from '../exec/request';
 import { registry } from '../permissions/registry';
 import { checkPermission } from '../permissions/check';
@@ -223,6 +225,34 @@ test('E5：超时 → EXEC_TIMEOUT（并杀掉子进程）', () => {
   assert.throws(() => runTemplate(def, {}), /EXEC_TIMEOUT/);
 });
 
+// S-2：宿主方法自己的超时必须能被调用方的剩余预算压低。
+// 没有这一层，"1 秒预算的钩子"照样能靠一条 120 秒的模板把核心阻塞两分钟
+// —— spawnSync 期间解释器不跑，CPU 中断无从触发。
+test('预算封顶：capMs 比模板超时更小时按 capMs 生效，且报的是**生效值**', () => {
+  const def = templates.get('core:t-slow.run')!; // 模板声明 300ms
+  assert.throws(
+    () => runTemplate(def, {}, { capMs: 50 }),
+    (err: unknown) => {
+      assert.ok(err instanceof SpcError);
+      assert.equal(err.code, 'EXEC_TIMEOUT');
+      // 报模板的 300 会让排障方向跑偏（"我没超 300 啊"）
+      assert.equal(err.params.timeoutMs, '50');
+      return true;
+    },
+  );
+});
+
+test('effectiveTimeoutMs：取小；余额算到 0/负数时退化成 1ms 而不是"永不超时"', () => {
+  assert.equal(effectiveTimeoutMs(5_000, undefined), 5_000); // 不在阶段里 → 用模板值
+  assert.equal(effectiveTimeoutMs(5_000, Number.POSITIVE_INFINITY), 5_000);
+  assert.equal(effectiveTimeoutMs(5_000, 120), 120);
+  assert.equal(effectiveTimeoutMs(100, 5_000), 100); // 预算比模板宽 → 仍取模板
+  assert.equal(effectiveTimeoutMs(5_000, 12.7), 12); // 向下取整，不放大
+  // 关键：spawnSync 的 timeout=0 在 Node 里是"不超时"，负数直接抛 ERR_OUT_OF_RANGE
+  assert.equal(effectiveTimeoutMs(5_000, 0), 1);
+  assert.equal(effectiveTimeoutMs(5_000, -5), 1);
+});
+
 test('E6：env 白名单——未声明的环境变量不进子进程', () => {
   process.env.SPC_TEST_SECRET = 'must-not-leak';
   try {
@@ -288,6 +318,49 @@ console.log('EXEC ' + text);
     ok.dispose();
   }
   assert.match(logs.join('\n'), /EXEC .*hi/);
+});
+
+test('沙箱端到端：钩子预算会压低 exec 自己的超时（S-2：阻塞式 exec 不再吃掉整个预算）', async () => {
+  const { createSandbox } = await import('../sandbox.ts');
+  const { buildHostApi } = await import('../hostApi.ts');
+  const { DEFAULT_LIMITS } = await import('../config.ts');
+  // 必须复刻 loader 的接线：**同一个** bridge 既交给 hostApi（读余额）又交给 createSandbox（回填余额）。
+  // 模块级 hostApi 是"独立探测"用的，它没有 bridge —— 那时也确实不在任何阶段里（余额无从谈起）。
+  const bridge: SandboxBridge = {};
+  const dataDir = mkdtempSync(join(tmpdir(), 'spc-exec-budget-'));
+  const sandbox = await createSandbox(
+    buildHostApi({ pluginId: '@xfy2412/exec-test', dataDir, bridge }),
+    {
+      pluginId: '@xfy2412/exec-test',
+      permissions: ['exec.template.t-slow.run'],
+      grants: ['exec.template.t-slow.run'],
+      // 钩子预算 100ms，而模板声明 300ms、命令本身要跑 30 秒
+      limits: { ...DEFAULT_LIMITS, initTimeoutMs: 100 },
+      bridge,
+    },
+  );
+  await sandbox.runModule(
+    '@xfy2412/exec-test',
+    `
+import { exec } from '@host/api';
+export function init() { exec.run('core:t-slow.run'); }
+`,
+  );
+  const started = Date.now();
+  await assert.rejects(
+    () => sandbox.callHook('init', 100),
+    (err: unknown) => {
+      assert.ok(err instanceof SpcError);
+      assert.equal(err.code, 'PLUGIN_INIT_FAILED');
+      // 被**预算**掐掉（宿主方法的超时封顶），而不是等模板自己那 300ms
+      assert.equal(err.params.cause, 'EXEC_TIMEOUT');
+      return true;
+    },
+  );
+  const elapsed = Date.now() - started;
+  sandbox.dispose();
+  rmSync(dataDir, { recursive: true, force: true });
+  assert.ok(elapsed < 280, `应被 capMs 掐在 ~100ms，实测 ${elapsed}ms`);
 });
 
 test('沙箱：无参数模板用单实参调用（桥把 undefined 当字符串的坑已归一化）', async () => {

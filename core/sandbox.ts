@@ -187,6 +187,15 @@ export interface SandboxTimerHost {
  */
 export interface SandboxBridge {
   timers?: SandboxTimerHost;
+  /**
+   * 当前阶段还剩多少 CPU 预算（毫秒）；没有阶段在跑（deadline = ∞）时返回 `Infinity`。
+   *
+   * 宿主方法用它给**自己的**超时封顶。为什么必须要有：CPU 中断只能打断**解释器**，
+   * 插件代码一进宿主方法（`exec.run` 的 `spawnSync`）解释器就停了 —— deadline 无从触发，
+   * 于是"1 秒预算的钩子"照样能把核心阻塞到模板自己的超时（最长 120 秒）。实测踩到过
+   * 40.7 秒，而且当时还被记成了**成功**。有了余额，宿主方法至少能把自己压回预算内。
+   */
+  remainingMs?: () => number;
 }
 
 /** 注入 ctx 的"环境事实"（能力走 @host/api，环境走 ctx，见 plugin-lifecycle-design §1.3） */
@@ -318,8 +327,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   // scripts/verify-quickjs-patch.mjs（pnpm verify:sandbox）
   const runtime = await newRuntimeForSandbox();
 
-  // 四层限额：内存 + 栈在这里落地；CPU 用 deadline 中断（下面装 handler），
-  // "挂起"那层由宿主 API 自带超时负责（exec 的 timeoutMs 是样板）。
+  // 四层限额：内存 + 栈在这里落地；CPU 用 deadline 中断（下面装 handler）；
+  // "挂起"那层由宿主方法自带超时负责（exec 的 timeoutMs），且**必须用桥上的预算余额封顶** ——
+  // 见 SandboxBridge.remainingMs 与 invoke() 的墙钟事后校验。
   applyLimits(runtime, limits);
   const deadline = installDeadlineHandler(runtime);
 
@@ -609,7 +619,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     timeoutMs: number,
   ): Promise<void> {
     busy = true;
-    const dl = Date.now() + timeoutMs;
+    const started = Date.now();
+    const dl = started + timeoutMs;
     deadline.setDeadline(dl);
     try {
       const ctx = ensureCtx();
@@ -660,6 +671,21 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       } finally {
         state.dispose();
       }
+
+      // **墙钟事后校验**：走到这里说明 VM 侧"没报错"，但没报错 ≠ 没超时。
+      // deadline 只能中断解释器，拦截不了宿主方法里的同步阻塞（`spawnSync`）：那段时间
+      // 解释器没在跑，中断处理器一次都不会被调用 —— 预算到期了也没人查。时间是真花掉了，
+      // 所以这里按超时上报（fail-closed）。实测：1 秒预算 + 阻塞式 exec = 40.7 秒，
+      // 而且当时被记成**成功**（调用方据此认为插件健康）。
+      // 只判"成功路径"：失败路径本来就 fail-closed，不该用超时盖掉插件自己的错误。
+      const overrunMs = Date.now() - dl;
+      if (overrunMs > 0) {
+        throw new SpcError(timeoutCodeFor(hook), {
+          pluginId: options.pluginId,
+          hook,
+          overrunMs: String(overrunMs),
+        });
+      }
     } finally {
       deadline.setDeadline(Number.POSITIVE_INFINITY);
       busy = false;
@@ -698,6 +724,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
 
   // 回填桥：hostApi 的 timers.* 转发到这里（此时 VM 已就绪）
   if (options.bridge) {
+    // 预算余额给宿主方法（exec 用它给自己的 spawnSync 超时封顶）；无阶段在跑时是 Infinity
+    options.bridge.remainingMs = () => deadline.remainingMs();
     options.bridge.timers = {
       every(intervalMs: number, callbackId: string) {
         if (!Number.isSafeInteger(intervalMs) || intervalMs < 100 || intervalMs > 86_400_000) {
@@ -746,6 +774,16 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       if (isSuccess(result)) {
         // 命名空间句柄**保留**（钩子从这里取导出），由 Scope 在 dispose 时释放
         namespace = scope.manage(result.value);
+        // 与钩子同一道**墙钟事后校验**：顶层代码里的宿主同步阻塞（spawnSync）同样让 deadline 失效
+        // —— 时间花掉了就必须报 PLUGIN_LOAD_TIMEOUT，不能记成"装载成功"（见 invoke 的同一段注释）。
+        const overrunMs = Date.now() - (started + limits.loadTimeoutMs);
+        if (overrunMs > 0) {
+          throw new SpcError(timeoutCodeFor('load'), {
+            pluginId: options.pluginId,
+            hook: 'load',
+            overrunMs: String(overrunMs),
+          });
+        }
         return;
       }
 

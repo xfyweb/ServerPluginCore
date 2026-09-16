@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { HostApi, SandboxBridge } from '../sandbox';
 
 // 审计写隔离目录：AUDIT_DIR 在模块加载时读取环境变量，故必须先设再动态导入
 const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-'));
@@ -134,4 +135,112 @@ import fs from 'node:fs';
     },
   );
   assert.doesNotThrow(() => sandbox.dispose());
+});
+
+// ---- S-2：宿主阻塞期间的限额 ----
+
+/**
+ * 合成宿主方法：同步忙等（模拟 `spawnSync`）。
+ * 这是 CPU deadline 的**盲区**：插件一进宿主方法，解释器就停了，中断处理器一次都不会被调用
+ * —— 预算到期了也没人查。修复前实测：1 秒预算 + 阻塞式 exec = 40777ms，且被记成**成功**。
+ *
+ * 合成方法也必须挂一个已授予的权限点：桥对"没有权限点"的方法一律 PERMISSION_DENIED
+ * （`fs.write.data` 就是 OPTIONS 里已授予的那个，这里借它过闸，不涉及真实文件操作）。
+ */
+function blockingApi(): HostApi {
+  return {
+    'test.block': {
+      permission: 'fs.write.data',
+      fn: () => {
+        const t = Date.now();
+        while (Date.now() - t < 400) {
+          /* 忙等：占用宿主事件循环 */
+        }
+        return 'ok';
+      },
+    },
+  };
+}
+
+test('**宿主阻塞期间的限额**：超预算的成功被报成 PLUGIN_INIT_TIMEOUT（S-2 回归）', async () => {
+  const sandbox = await createSandbox(blockingApi(), {
+    ...OPTIONS,
+    limits: { ...DEFAULT_LIMITS, initTimeoutMs: 100 },
+  });
+  await sandbox.runModule(
+    '@xfy2412/sandbox-test',
+    `
+import { test } from '@host/api';
+export function init() { test.block(); }
+`,
+  );
+  await assert.rejects(
+    () => sandbox.callHook('init', 100),
+    (err: unknown) => {
+      assert.ok(err instanceof SpcError);
+      assert.equal(err.code, 'PLUGIN_INIT_TIMEOUT');
+      // `overrunMs` 只有**墙钟事后校验**那条路径才带：阻塞期间解释器没跑，
+      // 中断那条路径不可能触发 —— 它出现就证明兜底判定生效了（而不是碰巧被中断）。
+      assert.ok(Number(err.params.overrunMs) >= 290, `overrunMs=${err.params.overrunMs}`);
+      return true;
+    },
+  );
+  assert.doesNotThrow(() => sandbox.dispose());
+});
+
+test('**装载期也一样**：顶层代码里的宿主阻塞 → PLUGIN_LOAD_TIMEOUT（S-2 回归）', async () => {
+  const sandbox = await createSandbox(blockingApi(), {
+    ...OPTIONS,
+    limits: { ...DEFAULT_LIMITS, loadTimeoutMs: 100 },
+  });
+  await assert.rejects(
+    () =>
+      sandbox.runModule(
+        '@xfy2412/sandbox-test',
+        `
+import { test } from '@host/api';
+test.block();
+`,
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof SpcError);
+      assert.equal(err.code, 'PLUGIN_LOAD_TIMEOUT');
+      assert.equal(err.params.hook, 'load');
+      assert.ok(Number(err.params.overrunMs) >= 290, `overrunMs=${err.params.overrunMs}`);
+      return true;
+    },
+  );
+  assert.doesNotThrow(() => sandbox.dispose());
+});
+
+test('**预算穿透**：钩子里的宿主方法能看到剩余预算（exec 靠它给 spawnSync 封顶）', async () => {
+  const bridge: SandboxBridge = {};
+  const seen: number[] = [];
+  const api: HostApi = {
+    'test.remaining': {
+      permission: 'fs.write.data',
+      fn: () => {
+        seen.push(bridge.remainingMs!());
+        return 'ok';
+      },
+    },
+  };
+  const sandbox = await createSandbox(api, {
+    ...OPTIONS,
+    bridge,
+    limits: { ...DEFAULT_LIMITS, initTimeoutMs: 1_000 },
+  });
+  await sandbox.runModule(
+    '@xfy2412/sandbox-test',
+    `
+import { test } from '@host/api';
+export function init() { test.remaining(); }
+`,
+  );
+  await sandbox.callHook('init', 1_000);
+  assert.equal(seen.length, 1);
+  const left = seen[0];
+  // 必须为正（0/负数会让调用方按"还有很久"处理或直接抛 ERR_OUT_OF_RANGE）
+  assert.ok(left > 0 && left <= 1_000, `remainingMs=${left}`);
+  sandbox.dispose();
 });
