@@ -5,7 +5,13 @@
 //
 // **刻意与 Node 保持一致的语义**（不然后果是静默误判）：
 //   · `deepStrictEqual` 用 Object.is 语义比基本值（于是 `NaN` 相等、`-0` 与 `+0` **不**相等）
-//   · 原型必须一致；自有可枚举键**数量与集合**都要一致（`{a:1}` 与 `{a:1,b:undefined}` 不等）
+//   · 严格模式**先比 `constructor`**，只有 `constructor === undefined` 时才退回比原型
+//     （comparisons.js:282）——于是 `Object.create({x:1},{a:1})` 与 `{a:1}` **相等**，
+//     而 `new Foo()` 与 `{a:1}` 不等
+//   · 自有可枚举键**数量与集合**都要一致（`{a:1}` 与 `{a:1,b:undefined}` 不等）；
+//     严格模式连符号键一起比，宽松模式**不比**符号键（comparisons.js:506）
+//   · 形态不同一律不等：函数只有"同一引用"才相等；`WeakMap`/`WeakSet`/`Promise` 没有
+//     可比内容（comparisons.js:459）；宽松模式也**不**跨 tag（`deepEqual(new Date(0),{})` 失败）
 //   · `equal` / `deepEqual` 是**宽松**比较，`strictEqual` / `deepStrictEqual` 才是严格
 //   · 断言失败一律抛 `AssertionError`（带 `code: 'ERR_ASSERTION'`、`actual`/`expected`/`operator`）
 //   · **具名导出与默认导出都要有**：`import assert from 'assert'`（可调用）与
@@ -13,7 +19,9 @@
 //
 // **已知边界**：失败消息的**文案**与 Node 不完全一致（Node 的 diff 排版不追求复刻），
 // 但 `code`/`operator`/`actual`/`expected` 对齐——靠 message 文本分支的代码很少，
-// 靠这些字段分支的才是常态。`WeakMap`/`Proxy` 等冷门形态未覆盖。
+// 靠这些字段分支的才是常态。深比较仍未覆盖：`URL`/`KeyObject`/`CryptoKey` 的专门比较、
+// Node 25+ 的 partial 模式（`partialDeepStrictEqual`）、`Proxy`，以及**伪造了 @@toStringTag
+// 的假对象**（沙箱里没有这些内建；判到就按真身分派，不做内部槽校验）。
 //
 // 内联约束：静态、无占位符；不碰宿主。
 
@@ -52,17 +60,77 @@ function describe(value) {
 }
 
 // ── 深比较 ──
+//
+// 这一段是 `lib/internal/util/comparisons.js` 的**结构复刻**：入口守卫（`innerDeepEqual`）
+// → 形态分派（`objectComparisonStart`）→ 自有可枚举键与集合内容（`keyCheck`）。
+//
+// 照抄 Node 的**分派顺序**不是洁癖，顺序本身携带语义：
+//   · "先认数组、再认 tag" → 宽松模式下 `[1,2]` 与 `{0:1,1:2}` **不**相等
+//   · "先比 constructor、只有它是 undefined 才比原型" → `Object.create({x:1},{a:1})` 与
+//     `{a:1}` 相等，而 `new Foo()` 与 `{a:1}` 不等
+//   · "认不出的形态（`WeakMap`/`Promise`/函数/另一个 tag）直接不等" → 不给"自有键都是空"
+//     这种巧合留判等的余地
 
-function isObjectLike(v) {
-  return v !== null && (typeof v === 'object' || typeof v === 'function');
+/** 比较模式：数值照抄 Node（comparisons.js:137-139），便于对着源码核对 */
+const kLoose = 0;
+const kStrict = 2;
+
+/** 集合种类（Node comparisons.js:142-145）：keyCheck 之后要不要再比 Set/Map 的**内容** */
+const kNoIterator = 0;
+const kIsSet = 2;
+const kIsMap = 3;
+
+/**
+ * Node comparisons.js:62-93 的 `wellKnownConstructors`。
+ *
+ * 严格模式的 constructor 判据**只对内建构造器生效**（见 objectComparisonStart），
+ * 所以这张表漏一个内建，那个内建的对象就会掉进"比原型"分支——该等的判不等。
+ *
+ * 用 `globalThis[name]` 取名而不是直接写标识符：沙箱引擎可能缺其中某个
+ * （`Buffer` 沙箱里就没有，`Float16Array` 是 ES2025 才进标准的），
+ * 直接写标识符会在**模块求值期** ReferenceError——整个 assert 都装不起来，比判错更糟。
+ */
+const wellKnownConstructors = new Set();
+for (const name of [
+  'Array', 'ArrayBuffer', 'BigInt', 'BigInt64Array', 'BigUint64Array', 'Boolean', 'DataView',
+  'Date', 'Error', 'Float16Array', 'Float32Array', 'Float64Array', 'Function', 'Int16Array',
+  'Int32Array', 'Int8Array', 'Map', 'Number', 'Object', 'Promise', 'RegExp', 'Set', 'String',
+  'Symbol', 'Uint16Array', 'Uint32Array', 'Uint8Array', 'Uint8ClampedArray', 'WeakMap', 'WeakSet',
+]) {
+  const ctor = globalThis[name];
+  if (typeof ctor === 'function') wellKnownConstructors.add(ctor);
 }
 
 function tagOf(v) {
   return Object.prototype.toString.call(v);
 }
 
-function ownEnumerableKeys(o) {
-  return Reflect.ownKeys(o).filter((k) => Object.prototype.propertyIsEnumerable.call(o, k));
+function hasOwn(o, key) {
+  return Object.prototype.hasOwnProperty.call(o, key);
+}
+
+/**
+ * 自有可枚举键。
+ *
+ * `includeSymbols=false` 只给**宽松模式**用：Node 只在严格模式追加符号键
+ * （comparisons.js:506-520），宽松模式下 `deepEqual({[s]:1}, {})` 在 Node 里是**通过**的。
+ */
+function ownEnumerableKeys(o, includeSymbols = true) {
+  const keys = Reflect.ownKeys(o).filter((k) => Object.prototype.propertyIsEnumerable.call(o, k));
+  return includeSymbols ? keys : keys.filter((k) => typeof k === 'string');
+}
+
+/** Node comparisons.js:270：@@toStringTag 不同就不是同一种东西 */
+function hasUnequalTag(a, b) {
+  return a[Symbol.toStringTag] !== b[Symbol.toStringTag];
+}
+
+/** Node comparisons.js:274：两边都声明了 @@toStringTag 就比它，否则比实际 tag */
+function slowHasUnequalTag(tagA, a, b) {
+  if (a[Symbol.toStringTag] !== undefined && b[Symbol.toStringTag] !== undefined) {
+    return a[Symbol.toStringTag] !== b[Symbol.toStringTag];
+  }
+  return tagA !== tagOf(b);
 }
 
 function equalBytes(x, y) {
@@ -71,117 +139,254 @@ function equalBytes(x, y) {
   return true;
 }
 
-/** 严格深比较（deepStrictEqual 的内核） */
-function isDeepStrictEqual(a, b, memo) {
-  if (Object.is(a, b)) return true;
-  if (typeof a !== typeof b) return false;
-  if (!isObjectLike(a) || !isObjectLike(b)) return false;
+/** 包装对象（`new Number(1)` 之类）的 tag 判据（Node comparisons.js:205 的入口条件） */
+function isBoxedPrimitiveTag(tag) {
+  return tag === '[object Number]' || tag === '[object String]' ||
+    tag === '[object Boolean]' || tag === '[object Symbol]' || tag === '[object BigInt]';
+}
+
+/** ArrayBuffer 与 SharedArrayBuffer 共用的 tag 判据（Node 的 `isAnyArrayBuffer`） */
+function isAnyArrayBufferTag(tag) {
+  return tag === '[object ArrayBuffer]' || tag === '[object SharedArrayBuffer]';
+}
+
+/**
+ * Node comparisons.js:205 `isEqualBoxedPrimitive`：包装对象按**种类 + 解包值**比。
+ * tag 不同就直接不等，否则 `new Number(1)` 与 `new String('1')` 会靠 valueOf 的宽松相等混过去。
+ */
+function isEqualBoxedPrimitive(a, b) {
+  if (tagOf(a) !== tagOf(b)) return false;
+  return Object.is(a.valueOf(), b.valueOf());
+}
+
+/**
+ * Node comparisons.js:231 `isEnumerableOrIdentical`。
+ *
+ * `b` 上是**可枚举自有**属性时故意不在这里比：那个值归 keyCheck 的自有键比较管，
+ * 这里再比一遍会掩盖"只有一边可枚举"的差异（`Object.assign(err,{cause:1})` 与
+ * `new Error('x',{cause:1})` 的 cause 可枚举性不同，不该因此判等）。
+ */
+function isEnumerableOrIdentical(a, b, prop, mode, memo) {
+  if (Object.prototype.propertyIsEnumerable.call(b, prop)) return true;
+  return deepCompare(a[prop], b[prop], mode, memo);
+}
+
+/**
+ * Node comparisons.js:281 `objectComparisonStart`：形态分派。
+ *
+ * 每个分支只做"这一类该怎么比"的判断，**自有可枚举键统一留到最后 keyCheck**——
+ * 这是 Node 的写法，也是"TypedArray/Date/Set 的附加属性"能被比到的原因：
+ * 老实现提前 return，附加属性根本没机会参与比较。
+ */
+function objectComparisonStart(a, b, mode, memo) {
+  // 严格模式：**先比 constructor**（Node:282-291）
+  if (mode === kStrict) {
+    const ctorA = a.constructor;
+    // 两类判据：① 继承到的 constructor 是内建；② constructor 不是 undefined 且**不是自有**属性。
+    // 只有都不满足（constructor 是 undefined，或自有的 constructor 是个普通函数）才退回比原型。
+    // 少了"先比 constructor"这一步，`Object.create({x:1},{a:1})` 会因为原型不同被判不等，
+    // 而 Node 认为它等于 `{a:1}`（它继承到的 constructor 就是 Object）。
+    if (wellKnownConstructors.has(ctorA) || (ctorA !== undefined && !hasOwn(a, 'constructor'))) {
+      if (ctorA !== b.constructor) return false;
+    } else if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) {
+      return false;
+    }
+  }
 
   const tagA = tagOf(a);
-  if (tagA !== tagOf(b)) return false;
 
-  // 循环引用：只比"正在比的那一对"
-  memo = memo || new Map();
-  const seen = memo.get(a);
-  if (seen && seen.has(b)) return true;
-  if (!seen) memo.set(a, new Set([b]));
-  else seen.add(b);
-
-  // 原型必须一致（deepStrictEqual 与 deepEqual 的分界之一）
-  if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
-
-  switch (tagA) {
-    case '[object Date]':
-      return Object.is(a.getTime(), b.getTime());
-    case '[object RegExp]':
-      return a.source === b.source && a.flags === b.flags;
-    case '[object Error]':
-    case '[object DOMException]':
-      return a.name === b.name && a.message === b.message;
-    case '[object Number]':
-    case '[object String]':
-    case '[object Boolean]':
-    case '[object Symbol]':
-    case '[object BigInt]':
-      return Object.is(a.valueOf(), b.valueOf());
-    case '[object ArrayBuffer]':
-      return equalBytes(new Uint8Array(a), new Uint8Array(b));
+  if (Array.isArray(a)) {
+    // 宽松模式**也**要求双方都是数组（Node:293）：不查的话 `deepEqual([1,2],{0:1,1:2})` 判等
+    if (!Array.isArray(b) || a.length !== b.length || hasUnequalTag(a, b)) return false;
+    return keyCheck(a, b, mode, memo, kNoIterator);
   }
 
-  if (ArrayBuffer.isView(a)) {
-    return equalBytes(
-      new Uint8Array(a.buffer, a.byteOffset, a.byteLength),
-      new Uint8Array(b.buffer, b.byteOffset, b.byteLength),
-    );
-  }
-
-  if (tagA === '[object Map]') {
-    if (a.size !== b.size) return false;
-    const bEntries = [...b.entries()];
-    const used = new Set();
-    for (const [k, v] of a.entries()) {
-      let matched = false;
-      for (let i = 0; i < bEntries.length; i++) {
-        if (used.has(i)) continue;
-        if (isDeepStrictEqual(k, bEntries[i][0], memo) && isDeepStrictEqual(v, bEntries[i][1], memo)) {
-          used.add(i);
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) return false;
-    }
-    return true;
+  // 普通对象：没有 @@toStringTag 且 tag 就是 Object（Node:310）
+  if (a[Symbol.toStringTag] === undefined && tagA === '[object Object]') {
+    // 宽松模式也**不跨 tag**（Node:312）：少了这行 `deepEqual(new Date(0), {})` 会判等
+    if (slowHasUnequalTag(tagA, a, b)) return false;
+    return keyCheck(a, b, mode, memo, kNoIterator);
   }
 
   if (tagA === '[object Set]') {
-    if (a.size !== b.size) return false;
-    const bValues = [...b.values()];
-    const used = new Set();
-    for (const v of a.values()) {
-      let matched = false;
-      for (let i = 0; i < bValues.length; i++) {
-        if (used.has(i)) continue;
-        if (isDeepStrictEqual(v, bValues[i], memo)) {
-          used.add(i);
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) return false;
-    }
-    return true;
+    if (tagOf(b) !== '[object Set]' || a.size !== b.size || hasUnequalTag(a, b)) return false;
+    return keyCheck(a, b, mode, memo, kIsSet);
   }
 
-  const keysA = ownEnumerableKeys(a);
-  const keysB = ownEnumerableKeys(b);
+  if (tagA === '[object Map]') {
+    if (tagOf(b) !== '[object Map]' || a.size !== b.size || hasUnequalTag(a, b)) return false;
+    return keyCheck(a, b, mode, memo, kIsMap);
+  }
+
+  if (ArrayBuffer.isView(a)) {
+    // 视图种类要一致（Node:331）：`Uint8Array([1,2])` 与 `Int8Array([1,2])` 字节相同但**不**等
+    if (!ArrayBuffer.isView(b) || tagOf(b) !== tagA) return false;
+    if (!equalBytes(
+      new Uint8Array(a.buffer, a.byteOffset, a.byteLength),
+      new Uint8Array(b.buffer, b.byteOffset, b.byteLength),
+    )) return false;
+    // 字节比完还要比**附加属性**（Node:350-356）——老实现从这里 return true，
+    // 于是 `x.foo = 1` 的 TypedArray 与干净的 TypedArray 被判等。
+    return keyCheck(a, b, mode, memo, kNoIterator);
+  }
+
+  if (tagA === '[object Date]') {
+    if (tagOf(b) !== '[object Date]' || hasUnequalTag(a, b)) return false;
+    const timeA = a.getTime();
+    const timeB = b.getTime();
+    // Node:364：**无效日期（NaN）互相相等**。写成 `Object.is(timeA,timeB)` 会让
+    // `new Date(NaN)` 与 `new Date(0)` 判不等，而 Node 判等（时间比不出来就继续比附加属性）。
+    if (timeA !== timeB && (timeA === timeA || timeB === timeB)) return false;
+  } else if (tagA === '[object RegExp]') {
+    // Node:148 `areSimilarRegExps`：source / flags / **lastIndex** 三个都要一致。
+    // 漏 lastIndex 时"带 g 跑过一次"的正则与新的看似相等——那是状态差异，不是值差异。
+    if (tagOf(b) !== '[object RegExp]' || a.source !== b.source ||
+        a.flags !== b.flags || a.lastIndex !== b.lastIndex || hasUnequalTag(a, b)) {
+      return false;
+    }
+  } else if (isAnyArrayBufferTag(tagA)) {
+    if (tagOf(b) !== tagA || hasUnequalTag(a, b)) return false;
+    if (!equalBytes(new Uint8Array(a), new Uint8Array(b))) return false;
+  } else if (slowHasUnequalTag(tagA, a, b) || Array.isArray(b) || ArrayBuffer.isView(b) ||
+             tagOf(b) === '[object Set]' || tagOf(b) === '[object Map]' ||
+             tagOf(b) === '[object Date]' || tagOf(b) === '[object RegExp]' ||
+             isAnyArrayBufferTag(tagOf(b))) {
+    // Node:382：一边是特化形态、另一边不是 → 直接不等（宽松模式同样不给"自有键相同"的机会）
+    return false;
+  } else if (a instanceof Error) {
+    // Node:391-404：Error 比 message / name / cause / errors，**不看 stack**（它天然不同）。
+    // `cause` 默认是**不可枚举**的自有属性，光靠 keyCheck 比不到它——必须在这里显式比。
+    if (!(b instanceof Error) ||
+        !isEnumerableOrIdentical(a, b, 'message', mode, memo) ||
+        !isEnumerableOrIdentical(a, b, 'name', mode, memo) ||
+        !isEnumerableOrIdentical(a, b, 'cause', mode, memo) ||
+        !isEnumerableOrIdentical(a, b, 'errors', mode, memo)) {
+      return false;
+    }
+    // Node:401-404：`cause` 的**存在性**也要一致——`new Error('x',{cause:undefined})`
+    // 与 `new Error('x')` 在 Node 里不相等；只比值的话这两个都是 undefined，会被判等（假等）。
+    if (hasOwn(b, 'cause') !== hasOwn(a, 'cause')) return false;
+  } else if (isBoxedPrimitiveTag(tagA)) {
+    if (!isEqualBoxedPrimitive(a, b)) return false;
+  } else if (isBoxedPrimitiveTag(tagOf(b)) || b instanceof Error ||
+             tagA === '[object WeakMap]' || tagA === '[object WeakSet]' || tagA === '[object Promise]') {
+    // Node:459：这几种**没有可比较的内容**（WeakMap/WeakSet 不可枚举、Promise 是内部状态），
+    // 一律不等。少了这条，两个空 WeakMap 会因为"自有可枚举键都是空的"被判等。
+    return false;
+  }
+
+  return keyCheck(a, b, mode, memo, kNoIterator);
+}
+
+/**
+ * Node comparisons.js:483 `keyCheck`：自有可枚举键的**数量与集合**、以及逐个值。
+ *
+ * Set/Map 的内容比较也挂在这里（Node 就是这么摆的）：于是"内容相等"与"附加属性相等"
+ * 必须**同时**满足——只比内容会让 `s.foo = 1` 的 Set 与干净的 Set 判等。
+ */
+function keyCheck(a, b, mode, memo, iterationType) {
+  const keysA = ownEnumerableKeys(a, mode === kStrict);
+  const keysB = ownEnumerableKeys(b, mode === kStrict);
   if (keysA.length !== keysB.length) return false;
   for (const k of keysA) {
     if (!keysB.includes(k)) return false;
-    if (!isDeepStrictEqual(a[k], b[k], memo)) return false;
+    if (!deepCompare(a[k], b[k], mode, memo)) return false;
+  }
+  if (iterationType === kIsSet) return setEquiv(a, b, mode, memo);
+  if (iterationType === kIsMap) return mapEquiv(a, b, mode, memo);
+  return true;
+}
+
+/**
+ * Set 内容比较（Node comparisons.js:757 `setEquiv` 的语义）：等势 + 双射匹配。
+ * 朴素配对而不是 Node 的游标算法——两者在"元素两两配对"这一点上等价，而这里的规模是断言参数。
+ */
+function setEquiv(a, b, mode, memo) {
+  const bValues = [...b.values()];
+  const used = new Set();
+  for (const v of a.values()) {
+    let matched = false;
+    for (let i = 0; i < bValues.length; i++) {
+      if (used.has(i)) continue;
+      if (deepCompare(v, bValues[i], mode, memo)) {
+        used.add(i);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
   }
   return true;
 }
 
-/** 宽松深比较（deepEqual 的内核）：不查原型、不查类型标签 */
-function isDeepEqual(a, b, memo) {
-  if (a === b) return true;
-  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-  if (Number.isNaN(a) && Number.isNaN(b)) return true;
-  if (!isObjectLike(a) || !isObjectLike(b)) return a == b; // eslint-disable-line eqeqeq
-  memo = memo || new Map();
-  const seen = memo.get(a);
-  if (seen && seen.has(b)) return true;
-  if (!seen) memo.set(a, new Set([b]));
-  else seen.add(b);
-  const keysA = ownEnumerableKeys(a);
-  const keysB = ownEnumerableKeys(b);
-  if (keysA.length !== keysB.length) return false;
-  for (const k of keysA) {
-    if (!keysB.includes(k)) return false;
-    if (!isDeepEqual(a[k], b[k], memo)) return false;
+/** Map 内容比较（Node comparisons.js:896 `mapEquiv`）：键与值都要配对成功，键不能重复使用 */
+function mapEquiv(a, b, mode, memo) {
+  const bEntries = [...b.entries()];
+  const used = new Set();
+  for (const [k, v] of a.entries()) {
+    let matched = false;
+    for (let i = 0; i < bEntries.length; i++) {
+      if (used.has(i)) continue;
+      if (deepCompare(k, bEntries[i][0], mode, memo) && deepCompare(v, bEntries[i][1], mode, memo)) {
+        used.add(i);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
   }
   return true;
+}
+
+/**
+ * 深比较内核（严格/宽松共用）：对应 Node comparisons.js:237 `innerDeepEqual`。
+ * 两者的差别只在"入口守卫 + 要不要比 constructor/原型/tag"，值比较是同一套。
+ */
+function deepCompare(a, b, mode, memo) {
+  // Node:239：同一引用恒等；`-0` 与 `+0` 只在严格模式下不等
+  if (a === b) return a !== 0 || Object.is(a, b) || mode === kLoose;
+
+  if (mode === kStrict) {
+    // Node:245：NaN 相等（`Object.is` 那条已经盖住同引用，这里负责跨对象位置的 NaN）
+    // eslint-disable-next-line no-self-compare
+    if (typeof a === 'number') return a !== a && b !== b;
+    // Node:250：非对象一律不等——**函数也在这里被挡掉**（typeof 是 'function'）。
+    // 少了这条，两个不同的函数会因为"自有可枚举键都是空的"被判等。
+    if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  } else {
+    // Node:256：宽松模式只有"双方都是对象"才往下走；函数/基本值只按 `==` 与 NaN 比
+    if (a === null || typeof a !== 'object') {
+      // eslint-disable-next-line eqeqeq, no-self-compare
+      return (b === null || typeof b !== 'object') && (a == b || (a !== a && b !== b));
+    }
+    if (b === null || typeof b !== 'object') return false;
+  }
+
+  // 循环引用：只在**当前这条递归链**上记"正在比的对"（Node handleCycles 的 set 语义）。
+  // 比完必须摘掉：Set/Map 配对里已经判失败的那对若留在记忆里，后面的比对会直接拿它当
+  // "相等"（假等）——`new Set([{k:u,n:1},{k:u,n:2}])` vs `new Set([{k:v,n:2},{k:u,n:1}])` 就是这种。
+  memo = memo || new Map();
+  let seen = memo.get(a);
+  if (seen === undefined) {
+    seen = new Set();
+    memo.set(a, seen);
+  }
+  if (seen.has(b)) return true;
+  seen.add(b);
+  const result = objectComparisonStart(a, b, mode, memo);
+  seen.delete(b);
+  if (seen.size === 0) memo.delete(a);
+  return result;
+}
+
+/** 严格深比较（deepStrictEqual 的内核） */
+function isDeepStrictEqual(a, b) {
+  return deepCompare(a, b, kStrict, undefined);
+}
+
+/** 宽松深比较（deepEqual 的内核） */
+function isDeepEqual(a, b) {
+  return deepCompare(a, b, kLoose, undefined);
 }
 
 // ── 公开断言 ──

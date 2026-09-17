@@ -812,6 +812,14 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
     a.self = a;
     return a;
   };
+  // A6/A7 用的构造器与助手：两个"自有属性完全相同"的不同类、以及带自定义原型的对象
+  class Foo {
+    x = 1;
+  }
+  class Bar {
+    x = 1;
+  }
+  const withProto = (proto: object) => Object.assign(Object.create(proto), { a: 1 });
 
   const CASES: [string, (a: any) => unknown, boolean?][] = [
     ['ok(1)', (a) => a.ok(1)],
@@ -883,6 +891,64 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
     ['match("abc",/z/)', (a) => a.match('abc', /z/)],
     ['doesNotMatch("abc",/z/)', (a) => a.doesNotMatch('abc', /z/)],
     ['fail()', (a) => a.fail('boom')],
+
+    // ── A6：不该判等的（曾经"自有可枚举键都是空的"就判等，或提前 return 漏掉附加属性）──
+    ['A6 WeakMap vs WeakMap', (a) => a.deepStrictEqual(new WeakMap(), new WeakMap())],
+    ['A6 WeakSet vs WeakSet', (a) => a.deepStrictEqual(new WeakSet(), new WeakSet())],
+    ['A6 Promise vs Promise', (a) => a.deepStrictEqual(Promise.resolve(1), Promise.resolve(1))],
+    ['A6 同名不同函数', (a) => a.deepStrictEqual(function f() {}, function f() {})],
+    ['A6 箭头函数 vs 普通函数', (a) => a.deepStrictEqual(() => 1, function () { return 1; })],
+    ['A6 同引用函数是相等的', (a) => a.deepStrictEqual(Math.max, Math.max)],
+    ['A6 Error 多一个自有属性', (a) => a.deepStrictEqual(Object.assign(new Error('x'), { extra: 1 }), new Error('x'))],
+    ['A6 Error 的 cause 不同', (a) => a.deepStrictEqual(
+      Object.assign(new Error('x'), { cause: new Error('a') }),
+      Object.assign(new Error('x'), { cause: new Error('b') }),
+    )],
+    ['A6 Error 的 cause 存在性不同', (a) => a.deepStrictEqual(new Error('x'), new Error('x', { cause: undefined }))],
+    ['A6 TypedArray 附加属性', (a) => {
+      const x: any = new Uint8Array([1, 2]);
+      const y = new Uint8Array([1, 2]);
+      x.tag = 1;
+      return a.deepStrictEqual(x, y);
+    }],
+    ['A6 数组附加属性', (a) => a.deepStrictEqual(Object.assign([1], { tag: 1 }), [1])],
+    ['A6 稀疏数组 vs undefined 元素', (a) => a.deepStrictEqual([1, , 3], [1, undefined, 3])],
+    ['A6 Map 的键是对象', (a) => a.deepStrictEqual(new Map([[{ k: 1 }, 1]]), new Map([[{ k: 1 }, 1]]))],
+    ['A6 宽松 [1] vs ["1"]', (a) => a.deepEqual([1], ['1'])],
+    ['A6 宽松 Date vs 0', (a) => a.deepEqual(new Date(0), 0)],
+    ['A6 宽松 true vs 1', (a) => a.deepEqual(true, 1)],
+    ['A6 宽松 null vs undefined', (a) => a.deepEqual(null, undefined)],
+    ['A6 notDeepStrictEqual 反向也一致', (a) => a.notDeepStrictEqual(new WeakMap(), new WeakMap())],
+
+    // ── A7：该判等的（严格模式先比 constructor，只有它是 undefined 才退回比原型）──
+    ['A7 自定义原型但同形', (a) => a.deepStrictEqual(withProto({ z: 9 }), { a: 1 })],
+    ['A7 Object.create(null) vs {}', (a) => a.deepStrictEqual(Object.create(null), {})],
+    ['A7 两个不同类的实例', (a) => a.deepStrictEqual(new Foo(), new Bar())],
+    ['A7 同类实例', (a) => a.deepStrictEqual(new Foo(), new Foo())],
+    ['A7 类实例 vs 同形字面量', (a) => a.deepStrictEqual(new Foo(), { x: 1 })],
+    ['A7 两个 null 原型对象', (a) => a.deepStrictEqual(
+      Object.assign(Object.create(null), { a: 1 }),
+      Object.assign(Object.create(null), { a: 1 }),
+    )],
+    ['A7 boxed Number vs 原始值', (a) => a.deepStrictEqual(new Number(1), 1)],
+    ['A7 两个 boxed Number', (a) => a.deepStrictEqual(new Number(1), new Number(1))],
+    ['A7 不同 Error 子类', (a) => a.deepStrictEqual(new TypeError('x'), new RangeError('x'))],
+
+    // 主干：这次重写了深比较内核，主干行为必须一字不差
+    ['主干 Date 无效时间互等', (a) => a.deepStrictEqual(new Date(NaN), new Date(NaN))],
+    ['主干 RegExp lastIndex 是状态', (a) => {
+      const x = /a/g;
+      const y = /a/g;
+      x.lastIndex = 2;
+      return a.deepStrictEqual(x, y);
+    }],
+    ['主干 Uint8Array vs Int8Array', (a) => a.deepStrictEqual(new Uint8Array([1, 2]), new Int8Array([1, 2]))],
+    ['主干 Set 顺序无关', (a) => a.deepStrictEqual(new Set([1, 2]), new Set([2, 1]))],
+    ['主干 symbol 值不同', (a) => a.deepStrictEqual({ s: Symbol('a') }, { s: Symbol('a') })],
+    ['主干 symbol 键在严格模式参与比较', (a) => {
+      const s = Symbol('s');
+      return a.deepStrictEqual({ [s]: 1 }, { [s]: 1 });
+    }],
   ];
 
   it('同一批表达式：抛/不抛与 error.code/operator 逐条一致', () => {

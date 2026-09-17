@@ -12,8 +12,6 @@
 
 | # | 问题 | 位置 | 后果 | 证 |
 |---|---|---|---|---|
-| A6 | **`deepStrictEqual` 把不该等的判等**（WeakMap / WeakSet / Promise / 函数 / Error 自有属性 / cause / TypedArray 附加属性 / 宽松模式跨 tag） | `node-assert.js` 的深比较；Node 见 `lib/internal/util/comparisons.js` | **断言漏判**：依赖拿它做参数校验/缓存判定时会静默误判相等 | ✓（6 例）○（其余） |
-| A7 | **`deepStrictEqual` 把该等的判不等**：严格模式应先比 `constructor`，只在 `constructor===undefined` 时才比原型 | 同上 | `Object.create({x:1},{a:{…}})` vs `{a:1}` → 我们抛、Node 通过 | ○ |
 | A14 | **`newListener`/`removeListener` 元事件未实现** | `node-events.js` 的 `_add`/`removeListener` | "第一个监听器到来时惰性订阅"的写法**永不触发**，且是静默的。Node 核心自身重度依赖 | ✓ |
 | A15 | **`errorMonitor` 只是符号，emit 从不使用** | `node-events.js` | 挂 `on(errorMonitor)` 收不到通知 —— 静默漏掉错误观测 | ✓ |
 | A16 | **`captureRejections` 只存不用** | `node-events.js` 的构造 | async 监听器的 rejection 被静默丢弃（Node 会送到 `'error'`）。要么实现，要么**明确抛错** | ○ |
@@ -43,11 +41,10 @@
 - ✓ **`node:events` 4000 段随机剧本**除 A8/A9/A14/A15 外无分歧（`emit` 返回值、`prepend*` 顺序、`listeners` vs `rawListeners`、重复注册的 LIFO 删除、符号事件名、`'__proto__'` 作事件名、惰性 maxListeners）
 - ✓ **`node:tty`** 对全部非法输入与宿主一致（Node 本身也不校验参数）
 - ✓ **`node:constants`**：235 键（fs 56 / errno 79 / signals 33 / crypto 56 / dlopen+priority 11）逐键等于 Linux 宿主 Node v22.22.1 的运行值；`default` 与具名导出一致、已冻结；Linux 上不存在的键（`O_SYMLINK` 等）**不伪造**
-- ✓ **`assert` 的深比较主干**（Date / RegExp / Map / Set / TypedArray / ArrayBuffer / DataView / boxed / 循环引用 / getter / 不可枚举 / 稀疏数组 / `-0` / NaN / 严格模式符号键）对齐
+- ✓ **`assert` 的深比较主干**（Date / RegExp / Map / Set / TypedArray / ArrayBuffer / DataView / boxed / 循环引用 / getter / 不可枚举 / 稀疏数组 / `-0` / NaN / 严格模式符号键）对齐；A6/A7 修完后，**WeakMap/WeakSet/Promise/函数/Error 自有属性与 cause/TypedArray 附加属性/宽松跨 tag/constructor 优先**也都对齐（差分电池 68 组 × 3 断言操作，仅剩 `URL` 一类"沙箱里不存在、判不到"的盲区，已写进 shim 头部的已知边界）
 - ✓ **`registry.ts`**：归一化、大小写敏感、拒绝策略、文件名约定、与 `node-*.js` 的双向一致性均正确（无路径穿越风险）
 
 ## 建议的处理顺序
 
-1. **A6、A7**（深比较按 `comparisons.js` 补齐）——**已有一份未完成的实现**收在仓库外的 stash/补丁里（见 `_audit/HANDOFF.md`），但**没有判别用例**，必须自己验过再用
-2. **A14–A18**（events 元事件 / errorMonitor / captureRejections / 迭代器 / class 形态）
-3. **C2–C9**（测试判别力；C3 顺手把宿主调用边界那三条负分支锁住 → 同时补上 S-6/S-7 缺的回归）
+1. **A14–A18**（events 元事件 / errorMonitor / captureRejections / 迭代器 / class 形态）
+2. **C2–C9**（测试判别力；C3 顺手把宿主调用边界那三条负分支锁住 → 同时补上 S-6/S-7 缺的回归）
