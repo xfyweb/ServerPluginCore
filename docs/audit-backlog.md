@@ -8,15 +8,9 @@
 
 ## A · 仿真与 Node 的行为偏差（静默错值优先）
 
-> 判定基准始终是 **Node 是契约宗主**：语义以 Node 源码为准，改法也是"向 Node 靠"。
-
-| # | 问题 | 位置 | 后果 | 证 |
-|---|---|---|---|---|
-| A14 | **`newListener`/`removeListener` 元事件未实现** | `node-events.js` 的 `_add`/`removeListener` | "第一个监听器到来时惰性订阅"的写法**永不触发**，且是静默的。Node 核心自身重度依赖 | ✓ |
-| A15 | **`errorMonitor` 只是符号，emit 从不使用** | `node-events.js` | 挂 `on(errorMonitor)` 收不到通知 —— 静默漏掉错误观测 | ✓ |
-| A16 | **`captureRejections` 只存不用** | `node-events.js` 的构造 | async 监听器的 rejection 被静默丢弃（Node 会送到 `'error'`）。要么实现，要么**明确抛错** | ○ |
-| A17 | **`EventEmitter.on()` 迭代器不完整**：不注册 `'error'`、`return()` 不摘监听、无 `throw`、遇 error 时 `next()` 永久挂起 | `node-events.js` 的静态 `on` | 沙箱里退化成 `PLUGIN_JOB_PENDING`；监听器泄漏 | ○ |
-| A18 | **`EventEmitter` 是 `class`** → `EventEmitter.call(this)` 直接抛 | `node-events.js` | ES5 `util.inherits` 模式的老依赖**完全无法使用**（Node 正常）。原型方法也不可枚举 | ✓ |
+（已清空：assert 深比较（A6/A7）与 events 的元事件 / errorMonitor / captureRejections / 异步迭代器 /
+函数式构造形态（A14–A18）均已按 `lib/internal/util/comparisons.js`、`lib/events.js` 复刻，
+每一条都有"同剧本跑 shim 与宿主 Node 比签名"的回归用例。）
 
 ## B · 入口与常量缺失
 
@@ -38,7 +32,7 @@
 ## 验证过、**没问题**的部分（避免重复排查）
 
 - ✓ **`node:path` 对齐质量很高**：30 万组随机输入 + 173 组手工边界**零不一致**（含 `dirname('/foo')==='//'` 这类怪癖）
-- ✓ **`node:events` 4000 段随机剧本**除 A8/A9/A14/A15 外无分歧（`emit` 返回值、`prepend*` 顺序、`listeners` vs `rawListeners`、重复注册的 LIFO 删除、符号事件名、`'__proto__'` 作事件名、惰性 maxListeners）
+- ✓ **`node:events`**：4000 段随机剧本 + 元事件/errorMonitor/captureRejections/迭代器/ES5 构造形态的差分剧本（`sandbox-modules.test.ts` 的 `SEMANTIC_CASES`）与宿主 Node 逐条一致；已知无法复刻的只有 `MaxListenersExceededWarning`（沙箱没有 `process.emitWarning`），已写进 shim 文件头
 - ✓ **`node:tty`** 对全部非法输入与宿主一致（Node 本身也不校验参数）
 - ✓ **`node:constants`**：235 键（fs 56 / errno 79 / signals 33 / crypto 56 / dlopen+priority 11）逐键等于 Linux 宿主 Node v22.22.1 的运行值；`default` 与具名导出一致、已冻结；Linux 上不存在的键（`O_SYMLINK` 等）**不伪造**
 - ✓ **`assert` 的深比较主干**（Date / RegExp / Map / Set / TypedArray / ArrayBuffer / DataView / boxed / 循环引用 / getter / 不可枚举 / 稀疏数组 / `-0` / NaN / 严格模式符号键）对齐；A6/A7 修完后，**WeakMap/WeakSet/Promise/函数/Error 自有属性与 cause/TypedArray 附加属性/宽松跨 tag/constructor 优先**也都对齐（差分电池 68 组 × 3 断言操作，仅剩 `URL` 一类"沙箱里不存在、判不到"的盲区，已写进 shim 头部的已知边界）
@@ -46,5 +40,5 @@
 
 ## 建议的处理顺序
 
-1. **A14–A18**（events 元事件 / errorMonitor / captureRejections / 迭代器 / class 形态）
-2. **C2–C9**（测试判别力；C3 顺手把宿主调用边界那三条负分支锁住 → 同时补上 S-6/S-7 缺的回归）
+1. **C2–C9**（测试判别力；C3 顺手把宿主调用边界那三条负分支锁住 → 同时补上 S-6/S-7 缺的回归）
+2. 清空后删掉本文件

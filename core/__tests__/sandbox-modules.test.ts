@@ -331,6 +331,249 @@ describe('仿真 node:events —— 与 node:events 对齐', async () => {
     assert.equal(e.getMaxListeners(), real.getMaxListeners());
   });
 
+  // ── A14–A18：这些语义**不是"某个方法返回什么"**，逐方法断言抓不住，只能整段剧本比 ──
+  //
+  // 判卷人仍是 Node：同一段剧本分别跑 shim 与宿主实现，比可观测签名（含抛错的码）。
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const sigOf = async (fn: () => unknown): Promise<string> => {
+    try {
+      return String(await fn());
+    } catch (err: any) {
+      return `THROW:${err?.code ?? err?.name}:${err?.message}`;
+    }
+  };
+
+  const SEMANTIC_CASES: [string, (m: any) => unknown][] = [
+    // A18：函数式构造器（ES5 继承）与可枚举的原型方法
+    ['A18 EventEmitter.call(this) 可用', (m) => {
+      function Foo(this: any) {
+        m.default.call(this);
+      }
+      Foo.prototype = Object.create(m.default.prototype);
+      const f = new (Foo as any)();
+      let seen = '';
+      f.on('x', (v: string) => {
+        seen = v;
+      });
+      f.emit('x', 'ok');
+      return `${seen}/${f instanceof m.default}`;
+    }],
+    ['A18 原型方法可枚举（与 Node 的普通赋值一致）', (m) => {
+      const keys = Object.keys(m.default.prototype);
+      return ['on', 'emit', 'once', 'removeListener'].map((k) => `${k}=${keys.includes(k)}`).join(',');
+    }],
+    ['A18 二次 init 不丢监听器', (m) => {
+      const e = new m.default();
+      e.on('x', () => {});
+      m.init.call(e);
+      return `count=${e.listenerCount('x')}`;
+    }],
+    ['A18 _eventsCount 维护', (m) => {
+      const e = new m.default();
+      const f = () => {};
+      e.on('x', f);
+      e.on('y', () => {});
+      e.removeListener('x', f);
+      return `count=${e._eventsCount}`;
+    }],
+
+    // A14：元事件
+    ['A14 newListener 在加入**之前**触发（且带原函数）', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on('newListener', (type: unknown, fn: any) =>
+        log.push(`nl:${String(type)}:${fn.name}:${e.listenerCount(type as string)}`));
+      function handler() {}
+      e.on('x', handler);
+      return log.join('|') + ` after=${e.listenerCount('x')}`;
+    }],
+    ['A14 once 的 newListener 收到**原函数**', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on('newListener', (type: unknown, fn: any) => log.push(`${String(type)}:${fn.name}`));
+      function handler() {}
+      e.once('x', handler);
+      return log.join('|');
+    }],
+    ['A14 removeListener 在移除**之后**触发', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on('removeListener', (type: unknown, fn: any) =>
+        log.push(`rl:${String(type)}:${fn.name}:${e.listenerCount(type as string)}`));
+      function handler() {}
+      e.on('x', handler);
+      e.removeListener('x', handler);
+      return log.join('|');
+    }],
+    ['A14 移除不存在的监听器不发元事件', (m) => {
+      const e = new m.default();
+      let n = 0;
+      e.on('removeListener', () => n++);
+      e.removeListener('x', () => {});
+      return `n=${n}`;
+    }],
+    ['A14 once 自动摘除也发 removeListener', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on('removeListener', (type: unknown, fn: any) => log.push(`${String(type)}:${fn.name}`));
+      function handler() {}
+      e.once('x', handler);
+      e.emit('x');
+      return `${log.join('|')} count=${e.listenerCount('x')}`;
+    }],
+    ['A14 removeAllListeners() 逐个发 removeListener', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on('a', function fa() {});
+      e.on('b', function fb() {});
+      e.on('removeListener', (type: unknown, fn: any) => log.push(`${String(type)}:${fn.name}`));
+      e.removeAllListeners();
+      return log.sort().join('|');
+    }],
+
+    // A15：errorMonitor 是**旁路**
+    ['A15 errorMonitor 无 error 监听时也收到（且仍然抛）', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on(m.errorMonitor, (err: Error) => log.push('mon:' + err.message));
+      let thrown = 'none';
+      try {
+        e.emit('error', new Error('boom'));
+      } catch (err: any) {
+        thrown = err.message;
+      }
+      return `${log.join('|')} thrown=${thrown}`;
+    }],
+    ['A15 errorMonitor 先于 error 监听器触发', (m) => {
+      const e = new m.default();
+      const log: string[] = [];
+      e.on(m.errorMonitor, () => log.push('mon'));
+      e.on('error', () => log.push('handler'));
+      e.emit('error', new Error('x'));
+      return log.join('|');
+    }],
+
+    // A16：captureRejections
+    ['A16 async 监听器的 rejection 送到 error', async (m) => {
+      const e = new m.default({ captureRejections: true });
+      const log: string[] = [];
+      e.on('error', (err: Error) => log.push('err:' + err.message));
+      e.on('x', async () => {
+        throw new Error('async-boom');
+      });
+      e.emit('x');
+      await tick();
+      await tick();
+      return log.join('|');
+    }],
+    ['A16 rejection 钩子（Symbol.for(nodejs.rejection)）优先', async (m) => {
+      const e = new m.default({ captureRejections: true });
+      const log: string[] = [];
+      e[Symbol.for('nodejs.rejection')] = (err: Error, type: string) => log.push(`rej:${type}:${err.message}`);
+      e.on('error', () => log.push('err')); // 不该走到这里
+      e.on('x', async () => {
+        throw new Error('boom');
+      });
+      e.emit('x');
+      await tick();
+      await tick();
+      return log.join('|');
+    }],
+    ['A16 静态 captureRejections 只影响新实例；实例上没有该属性', async (m) => {
+      const prev = m.default.captureRejections;
+      try {
+        m.default.captureRejections = true;
+        const e = new m.default();
+        const log: string[] = [];
+        e.on('error', (err: Error) => log.push('err:' + err.message));
+        e.on('x', async () => {
+          throw new Error('boom');
+        });
+        e.emit('x');
+        await tick();
+        await tick();
+        return `${log.join('|')} instance=${e.captureRejections}`;
+      } finally {
+        m.default.captureRejections = prev;
+      }
+    }],
+    ['A16 同步监听器抛错不被捕获机制吞掉', (m) => {
+      const e = new m.default({ captureRejections: true });
+      e.on('x', () => {
+        throw new Error('sync-boom');
+      });
+      try {
+        e.emit('x');
+        return 'no-throw';
+      } catch (err: any) {
+        return err.message;
+      }
+    }],
+
+    // A17：静态 on() 迭代器
+    ['A17 迭代两个事件后 return 摘掉监听', async (m) => {
+      const e = new m.default();
+      const it = m.on(e, 'x');
+      e.emit('x', 1);
+      e.emit('x', 2);
+      const a = await it.next();
+      const b = await it.next();
+      await it.return();
+      return `${JSON.stringify(a.value)}|${JSON.stringify(b.value)}|count=${e.listenerCount('x')}`;
+    }],
+    ['A17 error 让挂起的 next() 拒绝（不再永久挂起）', async (m) => {
+      const e = new m.default();
+      const it = m.on(e, 'x');
+      const pending = it.next().then(
+        () => 'resolved',
+        (err: Error) => 'rejected:' + err.message,
+      );
+      e.emit('error', new Error('boom'));
+      return pending;
+    }],
+    ['A17 throw() 让挂起的 next() 拒绝；非 Error 参数报错', async (m) => {
+      const e = new m.default();
+      const it = m.on(e, 'x');
+      const pending = it.next().then(
+        () => 'resolved',
+        (err: Error) => 'rejected:' + err.message,
+      );
+      it.throw(new Error('manual'));
+      const after = await pending;
+      const it2 = m.on(e, 'y');
+      let bad = 'no-throw';
+      try {
+        it2.throw('nope');
+      } catch (err: any) {
+        bad = 'throw:' + err.code;
+      }
+      await it2.return();
+      return `${after}|${bad}`;
+    }],
+    ['A17 on(emitter,"error") 不额外注册 error 监听', async (m) => {
+      const e = new m.default();
+      const it = m.on(e, 'error');
+      const n = e.listenerCount('error');
+      await it.return();
+      return `count=${n}`;
+    }],
+    ['既有 removeAllListeners(undefined) 只删该事件', (m) => {
+      const e = new m.default();
+      e.on(undefined, () => {});
+      e.on('a', () => {});
+      e.removeAllListeners(undefined);
+      return `undef=${e.listenerCount(undefined)} a=${e.listenerCount('a')}`;
+    }],
+  ];
+
+  it('A14–A18 语义：同一段剧本与宿主 Node 逐条一致', async () => {
+    for (const [label, run] of SEMANTIC_CASES) {
+      const mine = await sigOf(() => run(shim));
+      const theirs = await sigOf(() => run(nodeEvents));
+      assert.equal(mine, theirs, label);
+    }
+  });
+
   it('`removeAllListeners(undefined)` 只删名为 undefined 的事件，**不是全清**', () => {
     // 真实形态是 `e.removeAllListeners(opts.event)`，opts.event 可能恰好是 undefined。
     // 用"判 undefined"实现的话会把**所有**监听器静默拆掉（破坏性且难查）。
