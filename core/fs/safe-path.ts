@@ -65,7 +65,18 @@ export interface PathValidation {
  * 5) 特殊路径黑名单（F3）
  */
 export function validatePath(requested: string, roots: string[]): PathValidation {
-  const abs = isAbsolute(requested) ? requested : resolve(requested);
+  /**
+   * ⚠️ **一切判定都必须用规范化后的路径**（`resolve()` 一次），不能拿调用方写的那串直接比。
+   *
+   * 为什么（实测踩到，`_audit/dep-smoke.mts`）：Windows 上 `C:/a/b` 与 `C:\a\b` 是同一个位置，
+   * 但字符串不同。而 `node-path.js` 的 `resolve()` 产出的**正是正斜杠形式**（POSIX 语义 + 盘符），
+   * 真实依赖又普遍写 `fs.mkdirSync(path.resolve(p))`（`mkdirp/dist/mjs/path-arg.js:11`）——
+   * 于是"前缀匹配"拿 `C:/…` 去比 `C:\…` 的根，判定为**越界**（EACCES），而它其实就在数据目录里。
+   * 同一个坑还会让第 2 步的逐级软链扫描 `split(sep)` 切不开，整段被跳过（fail-open）。
+   *
+   * 错误文案仍报 `requested`：插件作者要看到的是**自己写的那串**（F1 注释的老约定）。
+   */
+  const abs = resolve(requested);
   // 作用域匹配：根自身也算在作用域内（否则作用域根被自己拒绝），子路径按 "根 + sep" 前缀匹配。
   // 特判盘根：resolve('/') 是 '/'（Windows 是 'C:\\'），此时不能再补 sep（'//' 会导致白名单失效）。
   const normRoots = roots.map((r) => resolve(r));
@@ -78,7 +89,7 @@ export function validatePath(requested: string, roots: string[]): PathValidation
 
   // 1) 快速前缀检查（字符串级，先拦明显越界）
   if (!inRoot(abs)) {
-    throw new PathError('PATH_OUT_OF_SCOPE', { path: abs });
+    throw new PathError('PATH_OUT_OF_SCOPE', { path: requested });
   }
 
   // 2) 逐级符号链接检查（F2）：从卷根开始，每级 lstat

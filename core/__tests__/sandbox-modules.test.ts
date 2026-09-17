@@ -40,6 +40,16 @@ async function loadShim(fileName: string): Promise<any> {
   return import(pathToFileURL(join(SHIM_DIR, fileName)).href);
 }
 
+/**
+ * 同上，但**绕开 ESM 模块缓存**：同一个 shim 在不同全局（如不同的 `__spcEnv`）下重新求值。
+ * 用递增 query 串实现——同一路径 + 同一 query 仍是同一个模块实例。
+ */
+let freshSeq = 0;
+async function loadShimFresh(fileName: string): Promise<any> {
+  freshSeq += 1;
+  return import(`${pathToFileURL(join(SHIM_DIR, fileName)).href}?fresh=${freshSeq}`);
+}
+
 // ─────────────────────────────────────────────────────────────
 // node:path
 // ─────────────────────────────────────────────────────────────
@@ -180,7 +190,7 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
     }
   });
 
-  it('resolve（只比含绝对段的用例：沙箱没有 cwd）', () => {
+  it('resolve（含绝对段的用例与 Node 逐条一致）', () => {
     const cases: string[][] = [
       ['/'], ['/a', 'b'], ['a', '/b'], ['/a', '/b'], ['/a/b', '../c'], ['/a', 'b', '..', 'c'],
       ['/', 'a'],
@@ -194,11 +204,34 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
     }
   });
 
-  it('**故意与 Node 不同**：resolve 用虚拟根 `/` 兜底（沙箱没有 cwd）', () => {
-    // Node 用 process.cwd() 兜底，沙箱没有 cwd —— 这是**记录在案的有意差异**，不是 bug。
-    // 见 core/sandbox-modules/node-path.js 文件头。
-    assert.equal(shim.resolve('a.txt'), '/a.txt');
-    assert.notEqual(shim.resolve('a.txt'), node.resolve('a.txt'));
+  it('相对路径按**沙箱 cwd（数据目录）**兜底——不能是虚拟根 `/`（真实依赖会撞 EACCES）', async () => {
+    // 来历：`mkdirp/dist/mjs/path-arg.js` 就是 `path = resolve(path)`。用虚拟根时
+    // `resolve('out/a')` = `/out/a`，交给 fs 就是作用域外 → EACCES（`_audit/dep-smoke.mts` 实测）。
+    // 现在与 `process.cwd()`、fs 的相对路径解析同源 = `__spcEnv.dataDir`。
+    const prev = (globalThis as any).__spcEnv;
+    try {
+      (globalThis as any).__spcEnv = JSON.stringify({ dataDir: '/srv/data/plugins/demo' });
+      // 换了全局要重新 load：shim 把 cwd 缓存在模块作用域里（这样热路径不必每次 JSON.parse）
+      const fresh = await loadShimFresh('node-path.js');
+      assert.equal(fresh.resolve('a.txt'), '/srv/data/plugins/demo/a.txt');
+      assert.equal(fresh.resolve('out', 'a', '..', 'b'), '/srv/data/plugins/demo/out/b');
+      // 有绝对段时绝对段说了算（与 Node 语义一致，不受 cwd 影响）
+      assert.equal(fresh.resolve('/x', 'a'), '/x/a');
+      // Windows 形态的数据目录：分隔符统一成 `/`（POSIX 的 dirname/join/.. 才work），
+      // 但 `isAbsolute` 仍按 POSIX 给 false —— 记在案的已知边界
+      (globalThis as any).__spcEnv = JSON.stringify({ dataDir: 'D:\\spc\\data' });
+      const winFresh = await loadShimFresh('node-path.js');
+      assert.equal(winFresh.resolve('a'), 'D:/spc/data/a');
+      assert.equal(winFresh.dirname(winFresh.resolve('a')), 'D:/spc/data');
+      assert.equal(winFresh.isAbsolute(winFresh.resolve('a')), false);
+    } finally {
+      if (prev === undefined) delete (globalThis as any).__spcEnv;
+      else (globalThis as any).__spcEnv = prev;
+    }
+    // 拿不到环境事实（宿主 realm 单测）时回退 `/`，不抛错
+    delete (globalThis as any).__spcEnv;
+    const fallback = await loadShimFresh('node-path.js');
+    assert.equal(fallback.resolve('a.txt'), '/a.txt');
   });
 
   it('常量与 win32 的处置', () => {
@@ -705,7 +738,13 @@ describe('仿真模块登记表', async () => {
   it('isRegistered 同时认裸名与前缀名；未登记的一律 false', () => {
     assert.equal(reg.isRegistered('path'), true);
     assert.equal(reg.isRegistered('node:path'), true);
-    assert.equal(reg.isRegistered('node:fs'), false, 'fs 尚未仿真，应为未登记');
+    // 第二批登记了 fs/fs/promises/url；**未登记**的例子要用还没排到的模块
+    // （原来这里拿 `node:fs` 举例，第二批落地后它自己就失效了）
+    for (const spec of ['fs', 'node:fs', 'fs/promises', 'node:fs/promises', 'node:url', 'url']) {
+      assert.equal(reg.isRegistered(spec), true, `${spec} 在第二批里应当已登记`);
+    }
+    assert.equal(reg.isRegistered('node:stream'), false, 'stream 尚未仿真，应为未登记');
+    assert.equal(reg.isRegistered('stream/promises'), false, 'stream/promises 尚未仿真，应为未登记');
     assert.equal(reg.isRegistered('@host/api'), false, '@host/api 不是仿真模块');
   });
 
@@ -723,10 +762,40 @@ describe('仿真模块登记表', async () => {
     for (const f of files) assert.ok(registered.has(f), `${f} 没有出现在登记表里`);
   });
 
-  it('文件名约定与规范名一致（子路径的 / 变 -）', () => {
+  it('文件名约定与规范名一致（子路径的 / 变 -，**下划线原样保留**）', () => {
     assert.equal(reg.shimFileName('path'), 'node-path.js');
     assert.equal(reg.shimFileName('node:path'), 'node-path.js');
+    // 连字符只来自**路径分隔符**的替换
     assert.equal(reg.shimFileName('fs/promises'), 'node-fs-promises.js');
+    assert.equal(reg.shimFileName('util/types'), 'node-util-types.js');
+    // 下划线是规范名的一部分，**不能**被换成连字符（`string_decoder` 是 Node 的真实模块名）
+    assert.equal(reg.shimFileName('string_decoder'), 'node-string_decoder.js');
+    assert.equal(reg.shimFileName('node:string_decoder'), 'node-string_decoder.js');
+  });
+
+  /**
+   * 命名约定的**另一半**：哪些文件名算 shim 文件（加载器服务"shim 之间的相对 import"时用它）。
+   * 两处一旦漂移，症状是"文件名按约定写了、加载器却不服务它"。
+   * 曾经这里只认 `[a-z0-9-]`，`node-string_decoder.js` 因此过不了（没有 shim import 它所以没炸，
+   * 但 `stream` 那批一定会——`node-stream.js` 要用 StringDecoder）。
+   */
+  it('**每个真实的 node-*.js 都必须过加载器的文件名判据**（含下划线那种）', () => {
+    const registered = [...new Set(reg.SANDBOX_MODULES.map((m) => reg.shimFileName(m.canonical)))];
+    // 反例先钉住：连字符形状曾是唯一被接受的形状
+    assert.equal(reg.isShimFileName('node-string_decoder.js'), true, '下划线文件名必须被认');
+    assert.equal(reg.isShimFileName('node-string-decoder.js'), true);
+    assert.equal(reg.isShimFileName('node-fs-promises.js'), true);
+    // 越界形状一律不认（加载器只拿基名拼路径，这里是它的安全边界）
+    for (const bad of ['../node-fs.js', 'node-fs.js/../x', 'node-FS.js', 'node-.js', 'nodefs.js', 'node-fs.mjs', 'fs.js']) {
+      assert.equal(reg.isShimFileName(bad), false, `${bad} 不该被当作 shim 文件名`);
+    }
+    // 真实文件逐个过判据（这条是"注册表 ↔ 加载器"不漂移的守门人）
+    const files = readdirSync(DIR).filter((f) => f.startsWith('node-') && f.endsWith('.js'));
+    assert.ok(files.length > 0);
+    for (const f of files) {
+      assert.equal(reg.isShimFileName(f), true, `${f} 是真实 shim 文件，却过不了加载器的形状判据`);
+      assert.ok(registered.includes(f), `${f} 是真实 shim 文件，却不在登记表里`);
+    }
   });
 
   // B1 回归：这几个子路径入口**在 Node 里真实存在**，缺了会让依赖在装载期就失败
@@ -1251,18 +1320,25 @@ console.log('STRICT-OK');
   });
 
   it('未登记的 node 内建 → 报错指出"沙箱尚未支持"，而不是让作者以为写错了', async () => {
+    // 用 `node:stream`（设计上排在第二批之后，仍未登记）——`node:fs` 在第二批里已经登记了，
+    // 拿它当"未登记"的例子会随排期推进而失效（这条用例本身踩过一次）。
     await assert.rejects(
-      () => runInSandbox(`import { readFileSync } from 'node:fs';\nconsole.log(String(readFileSync));`),
+      () => runInSandbox(`import { Readable } from 'node:stream';\nconsole.log(String(Readable));`),
       (err: any) => JSON.stringify(err).includes('沙箱尚未支持') || String(err?.message).includes('沙箱尚未支持'),
     );
   });
 
   /**
    * C4：`assert` 是**唯一没在真沙箱里跑过**的 shim（其余都在上面那条里 import 过）。
-   * 顺带把"零环境权力"钉住：沙箱里没有 `process` / `require` / `Buffer`，
-   * 能力只能从 `@host/api` 拿——这条不变量比任何单个 API 的行为都重要。
+   *
+   * 顺带钉住"零环境权力"这条不变量——注意它说的是**能力**，不是"没有 Node 全局"：
+   * `process` / `Buffer` / `global` **现在有**（装的是仿真模块本身，见 core/sandbox.ts 的 GLOBALS_PRELUDE），
+   * 因为真实依赖用的是**裸全局**（`mkdirp` 读 `process.platform`、`properties` 读 `process.platform`
+   * 决定 EOL），没有它们这些包在装载期就 ReferenceError。
+   * 但拿到的仍是**仿真值**：`platform` 固定 linux、`env` 冻结为空、`exit`/`kill` 抛错、
+   * 没有宿主身份；真正不许有的是 `require`（动态 require 会让构建层的静态闸失效）。
    */
-  it('C4：assert 在真沙箱里可用；且沙箱里没有 process / require / Buffer', async () => {
+  it('C4：assert 在真沙箱里可用；Node 全局是**仿真件**，而 require 仍然不存在', async () => {
     const out = await runInSandbox(`
 import assert from 'node:assert';
 import { strictEqual } from 'node:assert';
@@ -1272,11 +1348,48 @@ let thrown = 'none';
 try { assert(false, 'boom'); } catch (e) { thrown = e.name + ':' + e.code; }
 console.log('ASSERT ' + thrown);
 console.log('ENV ' + [typeof process, typeof require, typeof Buffer, typeof globalThis.__host].join(','));
+console.log('PROC ' + process.platform + '/' + Object.keys(process.env).length + '/' + process.version);
+let exitCode = 'NO-THROW';
+try { process.exit(0); } catch (e) { exitCode = e.code; }
+console.log('EXIT ' + exitCode);
+    // Buffer.from('hi') 会走宿主编解码 → 需要插件声明 bytes.encode（这个沙箱什么权限都没声明，
+    // 所以这里只用纯沙箱内的部分：alloc / isBuffer 不跨界）
+    console.log('BUF ' + Buffer.alloc(2).length + '/' + (Buffer.isBuffer(Buffer.alloc(1)) ? 'yes' : 'no'));
+console.log('GLOBAL ' + (global === globalThis) + '/' + (typeof URL) + '/' + (typeof TextEncoder));
 `);
     const lines = out.split('\n');
     assert.equal(lines[0], 'ASSERT AssertionError:ERR_ASSERTION');
-    // 零环境权力：前三个必须是 undefined，只有显式注入的桥在
-    assert.equal(lines[1], 'ENV undefined,undefined,undefined,object');
+    // 零环境权力：`require` 必须 undefined；process/Buffer 是**仿真件**（不是宿主对象），桥在
+    assert.equal(lines[1], 'ENV object,undefined,function,object');
+    // 仿真值：platform 固定 linux（宿主是 win32 也不变）、env 是冻结空对象、版本是固定基线
+    assert.equal(lines[2], 'PROC linux/0/v22.22.1');
+    // 退出权不给插件（`process.exit` 明确抛错）
+    assert.equal(lines[3], 'EXIT ERR_NOT_SUPPORTED_IN_SANDBOX');
+    assert.equal(lines[4], 'BUF 2/yes');
+    // `global` 别名与 Node 的标准全局（QuickJS 自己没有 URL/TextEncoder，由仿真模块补）
+    assert.equal(lines[5], 'GLOBAL true/function/function');
+  });
+
+  /**
+   * P2-B：`os` / `process` 的事实来自**引导层注入的 `__spcEnv`**。
+   * 这条必须走真沙箱——差分测试是自己塞全局的，证明不了宿主侧真的做了注入。
+   */
+  it('P2-B：os / process 在真沙箱里可装载，且事实由引导层注入', async () => {
+    const out = await runInSandbox(`
+import os from 'node:os';
+import process from 'node:process';
+console.log('OS ' + os.platform() + '/' + os.EOL.length + '/' + os.homedir().length);
+console.log('PROC ' + process.platform + '/' + process.version + '/' + process.cwd().length);
+console.log('TMPINSIDE ' + (os.tmpdir().startsWith(os.homedir()) ? 'yes' : 'no'));
+let code = 'NO-THROW';
+try { os.cpus(); } catch (e) { code = e.code; }
+console.log('CPUS ' + code);
+`);
+    const [osLine, procLine, tmpLine, cpus] = out.split('\n');
+    assert.match(osLine, /^OS linux\/1\/\d+$/); // platform 固定 linux；EOL 是 '\n'（长度 1）
+    assert.match(procLine, /^PROC linux\/v22\.22\.1\/\d+$/); // 版本是固定仿真值
+    assert.equal(tmpLine, 'TMPINSIDE yes'); // tmpdir 必须落在数据目录内（fs 作用域里）
+    assert.equal(cpus, 'CPUS ERR_NOT_SUPPORTED_IN_SANDBOX'); // 身份类明确抛错
   });
 });
 

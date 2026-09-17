@@ -134,6 +134,26 @@ registry.register({
   executionLevel: 'low',
 });
 
+// url 组：WHATWG URL 解析与百分号编码的**宿主代工**（QuickJS 没有 URL，见 module-emulation-design §13.1-7）。
+// scope=self 的理由同 bytes：输入是调用方给的字符串，输出还给调用方，够不着别人。
+registry.register({
+  name: 'url.parse',
+  group: 'url',
+  description: 'WHATWG URL 解析与规范化（new URL / 部件赋值）',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
+registry.register({
+  name: 'url.encode',
+  group: 'url',
+  description: 'URLSearchParams 的解析/序列化与 domainToASCII/Unicode',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
 registry.register({
   name: 'timers.schedule',
   group: 'timers',

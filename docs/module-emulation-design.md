@@ -54,8 +54,8 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | P2-A | `node:util` | 无 | `format` / `inspect` / `types` 子集（`promisify` 视需要） |
 | P2-A | `node:events` | 无 | `EventEmitter`（含 `once`/`on`/`emit`/`removeListener`） |
 | P2-A | `node:assert` | 无 | 常用断言子集（依赖常用它做参数校验） |
-| P2-A | `node:url` | 无 | `URL` / `URLSearchParams` 用 QuickJS 内置实现包装 |
-| **P2-B** | `node:fs` + `node:fs/promises` | `fs.read.data` / `fs.write.data` | 作用域 = 插件数据目录（+ 显式授予的额外目录）；errno 映射见 §7 |
+| **P2-A** | `node:url` | `url.parse` / `url.encode` | WHATWG `URL`/`URLSearchParams` **宿主代工**（解析一次 → 全量快照，赋值时回宿主重算，§13.1-7）；`pathToFileURL`/`fileURLToPath`/legacy `parse`/`format`/`resolve` 沙箱自实现（照 `node/lib/url.js` 移植，路径语义固定 POSIX） |
+| **P2-B** | `node:fs` + `node:fs/promises` | `fs.read.data` / `fs.write.data` | 作用域 = 插件数据目录；**真实动作在宿主**（`core/hostApi.ts` 的 `fs.*` 原语：路径收敛 F1–F7 + 大小上限 + inode 预检 + 审计），**形状与 errno 翻译在沙箱**（`node-fs.js`）。三风格（sync/promises/回调）同一实现；fd 类与 `fs.watch`/流一律 `ERR_NOT_SUPPORTED_IN_SANDBOX`（§9） |
 | P2-B | `node:process` | 只读 | 冻结子集：`platform` / `arch` / `version` / `versions`（仿真值）/ `nextTick` / `env`（默认空，§13-1） |
 | P2-B | `node:os` | 只读 | `platform` / `arch` / `EOL` / `tmpdir`（宿主值） |
 | **P2-B** | `node:buffer` | 无（编解码走宿主，不碰资源） | **最小集（已定）**：`from` / `alloc` / `allocUnsafe` / `concat` / `isBuffer` / `byteLength` + 实例 `toString` / `slice` / `subarray` / `equals` / `compare` / 数值读写。**字节存沙箱（`Uint8Array` 子类），编解码宿主代工**——见 §3.2。已从 P2-C 提前到 P2-B（构建期口径低估了它；它是二进制的通用货币，`fs` 一支持二进制就必然需要） |
@@ -261,6 +261,22 @@ core/sandbox.ts
 3. **loader 只认注册表**：未登记 → 抛错（零环境权力的执行点，ADR-005 §5）；
 4. **打包**：`sandbox-modules/*.js` 必须随核心分发（P5 自包含 bundle 时以 text loader 内联或作为资源随包）。
 
+**文件名约定（唯一一条规则，别记岔）**：`node-` + **规范名，只把 `/` 换成 `-`**，其余字符（含**下划线**）原样保留。
+`registry.ts` 的 `shimFileName()` 生成它，`isShimFileName()` 判定它（加载器服务"shim 之间的相对 import"时用后者）。
+
+| 规范名 | 文件名 | 说明 |
+|---|---|---|
+| `path` | `node-path.js` | 直通 |
+| `string_decoder` | `node-string_decoder.js` | **下划线是规范名的一部分，不换**（`node-string-decoder.js` 曾是错的，已改名） |
+| `fs/promises` | `node-fs-promises.js` | 那个连字符来自**路径分隔符** `/`，不是名字里的连字符 |
+| `path/win32` `assert/strict` `util/types` | `node-path-win32.js` `node-assert-strict.js` `node-util-types.js` | 同一规则 |
+| `path/posix` | `node-path.js`（`shimFile` 别名） | 同一份实现服务多个 specifier 时才用别名条目 |
+
+> 两处判据必须同源：`shimFileName()` 与 `isShimFileName()` 一旦漂移，症状是"文件按约定命名了、加载器却不服务它"。
+> 曾经加载器只认 `[a-z0-9-]`（漏了下划线），当下没炸只是因为还没有 shim 去 import `node-string_decoder.js`——
+> `stream` 那批一定会（`node-stream.js` 要用 StringDecoder）。守门用例：`sandbox-modules.test.ts` 的
+> "每个真实的 node-*.js 都必须过加载器的文件名判据"。
+
 ## 6. 能力映射（Node API → 权限点）
 
 **仿真是形状，权限是实质**：每个会触碰宿主资源的接口都映射到注册表里的权限点；插件 manifest 的声明仍是唯一入口，未声明 = 拒绝。
@@ -273,7 +289,23 @@ core/sandbox.ts
 | `crypto.hash` | `crypto.hash`（新增） | — | 摘要计算；`normal`/`public` 级 |
 | `os.tmpdir` / `os.platform` | — | — | 宿主只读信息，公开级，自动授予 |
 | `process.env` | （待定，§13-1） | — | 默认冻结空对象 |
+| `URL` / `URLSearchParams` 解析 | `url.parse` / `url.encode` | — | 宿主代工的计算，输入输出都在调用方手里，`scope=self` 声明即用（同 `bytes.*`） |
 | `path.*` / `util.*` / `events.*` / `assert.*` | — | — | 纯计算，不触碰资源，无需权限点 |
+| `Buffer` 的**编解码**（`Buffer.from(str)` / `buf.toString(enc)`） | `bytes.encode` / `bytes.decode` | 插件自身 | 字节在沙箱里（`Uint8Array` 子类）不碰资源；只有**跨宿主编解码**要声明这两个点（scope=self，安装即生效）。`node:fs` 的文本读写刻意不经此路（见下面的权限耦合说明） |
+
+**`@host/api` 的 `fs` 组（能力面）与 `node:fs`（仿真面）的关系**：能力面保留既有的
+`fs.read` / `fs.write` / `fs.list` / `fs.stat` 四个（契约已发布），仿真面用的是一组**更低层的原语**
+（`fs.readBytes` / `fs.writeBytes` / `fs.statFull` / `fs.readdirEntries` / `fs.mkdir` / `fs.mkdtemp` /
+`fs.rm` / `fs.rmdir` / `fs.rename` / `fs.copyFile` / `fs.realpath` / `fs.access`），它们同样登记在
+`@host/api` 里（透明：沙箱能做到什么，能力面就照实列出），差别只在**形状**——
+能力面给插件的 JSON 对象，仿真面把同一批原语组装成 Node 的 API 形状。
+两处**不是两套实现**：权限点、路径收敛、大小上限、审计全在宿主那一层。
+
+> **权限耦合的取向（本轮被差分测试逼出来的）**：仿真层**不得**让"用 `node:fs` 读一个文本文件"
+> 额外依赖 `bytes.*` 声明——编码这一步跟读取一起放在 `fs.readText`/`fs.writeText` 里做，
+> 于是 `node:fs` 只需要 `fs.read.data` / `fs.write.data`（与上表的映射一致）。
+> 仅有的例外是几条边角：路径参数传 `Buffer`、或 `readdir`/`realpath`/`mkdtemp` 用 `{encoding:'buffer'}`
+> ——那几次确实要过宿主编解码，插件需声明 `bytes.encode`/`bytes.decode`（`node-fs.js` 文件头边界 9）。
 
 **约定**：仿真模块**不得**引入新的权限语义；需要新能力时先在 `core/permissions/registry.ts` 注册权限点，再在映射表里登记（两处同步修改是评审项）。
 
@@ -283,14 +315,30 @@ core/sandbox.ts
 
 | 宿主码（SpcError.code） | 仿真层抛出 | 依据 |
 |---|---|---|
-| `PATH_OUT_OF_SCOPE` / `SYMLINK_ESCAPE` / `PERMISSION_DENIED` | `EACCES` | 越界或未授权 = 拒绝访问 |
+| `PATH_OUT_OF_SCOPE` / `SYMLINK_ESCAPE` / `PARENT_ESCAPE` / `SPECIAL_PATH_DENIED` / `PERMISSION_DENIED` | `EACCES` | 越界或未授权 = 拒绝访问 |
 | `SYMLINK_DANGLING` | `ELOOP` | 链接无法解析 |
-| `PARENT_MISSING`（读取路径） | `ENOENT` | 目标不存在 |
+| `PARENT_MISSING` | `ENOENT` | 目标（或父目录）不存在——Node 的 `writeFileSync('a/b/c')` 在 `a/b` 缺失时也是 ENOENT |
+| `NOT_FOUND` | `ENOENT` | 目标不存在 |
+| `ALREADY_EXISTS` | `EEXIST` | 目标已存在（`mkdir` / `wx` / `COPYFILE_EXCL`） |
+| `IS_A_DIRECTORY` / `NOT_A_FILE` | `EISDIR` | 该操作不接受目录 |
+| `NOT_A_DIRECTORY` | `ENOTDIR` | 该操作要求目录 |
 | `FILE_TOO_LARGE` / `TARGET_TOO_LARGE` | `EFBIG` | 超出单文件上限 |
+| `ENTRY_LIMIT_EXCEEDED` | `ENOSPC` | 目录条目数超出上限（比"让 32 MiB 的沙箱堆炸掉"更早、更可诊断） |
 | `TIMEOUT` | `ETIMEDOUT` | 宿主侧超时 |
+| `INODE_PRECHECK_MISSING` / `INODE_MISMATCH` | `EIO` | TOCTOU 检出（原始码留在 `spcCode` 里） |
+| `INVALID_ARGS` | `EINVAL` | 宿主侧参数校验失败 |
+| **已经是 POSIX 名的码**（宿主原生 fs 错误的直通，如 `ENOENT`/`EEXIST`/`ENOTEMPTY`/`ENOTDIR`） | 原样 | 宿主就是 Node，它给的 errno 比我们猜的准 |
 | `INTERNAL` / 其它 | `EIO` | 未分类内部错误 |
 
-**同时保留原始码**：抛出的错误对象带 `err.spcCode = '<宿主码>'`（诊断与审计用），`err.message` 用英文（Node 生态习惯），本地化仍只在 CLI / 面板渲染层（api-contract §2）。
+**errno 与文案是 Linux 真值**：`err.errno` 用 Linux 的负值（`ENOENT` = -2），`err.message` 用
+`CODE: strerror, syscall 'path'` 的 Node 格式，strerror 文案取 **Linux**（`no such file or directory`…）——
+出处是 WSL 上的 node v22.22.1 运行值（`_audit/fs-url-truth.mjs` → `_audit/fs-url-truth.json`），
+与 `path`(posix)、`constants`(Linux) 同一个取向。开发机是 Windows 时宿主的 errno（-4058）与文案都不同，
+**不能拿宿主当判卷人**（测试里按 `process.platform === 'linux'` 才与宿主对照）。
+
+**同时保留原始码**：抛出的错误对象带 `err.spcCode = '<宿主码>'`，宿主错误信封里的 `params` 也一并带过来
+（`err.params`，排障用，如越界时收敛后的路径）。`err.message` 用英文（Node 生态习惯），
+本地化仍只在 CLI / 面板渲染层（api-contract §2）。
 
 > 设计取舍：**对外看起来像 POSIX，对内仍然是我们的码**。这样依赖能正常工作，我们的审计与排障也不丢信息。
 
@@ -333,6 +381,12 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | `fs.watch` / inotify | 不做；轮询或宿主专用事件 |
 | 网络（`net`/`http`/`dns`/`tls`） | 驱动插件提供的端点 |
 | `process.exit` / 信号 | 不做；插件生命周期由核心管理（init/start/stop） |
+| `fs` 的 **fd 面**（`open`/`read`/`write`/`fstat`/`fsync`/`ftruncate`…） | 不做（持有 fd 等于拿到沙箱外的句柄）；能力插件用路径式 API，宿主侧同一批原语 |
+| `fs` 的**流**（`createReadStream`/`createWriteStream`）与 `fs.watch`/`watchFile` | 不做（前者要 `node:stream`，后者要 inotify 面）；轮询走 `timers` |
+| `fs` 的**软链创建**（`symlink`/`link`）与**元数据**（`chmod`/`chown`/`utimes`） | 不做；宿主侧资源语义（属主/权限位）不交给插件 |
+| `fs.lstat` 认不出软链 | **已知边界**：路径收敛（F2/F5）在 lstat 之前就把软链解析成了目标。补偿能力是 `readdirSync(withFileTypes)` 的 `Dirent`（不经过收敛，能认出 `isSymbolicLink()`）。要精确 lstat 需要在 `safe-path` 里加"不解析最后一段"的校验通道，与安全设计强相关，等真实需求 |
+| `fs.readdir(…, { recursive: true })` / `statSync(…, { bigint: true })` | 明确抛 `ERR_NOT_SUPPORTED_IN_SANDBOX`（不静默降级） |
+| 插件传 `URL` 作为 `fs` 路径参数 | **只在 POSIX 语义下成立**（`fileURLToPath` 是 POSIX 基线）；Windows 宿主上数据目录是 Windows 路径，`file:///C:/…` 与沙箱路径语义对不上 ⇒ 用字符串路径 |
 
 ## 10. 与构建层的联动（构建期即失败）
 
@@ -362,11 +416,77 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | **P2-C** | 最小 `node:crypto` 摘要（`node:buffer` 已提前到 P2-B，见 §3） | 二进制读写（base64/hex）与摘要用例通过；依赖探测 `Buffer` 的分支不崩 |
 | 后续 | `stream` / `zlib` / `string_decoder` … 按真实插件需求逐块评估 | 每个新模块：本文件登记 + 权限映射 + 对齐测试 |
 
-## 13. 待定项（评审时逐条定）
+## 13. 待定项
 
-1. **`process.env` 暴露策略**：默认空对象已定；是否需要"白名单 + 权限点"（如 `env.read`）由 P2-B 定；
-2. **`tmpdir` / `cwd` 语义**：`tmpdir` 用宿主值；`cwd` 建议=插件数据目录（与 fs 作用域一致），需确认；
-3. **同步长操作**：`readFileSync` 走宿主同步 IO 会阻塞核心事件循环——是否需要大小阈值/超时/警告；
-4. **仿真 Node 版本**：`process.versions.node` 汇报一个**固定的仿真版本**（建议 22.x LTS），并写进本文件，避免依赖走不同分支；
-5. **未登记模块的用户体验**：构建期报错文案要指出"是沙箱未支持，而非代码写错"（清单可从本文件自动生成）；
-6. **`node:module` / `createRequire`**：CJS 依赖可能需要 `createRequire`——是否在沙箱内提供受限版本，随 §10-2 一起定。
+### 13.1 已定（P2-B，2026-09）
+
+| # | 问题 | 决定 | 落点 |
+|---|---|---|---|
+| 1 | `process.env` 暴露策略 | **冻结的空对象**，不加权限点（宿主 env 可能含凭据，暴露面太大）；将来有真实需求再谈白名单 + `env.read` | `node-process.js` |
+| 2 | `tmpdir` / `cwd` 语义 | `tmpdir` = **`<dataDir>/tmp`**（不是宿主 tmp：那个在 fs 作用域外，插件一用就 `EACCES`——返回它等于挖坑）；`cwd` = 数据目录 | `core/emulated-env.ts` |
+| 3 | 同步长操作 | 沿用既有大小上限（单文件 64 MB / 读 8 MB），超限给 `EFBIG`；不做阈值警告（警告没人看得见，上限才是硬的） | `core/hostApi.ts`、`node-fs.js` |
+| 4 | 仿真 Node 版本 | **固定 `22.22.1`**（`process.version` = `v22.22.1`）；`process.versions` 只报 `node` + `spc`，**不编造** `v8`/`openssl` | `core/emulated-env.ts` |
+| 5 | `node:module` / `createRequire` | **本批不做**：按"未登记模块"拒绝。有真实依赖卡住再评估（它不是能力，但会让 CJS→ESM 的路径变复杂） | `registry.ts` |
+| 6 | `os` 的取值三分法 | **行为性事实固定**（platform/EOL/devNull/endianness，与 posix 路径同一取向）、**容量类给宿主真值**（cpuCount/totalmem/freemem/uptime/loadavg）、**身份类明确抛错**（cpus/hostname/networkInterfaces/userInfo） | `core/emulated-env.ts`、`node-os.js` |
+| 7 | WHATWG `URL` 实现路径 | **宿主快照 + 变更回宿主**（解析一次、畸形输入保真）；沙箱内自实现的只有 `pathToFileURL`/`fileURLToPath`/legacy `parse`/`format`/`resolve` | `node-url.js` |
+| 8 | `process` 的信号事件 | **注册即抛错**，不留"永不触发的监听器"（events 那轮的教训）；核心唯一主动触发的是卸载前的 `'exit'` | `node-process.js`、`core/sandbox.ts` 的引导层 |
+| 9 | `stream` 是否入批 | 入第二批之后（单独一步）：按实测属性清单做**极小形状** shim，以"跑通那 5 个包"为界 | 见 ROADMAP |
+
+### 13.2 仍未定
+
+1. **未登记模块的用户体验**：构建期报错文案要指出"是沙箱未支持，而非代码写错"（清单可从本文件自动生成）；
+2. **`os` 的身份类信息**是否需要一个 `os.info` 权限点（当前一律抛错——等真实插件卡住再谈）；
+3. **`process.hrtime` 的单调时钟**：现在抛错；若真实依赖需要精密计时，走宿主代工（一次跨界 ≈0.21 ms，适合"每测量两次"的用法）。
+
+## 14. 实测坑清单（第二批踩到的，写代码前先看）
+
+> 这一节只写**花了时间才弄明白、且不做就会再踩**的东西。每条都给"复现/守住它的地方"，
+> 这样它有判别力：改坏了对应测试会红。真值采集工具在 `_audit/`（仓库外工作区）。
+
+### 14.1 沙箱环境本身
+
+| # | 坑 | 结论 / 做法 |
+|---|---|---|
+| 1 | QuickJS **没有**一批标准全局：`TextEncoder` `TextDecoder` `queueMicrotask` `structuredClone` `URL` `URLSearchParams` `atob` `btoa` `performance` `DOMException`（有 `Proxy`/`Reflect`/`WeakRef`/`Float16Array`/`Object.hasOwn`） | 引导层补齐 `queueMicrotask`；Node 那批全局由 `GLOBALS_PRELUDE` 装**仿真模块本身**（见 14.2）。探针：`_audit/quickjs-globals-probe.mjs` |
+| 2 | **宿主 realm 的差分测试测不出"沙箱里缺某个全局"**（在 Node 里跑得通、进沙箱就 ReferenceError） | 每个模块**至少一条真沙箱冒烟**（先例：`sandbox.test.ts` 的微任务用例、`emulation-fs.test.ts` 最后一组） |
+| 3 | 模块装载期排的微任务（顶层 `await` 续体、`.then()`）**原来被静默丢掉**（`runModule` 不泵 job 队列，还报成功） | `runModule` 在 eval 成功后、deadline 复位**之前**泵一次 job 队列；回归用例在 `sandbox.test.ts` |
+| 4 | **顶层 await（TLA）模块**：QuickJS 的 `js_evaluate_module()`（`quickjs.c` 约 31535 行）**总是**建 promise，QTS 只在"没有异步求值"时拆开交出命名空间；真 TLA 时交回来的是未落地的 promise ⇒ 导出全取不到（症状是 `PLUGIN_NO_ENTRY`，看着像导出名写错） | **明确拒绝**：`PLUGIN_LOAD_FAILED` + "把异步初始化放进 init 钩子"。要真支持得 pump 到 promise 落地再取结果值（未排期） |
+
+### 14.2 Node 全局与路径语义（真实依赖最容易撞的两处）
+
+| # | 坑 | 结论 / 做法 |
+|---|---|---|
+| 5 | **真实依赖用的是裸全局**，不是 `import`：`mkdirp/dist/mjs/path-arg.js` 写 `process.env.… \|\| process.platform`、`use-native.js` 写 `process.version`、`properties/lib/stringify.js` 写 `process.platform === 'win32' ? "\r\n" : "\n"`。沙箱里没有 `process` 时它们**装载期就 ReferenceError** | `core/sandbox.ts` 的 `GLOBALS_PRELUDE`：装 `process` / `Buffer` / `global` / `URL` / `URLSearchParams` / `TextEncoder` / `TextDecoder`——装的是**仿真件**（`platform` 固定 linux、`env` 冻结空、`exit`/`kill` 抛错），所以"零环境权力"（能力只能从 `@host/api` 拿）没被破坏；**`require` 仍然不存在**（动态 require 会让构建层静态闸失效）。守住它的用例：`sandbox-modules.test.ts` 的 C4 |
+| 6 | **`path.resolve()` 的兜底不能是虚拟根 `/`**：`resolve('out/a')` → `/out/a`，交给 fs 就是作用域外 → `EACCES`。而真实依赖普遍写 `fs.mkdirSync(path.resolve(p))`（`mkdirp/dist/mjs/path-arg.js:11`） | `node-path.js` 的兜底 = **沙箱 cwd（= 数据目录，与 `process.cwd()`、fs 相对路径解析同源）**；拿不到环境事实时回退 `/`。用例：`sandbox-modules.test.ts` 的"相对路径按沙箱 cwd 兜底" |
+| 7 | **`validatePath` 的前缀比较必须规范化**：Windows 上 `C:/a/b` 与 `C:\a\b` 是同一个位置，字符串却不同——正斜杠的绝对路径会被判**越界**（EACCES），且第 2 步的逐级软链扫描 `split(sep)` 切不开、整段被跳过（fail-open） | `core/fs/safe-path.ts` 用 `resolve(requested)` 做**所有判定**（错误文案仍报调用方那串）。用例：`safe-path.test.ts`（26 条）+ 真实依赖冒烟 |
+| 8 | Windows 开发机的数据目录可能是 `C:\Users\ADMINI~1\…`（8.3 短名）之类的形态 | 路径类 shim 里把 `\` 统一成 `/` 再走 POSIX 算法；`isAbsolute('D:/…')` 仍按 POSIX 给 `false`——属"暂不支持 Windows 部署"的已知边界 |
+
+### 14.3 Node 形状与错误语义（差分测试抓出来的）
+
+| # | 坑 | 结论 / 做法 |
+|---|---|---|
+| 9 | 假桥**必须冒充真桥的参数编组**：真桥把 VM 里的 ArrayBuffer 变成 `Uint8Array` 交给宿主；假桥直接传 ArrayBuffer 会让宿主实现以 `ERR_INVALID_ARG_TYPE` 失败，被误读成"shim 的 bug" | 差分测试的假桥照 `core/sandbox.ts` 写：`typeof a === 'string' ? a : Uint8Array.from(...)` |
+| 10 | `writeFileSync(p, arrayBuffer)` —— Node **不收裸 ArrayBuffer**（要 TypedArray/DataView） | `node-fs.js` 的 `toByteView` 只认视图；差分用例守着 |
+| 11 | 编码名的两种错：`'zzz'` → `ERR_INVALID_ARG_VALUE`（"The argument 'encoding' is invalid encoding."），而 `{encoding:'buffer'}` 是 **`getOptions` 的哨兵**（读侧不校验、到 `toString` 才炸成 `ERR_UNKNOWN_ENCODING`；写侧直接 `ERR_UNKNOWN_ENCODING`） | 照抄；`node-fs.js` 的 `readFileOptions`/`writeFileOptions` |
+| 12 | 宿主自己的 `ERR_*` 契约码**不能翻成 EIO**（`ERR_UNKNOWN_ENCODING` 被说成"i/o error"就查不出来了） | `toNodeError` 让 `ERR_*` 直通（`ERR_FS_EISDIR` 例外地带**正** errno 21） |
+| 13 | `rm` 与 `rmdir` 是**两套**语义：`rmSync(目录)` 不给 recursive → `ERR_FS_EISDIR`（SystemError，syscall `rm`）；`rmdirSync` 空目录成功 / 非空 `ENOTEMPTY` / 目标是文件 `ENOTDIR` | 宿主侧就是两个方法（`fs.rm` / `fs.rmdir`），仿真层不自己判 |
+| 14 | `mkdirSync('b/c/d', {recursive:true})` 返回**第一个被创建的目录**、`mkdtempSync('t-')` 返回 `'t-ABC123'`——都是**调用方写的那种形式**（相对进、相对出） | 宿主必须用收敛后的绝对路径，所以 shim 负责还原（`callerDepthForm` / "前缀 + 宿主给的 suffix"）；`fs.mkdtemp` 因此多回一个 `suffix` |
+| 15 | `mkdir -r` 要建**整条链**：`firstMissingAncestor` 只用于返回值，只建它会让中间层缺失、紧随其后的 `validatePath` 在 F6 上炸 | `hostApi.ts` 的 `fs.mkdir` |
+| 16 | `lstatSync` **认不出软链**：路径收敛（F2/F5）在它之前就把软链解析成了目标 | 记进 §9 已知边界；补偿能力是 `readdirSync(withFileTypes)` 的 `Dirent`（不经过收敛） |
+| 17 | 判卷人有两个陷阱：(a) **Windows 宿主不是 Linux 真值的判卷人**（errno -4058、`unlinkSync(目录)` 给 EPERM、`mkdir` 回 `\\?\` 长路径前缀）；(b) **本机宿主版本 ≠ 仿真版本**（宿主 v24 有 `mkdtempDisposable`/`Utf8Stream`，v22.22.1 没有） | 断言 **Linux 真值**（WSL 取，`_audit/fs-url-truth.json`），只在 `platform === 'linux'` 时与宿主对照；导出面拿 **v22.22.1 的真值表**比，不拿宿主比 |
+| 18 | 权限耦合：`bytes.*` 是**独立能力组**，`Buffer.from(str)`/`buf.toString()` 要走它 | `node:fs` 的文本读写**刻意不经** `bytes`（`fs.readText`/`fs.writeText` 在宿主侧连编解码一起做），所以 `node:fs` 只需要 `fs.read.data`/`fs.write.data`；用 `node:buffer` 的编解码、或 fs 的 Buffer 路径 / `{encoding:'buffer'}` 才要声明 `bytes.encode`/`bytes.decode` |
+
+### 14.4 真实依赖冒烟（本批的验收证据）
+
+`_audit/dep-smoke.mts`（仓库外工作区工具）：用 esbuild 把真实 npm 包的 `node:*` 引用**内联成仿真源码**，
+产物丢进**真 QuickJS 沙箱**（真桥 + 权限判定）里跑。四个包全绿：
+
+| 包 | 走到的路径 | 结果 |
+|---|---|---|
+| `mkdirp@3.0.1` | `path.resolve` → `fs.mkdirSync(recursive)` → **用返回值** | 建出 `made/x/y/z`，返回第一个创建的目录；数据目录外没有落盘 |
+| `properties@1.2.1` | CJS 互操作 + `fs.readFileSync` + **回调风格** `fs.readFile` | 解析出 `{name:'spc',port:8080}` |
+| `debug@4.4.3` | `util` + `os` + `process` + `tty` 组合，写 stderr | 格式化输出正确 |
+| `ejs@6.0.1` | 模板渲染 + 按 filename 读文件 | 渲染正确 |
+
+> 正式的这层冒烟属于**构建层**（P2-2 的验收项）；这里先用同一套内联方式把仿真层单独验了。
+> 三个"包在装载期就 ReferenceError"的坑（第 5、6、7 条）全是它抓出来的。

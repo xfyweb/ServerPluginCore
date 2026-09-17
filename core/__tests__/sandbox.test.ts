@@ -124,13 +124,15 @@ test('白名单外的模块被拒（零环境权力的执行点）', async () =>
       sandbox.runModule(
         '@xfy2412/sandbox-test',
         `
-import fs from 'node:fs';
+import { Readable } from 'node:stream';
 `,
       ),
     (err: unknown) => {
       assert.ok(err instanceof SpcError);
       assert.equal(err.code, 'PLUGIN_LOAD_FAILED');
-      assert.match(err.params.message, /module not allowed: node:fs/);
+      // `node:stream`（设计上排在第二批之后）：**未登记**才是这条用例要的样本。
+      // 原来这里用 `node:fs`，第二批把它登记了，用例随排期推进自己失效了——样本要挑还没排到的模块。
+      assert.match(err.params.message, /module not allowed: node:stream/);
       return true;
     },
   );
@@ -211,6 +213,107 @@ test.block();
     },
   );
   assert.doesNotThrow(() => sandbox.dispose());
+});
+
+// ---- P2-B：沙箱里的标准微任务（QuickJS 没有 queueMicrotask，由引导层补）----
+
+/**
+ * 为什么这条测试必须**在真沙箱里**跑：`process.nextTick` 与 `events` 的 rejection 路由都用了
+ * `queueMicrotask`，而 QuickJS **没有**这个全局（实测见 `_audit/quickjs-globals-probe.mjs`）。
+ * 在宿主 realm 里跑的差分测试（Node 有 queueMicrotask）**测不出**这个缺口——
+ * 这正是"仿真模块的验收必须至少有一条真沙箱冒烟"的理由。
+ */
+test('P2-B：沙箱里有 queueMicrotask；nextTick 是异步的；captureRejections 的 rejection 真被泵到', async () => {
+  const sandbox = await createSandbox(hostApi, OPTIONS);
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import process from 'node:process';
+import { EventEmitter } from 'node:events';
+export function init() {
+  console.log('HAS ' + typeof queueMicrotask);
+  process.nextTick(() => console.log('TICK'));
+  const e = new EventEmitter({ captureRejections: true });
+  e.on('error', (err) => console.log('ERR ' + err.message));
+  e.on('x', async () => { throw new Error('boom'); });
+  e.emit('x');
+  console.log('SYNC');
+}
+`,
+    );
+    await sandbox.callHook('init', 1_000);
+  } finally {
+    console.log = orig;
+    sandbox.dispose();
+  }
+  assert.equal(logs[0], 'HAS function', '引导层没补上 queueMicrotask');
+  // 同步输出必须排在微任务之前：微任务由钩子结束后的 job 泵驱动，不该插队到同步代码中间
+  assert.ok(
+    logs.includes('SYNC') && logs.includes('TICK') && logs.indexOf('SYNC') < logs.indexOf('TICK'),
+    `执行顺序不对：${logs.join('|')}`,
+  );
+  // 这条覆盖了 events 的 addCatch：rejection 经 queueMicrotask 路由到 'error'
+  assert.ok(logs.includes('ERR boom'), `captureRejections 没有把 rejection 送到 'error'：${logs.join('|')}`);
+});
+
+// ---- 装载期的微任务（TLA 续体）也必须被泵到 ----
+
+/**
+ * 回归：**装载期排在 job 队列里的续体以前会被静默丢掉**。
+ *
+ * `runModule` 只 `evalCodeAsync` 就返回，不泵 job 队列，于是模块顶层的 `.then()` 续体永远不执行，
+ * 而 runModule 报的是**成功**（本轮写 `node:fs` 的真沙箱冒烟时踩到：`await fsp.stat(...)` 之后的行全丢）。
+ * 修法：eval 成功后、deadline 复位**之前**泵一次 job 队列（泵的仍是限了额的插件代码）。
+ *
+ * **顶层 await（TLA）本身仍然不支持**，但现在会**明确报错**而不是静默半执行：
+ * 源码层面（`quickjs.c` 的 `js_evaluate_module()`）模块求值**总是**建一个 promise，
+ * QTS 的 `QTS_Eval_MaybeAsync` 只在"没有异步求值"时把它拆开交出命名空间；
+ * 真 TLA 时交回来的是未落地的 promise，导出全都取不到（原来的症状是调用钩子报 `PLUGIN_NO_ENTRY`，
+ * 读起来像"导出名写错了"）。要真支持得 pump 到 promise 落地再取结果值——等真实需求。
+ */
+test('装载期的 then 续体会被泵完；顶层 await 明确报错（不静默半执行）', async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+  const sandbox = await createSandbox(hostApi, OPTIONS);
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+console.log('A');
+Promise.resolve().then(() => console.log('B'));
+queueMicrotask(() => console.log('C'));
+export function init() { console.log('HOOK'); }
+`,
+    );
+    assert.deepEqual(logs, ['A', 'B', 'C'], `装载期续体丢了：${logs.join('|')}`);
+    await sandbox.callHook('init', 1_000);
+    assert.equal(logs[3], 'HOOK');
+
+    // 顶层 await：明确拒绝（fail-closed），并说清该怎么改
+    await assert.rejects(
+      () =>
+        sandbox.runModule(
+          '@xfy2412/sandbox-test',
+          `
+await Promise.resolve();
+export function init() {}
+`,
+        ),
+      (err: any) => {
+        assert.equal(err.code, 'PLUGIN_LOAD_FAILED');
+        assert.match(String(err.params?.message), /top-level await/);
+        return true;
+      },
+    );
+  } finally {
+    console.log = orig;
+    sandbox.dispose();
+  }
 });
 
 // ---- C9：dispose 的幂等与"dispose 之后"的行为 ----

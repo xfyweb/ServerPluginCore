@@ -85,8 +85,8 @@
 6. **官方模块仿真**（docs/module-emulation-design.md，**当前最高优先**）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖。
    **原则：语法与行为对齐 Node——Node 是契约宗主**；用对齐测试守住（同一输入喂真 Node 与 shim 比输出），无法对齐的一律**明确报错**，不给近似值。
    - **已完成（P2-A 前半）**：`path`（POSIX）/ `events` / `assert` / `tty` / `constants` + **登记表**（`core/sandbox-modules/registry.ts`，构建层将来共用）+ loader 接线 + 对齐测试骨架（`core/__tests__/sandbox-modules.test.ts`）；
-   - **待做**：P2-A 余下 `util` / `url`。⚠️ **`url` 的前提已变**——实测 QuickJS **没有** `URL`/`URLSearchParams`，不能"包装内置"，只能自实现或走宿主（且**禁止**启用 `quickjs-libc` 的 std：它带 fs/进程/curl，是能力泄漏）；
-   - **P2-B**：`fs` + `fs/promises`（作用域=数据目录 + errno 映射）、`process`/`os` 只读、**`buffer`（最小集）** 与 **`string_decoder`**——后两者**字节存沙箱、编解码宿主代工**（module-emulation-design §3.2），同时落地**公开的 `bytes` 方法组**与桥的**二进制通道**（`getArrayBuffer`/`newArrayBuffer`，实测为**每方向一次拷贝**，非零拷贝）；
+   - **已完成（第二批）**：`util`(+`util/types`) / `os` / `process` / `buffer` / `string_decoder` / `url` / **`fs` + `fs/promises`**（作用域=数据目录、errno 映射见 module-emulation-design §7）。`url` 的 WHATWG 部分**走宿主**（实测 QuickJS **没有** `URL`/`URLSearchParams`，不能"包装内置"，只能自实现或代工；且**禁止**启用 `quickjs-libc` 的 std：它带 fs/进程/curl，是能力泄漏），legacy `parse`/`format`/`resolve` 与 `pathToFileURL`/`fileURLToPath` 照 `node/lib/url.js` 移植；
+   - **第二批的验收口径**（可复跑）：`node tools/dep-survey.mjs --set utils --coverage` 从 17/43 抬到 **26/43**（`debug` `ora` `cli-table3` `properties` `handlebars` `eta` `ejs` `which` 等 9 个包过闸，`joi` 由 `url` 解锁）；每模块一份与宿主 Node 的差分测试 + 至少一条**真沙箱冒烟**（宿主进程里的差分**测不出**"沙箱里缺某个全局"，这个坑踩过）；
    - **P2-C**：`crypto` 摘要（`buffer` 已提前到 P2-B）；
    - **交付物**：`core/sandbox-modules/*.js`（一模块一真实文件）+ 登记表 + 各模块对齐测试；
    - **排期依据是实测**（`tools/dep-survey.mjs --set utils --coverage`）：P2-A 在当前样本里解锁 **0** 个包（是**前置**、不是解锁项），真正的杠杆在 P2-B；`stream` 是单模块收益最高的（单独补它解锁 5 个包，且按包拆开多为 1–2 个属性）；

@@ -76,6 +76,18 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     note: '严格断言入口（宽松方法被严格方法覆盖，默认导出**可调用**）——与 `assert` 不是同一份 shim',
   },
   {
+    canonical: 'util',
+    stage: 'P2-B',
+    needsHost: true,
+    note: 'format/inspect(结构子集)/types/inherits/deprecate/debuglog/promisify/callbackify/isDeepStrictEqual 沙箱自实现（要遍历沙箱值）；**TextEncoder/TextDecoder 宿主代工**（QuickJS 没有这两个全局）',
+  },
+  {
+    canonical: 'util/types',
+    stage: 'P2-B',
+    needsHost: false,
+    note: '子路径入口：转发 `util.types` 那一份实现（Node 里 `util/types` 拿到的就是 types 对象本身）',
+  },
+  {
     canonical: 'tty',
     stage: 'P2-A',
     needsHost: false,
@@ -86,6 +98,51 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     stage: 'P2-A',
     needsHost: false,
     note: 'POSIX/Linux 常量值（与 path 的 posix 取向一致）',
+  },
+  {
+    canonical: 'url',
+    stage: 'P2-A',
+    needsHost: true,
+    note: 'WHATWG `URL`/`URLSearchParams` **宿主代工**（解析一次 → 全量快照，赋值时回宿主重算）；`pathToFileURL`/`fileURLToPath`/legacy `parse`/`format`/`resolve` 沙箱自实现（POSIX 基线）',
+  },
+  // ── P2-B：真实资源（宿主能力 + 权限点 + 审计；路径收敛见 core/fs/safe-path.ts）──
+  {
+    canonical: 'fs',
+    stage: 'P2-B',
+    needsHost: true,
+    note: '作用域 = 插件数据目录：真实动作在宿主（core/hostApi.ts 的 fs.* 原语 + 路径收敛 F1–F7 + 大小上限），**形状/errno 翻译在沙箱**；同步 + promises + 回调三风格同一实现；fd 类与 `fs.watch` 明确抛错',
+  },
+  {
+    canonical: 'fs/promises',
+    stage: 'P2-B',
+    needsHost: true,
+    note: '子路径入口：与 `fs.promises` 同一份实现（Node 里就是同一个对象）',
+  },
+  // ── P2-B：环境事实（只读，值来自建沙箱时注入的 `globalThis.__spcEnv`）──
+  {
+    canonical: 'os',
+    stage: 'P2-B',
+    needsHost: true,
+    note: '只读环境事实：行为性事实固定为 Linux/POSIX 仿真基线、容量类给宿主真值、**身份类（cpus/hostname/networkInterfaces/userInfo）明确抛错**',
+  },
+  {
+    canonical: 'process',
+    stage: 'P2-B',
+    needsHost: true,
+    note: '只读子集：platform/arch/version/versions/env(冻结空对象)/cwd/argv/pid/nextTick/emitWarning/stdout·stderr；`exit` 与信号事件明确抛错；核心在卸载前发一次 `exit`',
+  },
+  // ── P2-B：二进制面（字节存沙箱、编解码宿主代工；设计 §3.2）──
+  {
+    canonical: 'buffer',
+    stage: 'P2-B',
+    needsHost: true,
+    note: '最小集：字节存沙箱（Uint8Array 子类）、storage/index/slice 原生，**编解码走宿主**（bytes 通道）；不池化（池化会把同池别人的字节经 slice().buffer 带出去）。⚠️ 用到编解码（`Buffer.from(str)`/`buf.toString(enc)`）的插件要在 manifest 里声明 `bytes.encode`/`bytes.decode`（scope=self，安装即生效）；纯字节操作（alloc/isBuffer/subarray）不需要',
+  },
+  {
+    canonical: 'string_decoder',
+    stage: 'P2-B',
+    needsHost: true,
+    note: 'StringDecoder：跨 chunk 的不完整多字节序列由**宿主**处理（状态机不自己复刻），沙箱侧只做切片与缓存',
   },
 ];
 
@@ -119,4 +176,21 @@ export function sandboxModule(spec: string): SandboxModule | undefined {
 export function shimFileName(canonical: string): string {
   const norm = normalizeSpecifier(canonical);
   return BY_CANONICAL.get(norm)?.shimFile ?? `node-${norm.replace(/\//g, '-')}.js`;
+}
+
+/**
+ * 文件名是不是"本约定下的 shim 文件"（`node-*.js` 形状）。
+ *
+ * 为什么这条规则放在这里而不是散在加载器里：它就是**命名约定的另一半**——
+ * `shimFileName()` 说"规范名怎么变成文件名"，这里说"哪些文件名算数"。两处一旦漂移，
+ * 表现是"文件名按约定写了、加载器却不服务它"这种最难查的错：
+ * 曾经这里只认 `[a-z0-9-]`，于是 `node-string_decoder.js`（**下划线是规范名的一部分**，
+ * 见 `string_decoder` 条目）过不了——现在没有 shim 去 import 它所以没炸，
+ * 但 `stream` 那一批一定会（`node-stream.js` 要用 StringDecoder）。
+ *
+ * 注意：连字符只来自**路径分隔符**的替换（`fs/promises` → `node-fs-promises.js`），
+ * 下划线一律保留（`string_decoder` → `node-string_decoder.js`）。
+ */
+export function isShimFileName(fileName: string): boolean {
+  return /^node-[a-z0-9_-]+\.js$/.test(fileName);
 }

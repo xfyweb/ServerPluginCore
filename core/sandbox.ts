@@ -5,11 +5,13 @@ import {
   isSuccess,
   newQuickJSAsyncWASMModule,
   Scope,
+  type QuickJSAsyncContext,
   type QuickJSAsyncRuntime,
   type QuickJSHandle,
 } from 'quickjs-emscripten';
 import { audit, digest, digestParams } from './audit';
 import { DEFAULT_LIMITS, type PluginLimits } from './config';
+import { buildEnvFacts } from './emulated-env';
 import { SpcError, toErrorShape } from './errors';
 import { checkPermission } from './permissions/check';
 import { registry } from './permissions/registry';
@@ -21,9 +23,30 @@ import {
   pumpJobs,
   timeoutCodeFor,
   type HookName,
+  type PumpOutcome,
   type VmFailure,
 } from './plugin/limits';
-import { isRegistered, normalizeSpecifier, shimFileName } from './sandbox-modules/registry';
+import { isRegistered, isShimFileName, normalizeSpecifier, shimFileName } from './sandbox-modules/registry';
+
+/**
+ * 这个 handle 是不是 thenable？
+ *
+ * 用途只有一个：识别**带顶层 await（TLA）的模块**。QuickJS 的 `js_evaluate_module()`
+ * （quickjs.c:31535）**总是**建一个 promise 并把它交给 `JS_Eval`，而 QTS 的 `QTS_Eval_MaybeAsync`
+ * 在"模块没有异步求值"时会把已落地的 promise 拆开、交出**模块命名空间**；一旦模块真的 TLA
+ * （`m->async_evaluation`），交回来的就是那个未落地的 **promise**。
+ * 于是：非 TLA → 命名空间对象（没有 `then`）；TLA → promise（有 `then`）。
+ * 判定只看 `then` 是不是函数，拿不到就 dispose，别把 handle 漏在 Scope 里。
+ */
+function isThenableHandle(vm: QuickJSAsyncContext, handle: QuickJSHandle): boolean {
+  if (vm.typeof(handle) !== 'object') return false;
+  const then = vm.getProp(handle, 'then');
+  try {
+    return vm.typeof(then) === 'function';
+  } finally {
+    then.dispose();
+  }
+}
 
 /** 沙箱对象（P1.5） */
 export interface Sandbox {
@@ -56,7 +79,7 @@ const SELF_IMPLEMENTED_GROUPS = new Set(['kv', 'timers', 'bytes']);
  * 统一在沙箱侧还原（否则插件代码里到处是 `JSON.parse(fs.read(...))`）。
  * exec 不在其列——它的返回值是带 stdout/stderr 的文本协议，由插件自己解析。
  */
-const JSON_RESULT_GROUPS = new Set(['fs', 'lifecycle', 'events']);
+const JSON_RESULT_GROUPS = new Set(['fs', 'lifecycle', 'events', 'url']);
 
 /**
  * 沙箱内引导代码：装两个宿主可用、插件不可见的内部函数。
@@ -109,7 +132,52 @@ const BOOTSTRAP = `
     }
     return globalThis.__spcInvoke(fn, ctx);
   };
+  // 卸载钩子：仿真模块在**沙箱销毁前**登记清理动作（目前只有 node:process 用它发 'exit'）。
+  // 放在引导层而不是模块里：宿主 dispose() 时要能在 VM 还活着的时候调用它。
+  globalThis.__spcDisposeHooks = [];
+  globalThis.__spcRunDisposeHooks = function () {
+    var hooks = globalThis.__spcDisposeHooks;
+    globalThis.__spcDisposeHooks = [];
+    for (var i = 0; i < hooks.length; i++) {
+      try { hooks[i](); } catch (e) { /* 清理失败不影响释放流程 */ }
+    }
+  };
+  // QuickJS **没有** queueMicrotask（实测：TextEncoder/TextDecoder/queueMicrotask/structuredClone 全无，
+  // 见 _audit/quickjs-globals-probe.mjs），而仿真模块要用它（process.nextTick、events 的 rejection 路由）。
+  // 补的是**标准全局**，不是能力——它只能把回调推迟到微任务，拿不到任何宿主资源。
+  // 为什么必须在引导层补而不是各 shim 自己写：shim 是会被构建层内联进插件产物的静态文件，
+  // 它们跑在沙箱里，必须能假定这个标准全局存在。
+  if (typeof globalThis.queueMicrotask !== 'function') {
+    globalThis.queueMicrotask = function (fn) {
+      Promise.resolve().then(fn);
+    };
+  }
 })();
+`;
+
+/**
+ * 沙箱里的 **Node 全局**（在 `BOOTSTRAP` 之后、任何插件代码之前求值一次）。
+ *
+ * 为什么用"求值一段模块"的方式装，而不是宿主侧 `vm.setProp(global, 'process', …)`：
+ * 这些东西的实现在 `node-*.js` 里（仿真模块），而**宿主拿不到沙箱内的对象**——
+ * 只有沙箱自己 `import` 它们才拿得到那份单例（同一份 `process`，钩子与依赖看到的是同一个）。
+ *
+ * `global` 是 Node 的 `globalThis` 别名（老代码常写 `global.X`）；
+ * `TextEncoder`/`TextDecoder`/`URL`/`URLSearchParams` 是 Node 的**标准全局**，
+ * QuickJS 一个都没有（见 `_audit/quickjs-globals-probe.mjs`），所以由仿真模块补上。
+ */
+const GLOBALS_PRELUDE = `
+import process from 'node:process';
+import { Buffer } from 'node:buffer';
+import { URL, URLSearchParams } from 'node:url';
+import { TextEncoder, TextDecoder } from 'node:util';
+globalThis.process = process;
+globalThis.Buffer = Buffer;
+globalThis.URL = URL;
+globalThis.URLSearchParams = URLSearchParams;
+globalThis.TextEncoder = TextEncoder;
+globalThis.TextDecoder = TextDecoder;
+globalThis.global = globalThis;
 `;
 
 /**
@@ -233,14 +301,16 @@ export interface SandboxOptions {
 }
 
 /** 生成 @host/api 的导出清单（模块正文来自 sandbox-modules/host-api.js，按方法组分组） */
-function exportLines(apiKeys: string[]): string {
+function exportLines(api: HostApi): string {
   const groups = new Map<string, string[]>();
-  for (const key of apiKeys) {
+  for (const [key, method] of Object.entries(api)) {
     const idx = key.indexOf('.');
     const g = idx === -1 ? key : key.slice(0, idx);
     if (SELF_IMPLEMENTED_GROUPS.has(g)) continue; // 该组在模块文件里自己实现
     const prop = idx === -1 ? key : key.slice(idx + 1);
-    const wrap = JSON_RESULT_GROUPS.has(g) ? '__json' : '__wrap';
+    // 声明 `binaryResult` 的方法必须用 `__bin`（它按「ArrayBuffer = 数据 / 字符串 = 错误」解包），
+    // 套 `__json` 的话二进制结果会被当成"意外字符串"原样交出去（TypeError 或一串乱码）。
+    const wrap = method.binaryResult ? '__bin' : JSON_RESULT_GROUPS.has(g) ? '__json' : '__wrap';
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g)!.push(`  ${prop}: ${wrap}(globalThis.__host[${JSON.stringify(key)}])`);
   }
@@ -259,9 +329,9 @@ function exportLines(apiKeys: string[]): string {
  *     （CJS 依赖里的 require 无法标记为外部，见 build-layer-evidence §3.2），
  *     所以**不能有随插件而变的占位符**。能力一律运行时从 `globalThis.__host` 取。
  */
-function moduleSource(moduleName: string, apiKeys: string[]): string | null {
+function moduleSource(moduleName: string, api: HostApi): string | null {
   if (moduleName === '@host/api') {
-    return HOST_API_SOURCE.replace(EXPORTS_MARKER, exportLines(apiKeys));
+    return HOST_API_SOURCE.replace(EXPORTS_MARKER, exportLines(api));
   }
   if (isRegistered(moduleName)) {
     return shimSource(normalizeSpecifier(moduleName));
@@ -271,16 +341,18 @@ function moduleSource(moduleName: string, apiKeys: string[]): string | null {
   // 相对 specifier 按"父模块名的目录部分"解析，而我们的模块名是**规范名**
   // （`node:assert/strict`），于是 `./node-assert.js` 会变成 `node:assert/node-assert.js`。
   // 判据因此落在**基名**上：`…/node-<名字>.js` 且该文件确实在 sandbox-modules/ ⇒ 服务它。
+  // 形状判定用 registry 的 `isShimFileName`（命名约定的另一半，别在这里再写一条正则——
+  // 曾经两处不一致：这里只认 `[a-z0-9-]`，而 `node-string_decoder.js` 带着下划线）。
   // 安全性：只有基名参与拼接，`..` / 绝对路径 / 带盘符的名字都拼不出 `node-*.js` 这个形状。
   const base = SHIM_BASENAME.exec(moduleName)?.[1];
-  if (base !== undefined && shimFileExists(base)) {
+  if (base !== undefined && isShimFileName(base) && shimFileExists(base)) {
     return shimSourceForFile(base);
   }
   return null;
 }
 
-/** 只认"基名是本目录下真实存在的 node-*.js"这一种形状（见 moduleSource 的注释） */
-const SHIM_BASENAME = /(?:^|\/)(node-[a-z0-9-]+\.js)$/;
+/** 只从解析后的名字里取出基名（形状判定交给 `isShimFileName`，见 moduleSource 的注释） */
+const SHIM_BASENAME = /(?:^|\/)([^/]+)$/;
 
 /** sandbox-modules/ 下真实存在的文件（readdir 一次 + 缓存）：基名不能凭想象放行 */
 let shimDirFiles: Set<string> | undefined;
@@ -349,6 +421,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     ((level: 'info' | 'warn' | 'error', message: string) => {
       console[level](`[${options.pluginId}] ${message}`);
     });
+  // 插件数据目录只解析一次：`node:os`/`node:process` 的环境事实、以及 ctx 里的 dataDir 都用它
+  // （两处各写一份 `?? process.cwd()` 迟早会漂移）
+  const dataDir = options.facts?.dataDir ?? process.cwd();
 
   // asyncify 变体：宿主 API 可返回 Promise（exec/网络必须异步，见设计结论）
   // 注：quickjs-emscripten@0.32.0 的 asyncify newRuntime 释放顺序有 bug（deleteRuntime 先于
@@ -367,7 +442,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   // ESM 加载器（v0.32 API）：loader 返回模块"源码字符串"
   // 白名单外模块一律拒绝——零环境权力的执行点
   runtime.setModuleLoader((moduleName: string): string => {
-    const src = moduleSource(moduleName, Object.keys(api));
+    const src = moduleSource(moduleName, api);
     if (src === null) {
       // 报错文案要能区分"沙箱尚未支持"与"写错了模块名"——前者是仿真排期问题，
       // 后者是作者笔误，把他引向"去装个包"是误导（build-layer-evidence §4.4-2）。
@@ -533,6 +608,19 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   }
   vm.setProp(vm.global, '__host', hostObj);
 
+  /**
+   * 注入**仿真环境事实**（`node:os` / `node:process` 的数据源）。
+   *
+   * 为什么用 JSON 字符串而不是宿主构造对象：仿真模块必须能被构建层**整文件内联**（静态、无占位符），
+   * 所以它们只能在运行时从全局取数据；给字符串最省事，也不会在类型上骗人（shim 侧 `JSON.parse` 一次）。
+   * 取值规则（哪些固定、哪些用宿主真值、哪些不暴露）见 core/emulated-env.ts 的文件头。
+   *
+   * 注入时机必须是**建沙箱时**：`runModule` 求值的顶层代码就可能 `import 'node:os'`，
+   * 而 ctx 是首次钩子才组装的（惰性）——晚一步就会让装载期读到 undefined。
+   */
+  const envHandle = scope.manage(vm.newString(JSON.stringify(buildEnvFacts(dataDir))));
+  vm.setProp(vm.global, '__spcEnv', envHandle);
+
   // 注入最小 console（QuickJS 沙箱默认无 console）
   const consoleObj = scope.manage(vm.newObject());
   for (const level of ['log', 'error', 'warn', 'info'] as const) {
@@ -566,6 +654,42 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       });
     }
     boot.value.dispose();
+  }
+
+  /**
+   * 沙箱里的 **Node 全局**（`process` / `Buffer` / `global` / `URL` / `TextEncoder` …）。
+   *
+   * 为什么必须有：**真实依赖用的是裸全局，不是 import**。实测（`_audit/dep-smoke.mts`，
+   * 真实 npm 包内联后进真沙箱）：
+   *   · `mkdirp/dist/mjs/path-arg.js` → `process.env.… || process.platform`
+   *   · `mkdirp/dist/mjs/use-native.js` → `process.env.… || process.version`
+   *   · `properties/lib/stringify.js` → `process.platform === "win32" ? "\r\n" : "\n"`
+   * 沙箱里没有 `process` 时，这些包**在装载期就 ReferenceError**（PLUGIN_LOAD_FAILED），
+   * 而它们并不是要什么能力——只是要"Node 保证存在的那个全局"。
+   *
+   * 装的是**仿真模块本身**（不是宿主 process）：`env` 冻结为空、`exit`/`kill` 抛错、
+   * `platform` 固定 linux，所以"零环境权力"这条不变量没被破坏——插件拿到的仍然只是仿真值。
+   * 换句话说：`queueMicrotask` 那类标准全局怎么补，这里就怎么补，只是这几个的实现在 `node-*.js` 里。
+   */
+  {
+    const globals = await vm.evalCodeAsync(GLOBALS_PRELUDE, 'spc-globals.js', { type: 'module' });
+    if (isFail(globals)) {
+      let dumped: unknown;
+      try {
+        dumped = vm.dump(globals.error);
+      } finally {
+        globals.error.dispose();
+      }
+      scope.dispose();
+      vm.dispose();
+      runtime.dispose();
+      throw new SpcError('PLUGIN_LOAD_FAILED', {
+        pluginId: options.pluginId,
+        cause: 'GLOBALS_PRELUDE_FAILED',
+        message: String(dumped),
+      });
+    }
+    globals.value.dispose();
   }
   const ctxFactory = scope.manage(vm.getProp(vm.global, '__spcMakeCtx'));
   const invokeFn = scope.manage(vm.getProp(vm.global, '__spcInvoke'));
@@ -604,7 +728,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     if (ctxHandle) return ctxHandle;
     const facts = options.facts ?? {
       version: { code: 0, name: '0.0.0' },
-      dataDir: process.cwd(),
+      dataDir,
       manifest: {},
       config: {},
     };
@@ -819,16 +943,48 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       // 与钩子同一套做法：设 deadline → 无论成败都在 finally 复位（复位成 Infinity 即"永不触发"）。
       deadline.setDeadline(started + limits.loadTimeoutMs);
       let result;
+      let loadPump: PumpOutcome | undefined;
       try {
         result = await vm.evalCodeAsync(source, 'plugin.js', { type: 'module' });
+        if (isSuccess(result)) {
+          // 命名空间句柄**保留**（钩子从这里取导出），由 Scope 在 dispose 时释放
+          namespace = scope.manage(result.value);
+          // **装载期也要泵 job 队列**：模块顶层的 `await`（TLA 续体）与 `.then()` 都排在 job 队列里，
+          // 不泵就等于**静默丢掉**——实测（本轮 fs 冒烟踩到）：`await Promise.resolve(); console.log('B')`
+          // 里的 B 永远不打印，而 runModule 报的是**成功**。插件把初始化写在顶层 await 后面时，
+          // 表现就是"导出存在但没初始化好"，最难查的那种静默差异。
+          // 泵要放在 finally **之前**：deadline 还armed 着，泵里跑的仍是限了额的插件代码。
+          loadPump = pumpJobs(runtime, started + limits.loadTimeoutMs);
+        }
       } finally {
         deadline.setDeadline(Number.POSITIVE_INFINITY);
         // 顶层代码也能写 kv（装载是独立阶段），同样是落盘边界
         flushHostState();
       }
       if (isSuccess(result)) {
-        // 命名空间句柄**保留**（钩子从这里取导出），由 Scope 在 dispose 时释放
-        namespace = scope.manage(result.value);
+        // **顶层 await（TLA）模块要明确拒绝**，不能装作没事：QuickJS 的 `QTS_Eval_MaybeAsync`
+        // 对带 TLA 的模块返回的是模块的 TLA **promise**，不是命名空间（quickjs-emscripten 的
+        // `evalCodeAsync` 只把 handle 交出来，不解这个 promise）。于是 `namespace` 是个 promise，
+        // 导出全都取不到，调用钩子时报的是 **PLUGIN_NO_ENTRY**——读起来像"你把导出名写错了"，
+        // 而真因是"模块顶层用了 await"。要真正支持它得 pump 到 promise 落地再取结果值（见 HANDOFF）。
+        // （`loaded` 是为了让 TS 收窄：赋值发生在 try 里，跨不过去。）
+        const loaded = namespace;
+        if (loaded !== undefined && isThenableHandle(vm, loaded)) {
+          throw new SpcError('PLUGIN_LOAD_FAILED', {
+            pluginId: options.pluginId,
+            hook: 'load',
+            message:
+              'module uses top-level await, which the sandbox does not support: ' +
+              'put the async initialisation inside the init() hook instead',
+          });
+        }
+        // 与钩子同一套判定：泵失败→按 VM 失败归类；到点没泵完→PLUGIN_JOB_PENDING（§4.4）
+        if (loadPump?.status === 'failed') {
+          throw hookError(options.pluginId, 'load', loadPump.failure);
+        }
+        if (loadPump?.status === 'pending') {
+          throw new SpcError('PLUGIN_JOB_PENDING', { pluginId: options.pluginId, hook: 'load' });
+        }
         // 与钩子同一道**墙钟事后校验**：顶层代码里的宿主同步阻塞（spawnSync）同样让 deadline 失效
         // —— 时间花掉了就必须报 PLUGIN_LOAD_TIMEOUT，不能记成"装载成功"（见 invoke 的同一段注释）。
         const overrunMs = Date.now() - (started + limits.loadTimeoutMs);
@@ -907,7 +1063,19 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     dispose() {
       if (disposed) return; // 幂等：stop 失败路径与正常卸载路径都可能调到这里
       disposed = true;
-      // 卸载前把待落盘状态（kv）写下去：合并写之后，这是"不丢数据"的最后一道保证
+      // ① 先跑沙箱内的卸载钩子（`process.on('exit')` 的落点）——**必须在 flush 之前**：
+      //    监听器里可能还要写 kv，那笔写在 flush 之后就丢了。
+      try {
+        const runHooks = vm.getProp(vm.global, '__spcRunDisposeHooks');
+        try {
+          if (vm.typeof(runHooks) === 'function') vm.callFunction(runHooks, vm.undefined);
+        } finally {
+          runHooks.dispose();
+        }
+      } catch {
+        // 卸载路径吞掉异常：钩子只服务于"清理"，不该阻塞句柄释放（放进日志会需要 logger，得不偿失）
+      }
+      // ② 卸载前把待落盘状态（kv）写下去：合并写之后，这是"不丢数据"的最后一道保证
       flushHostState();
       for (const handle of timers.values()) clearInterval(handle);
       timers.clear();

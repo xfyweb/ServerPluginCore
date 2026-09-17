@@ -66,6 +66,27 @@ const PRESETS = {
   p2c: ['path', 'util', 'events', 'assert', 'url', 'tty', 'constants', 'fs', 'fs/promises', 'process', 'os', 'buffer', 'crypto'],
 };
 
+/**
+ * 追加一档 `current` = **真实登记表**（`core/sandbox-modules/registry.ts`），
+ * 而不是靠人维护预设——否则"我们做到哪一档了"永远要靠手工拼 `--emulated` 列表猜。
+ *
+ * 之所以能直接 import `.ts`：Node ≥22.18 默认剥离类型（本项目用的是 v24）。老版本 Node 上
+ * 这一档会缺席，工具继续跑（只在 stderr 提示一句），不让"量不了当前进度"变成跑不了工具。
+ */
+try {
+  const { SANDBOX_MODULES } = await import('../core/sandbox-modules/registry.ts');
+  PRESETS.current = SANDBOX_MODULES.map((m) => m.canonical);
+  // 重排键序（覆盖度表按插入顺序算增量）：none → current → p2a → p2a+ → p2b → p2c
+  for (const k of ['none', 'current', 'p2a', 'p2a+', 'p2b', 'p2c']) {
+    if (!(k in PRESETS)) continue;
+    const v = PRESETS[k];
+    delete PRESETS[k];
+    PRESETS[k] = v;
+  }
+} catch (err) {
+  console.error(`（跳过 current 档：本机 Node 无法直接 import registry.ts — ${err?.code ?? err?.message}）`);
+}
+
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const value = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
@@ -316,16 +337,54 @@ console.log(`\n补模块也救不了（动态 require）：${dynOnly.map((r) => 
 
 // ── 功能需求面：缺哪个模块 ≠ 缺多少功能 ──
 // "需求面"只说有多少包引用它；这里回答"它们实际访问了它的哪些属性"——那才是要实现的量。
+//
+// ⚠️ **必须去噪**：`modulePropUse` 是用"绑定名 + `.属性`"的正则抽的，在**大 CJS 包里绑定名会撞名**，
+// 于是把无关标识符算到该模块名下。实测（2026-09）：`systeminformation` 一个包就"贡献"了 54 个
+// `util` 属性，其中 `isRaspberry` / `decodePiCpuinfo` / `powerShell` / `getValue` / `js` 全是
+// **它自己的内部函数名**；`dockerode` 更夸张（74 个，含 `processArgs` / `Long` / `asPromise`）。
+// 不去噪的后果很实际：规划会照着 61 这个数去设计实现范围，而真实需求只有 inspect/deprecate/format。
+//
+// 去噪判据：属性名必须**真的存在**于宿主该内建的属性集合里（own + 原型）。这不会误杀真实需求
+// （真实需求一定是那个模块上存在的名字），且被过滤的名字**照原样打印出来**，不静默丢信息。
+const BUILTIN_SHAPE = new Map(); // mod → Set(真实属性名) | null（拿不到就不筛）
+async function builtinShape(mod) {
+  if (!BUILTIN_SHAPE.has(mod)) {
+    let shape = null;
+    try {
+      const m = await import(`node:${mod}`);
+      shape = new Set([
+        ...Object.getOwnPropertyNames(m),
+        ...Object.getOwnPropertyNames(Object.getPrototypeOf(m) ?? {}),
+        'default',
+      ]);
+    } catch {
+      shape = null; // 拿不到就不筛（宁可多列，不可误杀）
+    }
+    BUILTIN_SHAPE.set(mod, shape);
+  }
+  return BUILTIN_SHAPE.get(mod);
+}
+
 const propAgg = new Map();
+const propNoise = new Map();
 for (const r of built) {
   for (const [mod, props] of r.propUse ?? []) {
     // 只列**真卡点**：内建且未仿真。非内建的解析不到的 specifier 会被自动 stub，不属此列
     if (!BUILTINS.has(mod) || base.has(mod)) continue;
+    const shape = await builtinShape(mod);
     if (!propAgg.has(mod)) propAgg.set(mod, new Map());
-    for (const p of props) propAgg.get(mod).set(p, (propAgg.get(mod).get(p) ?? 0) + 1);
+    for (const p of props) {
+      if (shape && !shape.has(p)) {
+        // 疑似撞名误报：不计入需求，但留档
+        if (!propNoise.has(mod)) propNoise.set(mod, new Set());
+        propNoise.get(mod).add(p);
+        continue;
+      }
+      propAgg.get(mod).set(p, (propAgg.get(mod).get(p) ?? 0) + 1);
+    }
   }
 }
-console.log(`\n== 未仿真模块的"真实功能需求" ==（产物里对这些模块实际访问了哪些属性）\n`);
+console.log(`\n== 未仿真模块的"真实功能需求" ==（产物里对这些模块实际访问了哪些属性；已按"该内建真有这个属性"去噪）\n`);
 const ranked = [...propAgg.entries()].sort((a, b) => b[1].size - a[1].size);
 if (!ranked.length) {
   console.log('  （没有检测到属性访问——可能这些引用只出现在未被静态解析的分支里）');
@@ -333,10 +392,20 @@ if (!ranked.length) {
   for (const [mod, props] of ranked) {
     const list = [...props.entries()].sort((a, b) => b[1] - a[1]).map(([p, n]) => (n > 1 ? `${p}×${n}` : p));
     const head = list.slice(0, 14).join(' ');
-    console.log(`  ${pad(mod, 20)} ${String(props.size).padStart(2)} 个属性  ${head}${list.length > 14 ? ` …(+${list.length - 14})` : ''}`);
+    const noise = propNoise.get(mod);
+    console.log(
+      `  ${pad(mod, 20)} ${String(props.size).padStart(2)} 个属性  ${head}${list.length > 14 ? ` …(+${list.length - 14})` : ''}` +
+        (noise ? `   〔已滤除 ${noise.size} 个撞名误报〕` : ''),
+    );
   }
   console.log('\n  读法：属性数才是"要写多少代码"的量级；只有 1–3 个属性的模块，门槛可能远低于需求面暗示的。');
   console.log('  ⚠️ 这是**静态上限**：产物里出现过不等于运行期会执行到。真实验收仍以跑通为准。');
+  if (propNoise.size) {
+    console.log('  被滤除的撞名误报（供人工复核，取属性数最多的几个模块）：');
+    for (const [mod, noise] of [...propNoise.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 4)) {
+      console.log(`    ${pad(mod, 20)} ${[...noise].slice(0, 10).join(' ')}${noise.size > 10 ? ` …(+${noise.size - 10})` : ''}`);
+    }
+  }
 }
 
 if (asJson) {

@@ -51,16 +51,134 @@ declare module '@host/api' {
     isDirectory: boolean;
     mtimeMs: number;
   }
+  /** `fs.statFull` 的全字段结果（日期是 ISO 字符串：桥只过 JSON） */
+  export interface StatFullResult {
+    path: string;
+    kind: 'file' | 'dir' | 'symlink' | 'block' | 'char' | 'fifo' | 'socket' | 'unknown';
+    size: number;
+    mode: number;
+    dev: number;
+    ino: number;
+    nlink: number;
+    uid: number;
+    gid: number;
+    rdev: number;
+    blksize: number;
+    blocks: number;
+    atimeMs: number;
+    mtimeMs: number;
+    ctimeMs: number;
+    birthtimeMs: number;
+    atime: string;
+    mtime: string;
+    ctime: string;
+    birthtime: string;
+  }
+  export interface DirEntryInfo {
+    name: string;
+    kind: StatFullResult['kind'];
+  }
+  export interface ReaddirResult {
+    path: string;
+    entries: DirEntryInfo[];
+  }
+  export interface PathResult {
+    path: string;
+  }
+  export interface OkResult {
+    ok: boolean;
+    path: string;
+  }
+  export interface WriteBytesResult extends OkResult {
+    bytes: number;
+  }
+  export interface RemoveResult {
+    path: string;
+    /** false = 本来就不存在（`{force:true}` 时不报错） */
+    removed: boolean;
+  }
+  export interface MkdirResult extends PathResult {
+    /** recursive 下 Node 给"第一个被创建的目录"；已存在时为 null */
+    created: string | null;
+  }
+  export interface RenameResult {
+    from: string;
+    to: string;
+  }
+  export interface CopyFileResult extends RenameResult {
+    bytes: number;
+  }
 
   export const fs: {
     /** 读文件（上限 1MB：更大的内容进不了 32MiB 的沙箱堆） */
     read(path: string): ReadResult;
-    /** 写文件（相对路径按数据目录解析；越界 → PATH_OUT_OF_SCOPE） */
+    /** 写文件（相对路径按数据目录解析；越界 → PATH_OUT_OF_SCOPE）。**唯一会补建父目录的写入口**（Node 的 `writeFileSync` 不补） */
     write(path: string, content: string): WriteResult;
     /** 列目录（最多 1000 条，超出时 truncated=true） */
     list(path: string): ListResult;
     /** 取文件/目录属性 */
     stat(path: string): StatResult;
+
+    // ---- 以下原语服务 `node:fs` 仿真（同样走权限点与审计；不做 Node 的 API 形状）----
+    /** 读原始字节（**二进制通道**：返回 `Uint8Array`；上限 1MB） */
+    readBytes(path: string): Uint8Array;
+    /** 写原始字节；`opts` 是 JSON 文本 `{"append"?:boolean,"exclusive"?:boolean}`。**不补建父目录**（Node 语义） */
+    writeBytes(path: string, data: Uint8Array | ArrayBuffer, opts?: string): WriteBytesResult;
+    /** 全字段属性；`follow='false'` 等价于 lstat（但路径收敛仍会解析软链，见 module-emulation-design §9） */
+    statFull(path: string, follow?: string): StatFullResult;
+    /** 列目录（含类型；上限 10000 条，超限 `ENTRY_LIMIT_EXCEEDED`） */
+    readdirEntries(path: string): ReaddirResult;
+    /** 建目录；`opts` 是 JSON 文本 `{"recursive"?:boolean,"mode"?:number}` */
+    mkdir(path: string, opts?: string): MkdirResult;
+    /** 建随机名临时目录（宿主 CSPRNG 起名）；`prefix` 所在目录必须已存在 */
+    mkdtemp(prefix: string): PathResult;
+    /** 删除；`opts` 是 JSON 文本 `{"recursive"?:boolean,"force"?:boolean}`；目录必须显式 recursive */
+    rm(path: string, opts?: string): RemoveResult;
+    /** 删**空**目录（非空 → ENOTEMPTY，不是目录 → ENOTDIR；与 rm 的语义刻意不同） */
+    rmdir(path: string): RemoveResult;
+    /** 改名 / 移动（目标父目录必须已存在） */
+    rename(from: string, to: string): RenameResult;
+    /** 拷贝；`opts` 是 JSON 文本 `{"exclusive"?:boolean}`（对应 `COPYFILE_EXCL`） */
+    copyFile(from: string, to: string, opts?: string): CopyFileResult;
+    /** 规范化真实路径（不存在的路径 → ENOENT，与 Node 一致） */
+    realpath(path: string): PathResult;
+    /** 可访问性检查；`mode` 是 `F_OK`/`R_OK`/`W_OK`/`X_OK` 的数字（缺省 `F_OK`） */
+    access(path: string, mode?: string): OkResult;
+  };
+
+  // ---- url：WHATWG URL 解析与百分号编码的宿主代工（对象身份在 node:url 里）----
+  export interface UrlSnapshot {
+    href: string;
+    origin: string;
+    protocol: string;
+    username: string;
+    password: string;
+    host: string;
+    hostname: string;
+    port: string;
+    pathname: string;
+    search: string;
+    hash: string;
+    params: [string, string][];
+  }
+
+  export const url: {
+    /** 解析（等价 `new URL(input, base)`）；非法 → `ERR_INVALID_URL` */
+    resolveHref(input: string, base?: string): UrlSnapshot;
+    /**
+     * 给已解析的 href 的某个部件赋值，返回新快照。
+     * `part` ∈ href/protocol/username/password/host/hostname/port/pathname/search/hash；
+     * 非法值照 WHATWG **静默忽略**（不抛错）。
+     */
+    setPart(href: string, part: string, value: string): UrlSnapshot;
+    /** 解析查询串 → `[k, v]` 数组（`+` 解成空格、百分号解码照规范） */
+    paramsParse(text: string): [string, string][];
+    /** `[k, v]` 数组（JSON 文本）→ 查询串（`application/x-www-form-urlencoded` 序列化） */
+    paramsStringify(pairsJson: string): string;
+    /** 域名 → punycode（IDNA） */
+    domainToASCII(domain: string): string;
+    /** punycode → 域名 */
+    domainToUnicode(domain: string): string;
   };
 
   // ---- kv：插件作用域持久化存储（落 <dataDir>/kv.json）----

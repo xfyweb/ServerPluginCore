@@ -5,21 +5,31 @@
 // 所以不能再是一个模块级单例。装载器用 `buildHostApi(hostCtx)` 为每个插件造一份；
 // `hostApi`（模块级默认实例）只留给单测与独立探测，装载路径不得使用。
 import {
+  accessSync,
   closeSync,
+  copyFileSync,
+  constants as FS_CONSTANTS,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
+  rmdirSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import type { Dirent, Stats } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { domainToASCII, domainToUnicode } from 'node:url';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { SpcError, toErrorShape } from './errors';
 import { assertInodeMatch, validatePath } from './fs/safe-path';
+import type { PathValidation } from './fs/safe-path';
 import type { HostApi, HostArg, SandboxBridge } from './sandbox';
 import { ensureDir } from './config';
 import { VERSION } from './version';
@@ -38,6 +48,14 @@ const MAX_FILE_BYTES = 64 * 1024 * 1024; // 64MB：写入上限
  */
 const MAX_READ_BYTES = 1024 * 1024; // 1MB
 const MAX_LIST_ENTRIES = 1000;
+/**
+ * `readdir`（仿真层）的条目上限。比 `fs.list` 宽得多，因为它是**目录遍历**的通用入口
+ * （依赖常拿它扫一个大目录），但仍然是硬的：条目在宿主侧变成一个 JSON 数组再进 32 MiB 的沙箱堆，
+ * 十万级条目足以把 VM 撑爆，而报出来的是 PLUGIN_MEMORY_LIMIT（误导，同 MAX_READ_BYTES 的理由）。
+ */
+const MAX_ENTRIES = 10_000;
+/** mkdtemp 的碰撞重试次数（目录名随机 12 位十六进制，理论上一次就中） */
+const MAX_MKDTEMP_TRIES = 10;
 const MAX_KV_KEYS = 1000;
 const MAX_KV_VALUE_BYTES = 256 * 1024;
 /**
@@ -107,14 +125,14 @@ function resolvePluginPath(dataDir: string, p: string): string {
 }
 
 /**
- * 为 `fs.write` 补建缺失的父目录 —— **仅当最近的已存在祖先的 realpath 落在数据目录内**。
+ * 最近的**已存在祖先**的真实路径必须在数据目录内——`fs.write` 补建父目录与 `fs.mkdir -r`
+ * 共用这一条判据。
  *
- * 为什么要它：没有这一步，插件就写不了 `backups/2026-09-18/x.tar`（validatePath 的 F6 会报
- * PARENT_MISSING），而"按日期分目录"是最基本的使用方式。而又不能无条件 mkdir：
- * F6 的本意是"父目录也可能是逃逸通道"，所以这里先确认祖先真实路径在数据目录内，建完**再走一遍
- * 完整校验**（软链逐级检查、inode 预检一个都不少）。
+ * 为什么不能无条件 mkdir：F6 的本意是"父目录也可能是逃逸通道"，所以补建之前先确认祖先
+ * （沿 `..` 向上找到的第一个真实存在的目录）的 realpath 落在数据目录里；校验完**调用方必须
+ * 再走一遍完整 validatePath**（软链逐级检查、inode 预检一个都不少）。
  */
-function ensureParentInsideDataDir(target: string, dataDir: string): void {
+function assertAncestorInside(target: string, dataDir: string): string {
   const root = realpathSync(dataDir);
   const parent = dirname(target);
   let probe = parent;
@@ -128,8 +146,179 @@ function ensureParentInsideDataDir(target: string, dataDir: string): void {
   if (real !== root && !real.startsWith(prefix)) {
     throw new SpcError('PARENT_ESCAPE', { path: parent });
   }
-  mkdirSync(parent, { recursive: true });
+  return parent;
 }
+
+/**
+ * 为写入补建缺失的父目录 —— **仅当最近的已存在祖先的 realpath 落在数据目录内**。
+ *
+ * 为什么要它：没有这一步，插件就写不了 `backups/2026-09-18/x.tar`（validatePath 的 F6 会报
+ * PARENT_MISSING），而"按日期分目录"是最基本的使用方式。
+ */
+function ensureParentInsideDataDir(target: string, dataDir: string): void {
+  mkdirSync(assertAncestorInside(target, dataDir), { recursive: true });
+}
+
+/** 从目标往上找到**最靠上的缺失目录**（= Node `mkdir -r` 的返回值：第一个被创建的目录） */
+function firstMissingAncestor(target: string): string {
+  let probe = target;
+  while (!existsSync(probe)) {
+    const up = dirname(probe);
+    if (up === probe) return probe;
+    probe = up;
+  }
+  // 循环结束时 probe 是已存在的那个；它下面一级就是第一个要创建的目录
+  const child = target.slice(probe.length).split(sep).filter(Boolean)[0];
+  return child === undefined ? probe : join(probe, child);
+}
+
+/**
+ * 写目标的解析（**只有 `@host/api` 的 `fs.write` 用它**）：父目录缺失时按上式补建，
+ * 其余错误原样抛（不把安全性错误悄悄降级成"帮你建一下"）。
+ * 仿真层（`node:fs`）刻意不走这条：Node 的 `writeFileSync('a/b/c')` 在父目录缺失时就是 ENOENT。
+ */
+function resolveWriteTarget(dataDir: string, requested: string): PathValidation {
+  try {
+    return validatePath(requested, [dataDir]);
+  } catch (err) {
+    if (toErrorShape(err)?.code !== 'PARENT_MISSING') throw err;
+    ensureParentInsideDataDir(requested, dataDir);
+    return validatePath(requested, [dataDir]);
+  }
+}
+
+/**
+ * 打开 + inode 比对（F5 TOCTOU）+ 写入。
+ * `exclusive` 用 `wx`/`ax`（Node 的 `flag: 'wx'` 语义：已存在即 EEXIST）。
+ */
+function writeVerified(
+  resolved: PathValidation,
+  data: string | Uint8Array,
+  opts: { append?: boolean; exclusive?: boolean; encoding?: BufferEncoding } = {},
+): void {
+  const flags = opts.exclusive ? (opts.append ? 'ax' : 'wx') : opts.append ? 'a' : 'w';
+  const fd = openSync(resolved.path, flags);
+  try {
+    if (resolved.expected) {
+      const st = fstatSync(fd);
+      assertInodeMatch({ dev: st.dev, ino: st.ino }, resolved.expected);
+    }
+    if (typeof data === 'string') writeFileSync(fd, data, opts.encoding ?? 'utf8');
+    else writeFileSync(fd, data);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** 仿真层的 options 参数：JSON 文本（`undefined` = 没传）。形状不对一律 INVALID_ARGS，不猜 */
+function parseOptsJson(raw: HostArg | undefined): Record<string, unknown> {
+  if (raw === undefined) return {};
+  if (typeof raw !== 'string') {
+    throw new SpcError('INVALID_ARGS', { reason: 'expected-json-options', got: 'bytes' });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SpcError('INVALID_ARGS', { reason: 'options-not-json' });
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new SpcError('INVALID_ARGS', { reason: 'options-not-object' });
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** 读路径收敛（读类方法共用）：只回安全路径，存在性/类型由各方法自己判 */
+function resolveReadTarget(dataDir: string, p: string): string {
+  return validatePath(resolvePluginPath(dataDir, p), [dataDir]).path;
+}
+
+/** 文件类型（Dirent/Stats 共用的那一套判定，`UV_DIRENT_*` 的名字） */
+export type EntryKind = 'file' | 'dir' | 'symlink' | 'block' | 'char' | 'fifo' | 'socket' | 'unknown';
+
+function kindOf(st: Stats | Dirent): EntryKind {
+  if (st.isFile()) return 'file';
+  if (st.isDirectory()) return 'dir';
+  if (st.isSymbolicLink()) return 'symlink';
+  if (st.isBlockDevice()) return 'block';
+  if (st.isCharacterDevice()) return 'char';
+  if (st.isFIFO()) return 'fifo';
+  if (st.isSocket()) return 'socket';
+  return 'unknown';
+}
+
+/**
+ * stat 的**全字段**快照（JSON 友好：Date 一律转 ISO 字符串）。
+ * 为什么给全量而不是够用的几个字段：`Stats` 是依赖常读的形状（`stats.mode & 0o777`、
+ * `stats.ino` 做缓存键），少一个字段就会变成 `undefined` 参与运算——静默错值比缺方法危险。
+ */
+function statFields(st: Stats): Record<string, unknown> {
+  return {
+    kind: kindOf(st),
+    size: st.size,
+    mode: st.mode,
+    dev: st.dev,
+    ino: st.ino,
+    nlink: st.nlink,
+    uid: st.uid,
+    gid: st.gid,
+    rdev: st.rdev,
+    blksize: st.blksize,
+    blocks: st.blocks,
+    atimeMs: st.atimeMs,
+    mtimeMs: st.mtimeMs,
+    ctimeMs: st.ctimeMs,
+    birthtimeMs: st.birthtimeMs,
+    atime: st.atime.toISOString(),
+    mtime: st.mtime.toISOString(),
+    ctime: st.ctime.toISOString(),
+    birthtime: st.birthtime.toISOString(),
+  };
+}
+
+/**
+ * WHATWG `URL` 的**全量快照**（宿主解析一次，对象形状在沙箱里组装）。
+ * `params` 是 `[k, v]` 数组：桥只认 JSON，Map/迭代器过不去（§3.2.1 阻断 1）。
+ */
+function urlSnapshot(u: URL): Record<string, unknown> {
+  return {
+    href: u.href,
+    origin: u.origin,
+    protocol: u.protocol,
+    username: u.username,
+    password: u.password,
+    host: u.host,
+    hostname: u.hostname,
+    port: u.port,
+    pathname: u.pathname,
+    search: u.search,
+    hash: u.hash,
+    params: [...u.searchParams].map(([k, v]) => [k, v]),
+  };
+}
+
+/** href 解析成宿主 URL；失败一律 ERR_INVALID_URL（沙箱侧还原成 Node 的 TypeError） */
+function parseUrl(href: string, base?: string): URL {
+  try {
+    return base === undefined ? new URL(href) : new URL(href, base);
+  } catch {
+    throw new SpcError('ERR_INVALID_URL', { input: href });
+  }
+}
+
+/** WHATWG URL 上**允许赋值**的部件（白名单：不给插件借 `u[name] = …` 摸到原型链） */
+const URL_SETTERS = new Set([
+  'href',
+  'protocol',
+  'username',
+  'password',
+  'host',
+  'hostname',
+  'port',
+  'pathname',
+  'search',
+  'hash',
+]);
 
 /**
  * kv：每个插件一个 `<dataDir>/kv.json`。
@@ -259,18 +448,8 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     'fs.write': {
       permission: 'fs.write.data',
       fn: (path: string, content: string) => {
-        const requested = resolvePluginPath(ctx.dataDir, path);
-        let resolved;
-        try {
-          resolved = validatePath(requested, [ctx.dataDir]);
-        } catch (err) {
-          // 只对"父目录不存在"这一种情况补建目录（且必须确实在自己的数据目录内），
-          // 其余一律原样抛出——不把安全性错误悄悄降级成"帮你建一下"。
-          if (toErrorShape(err)?.code !== 'PARENT_MISSING') throw err;
-          ensureParentInsideDataDir(requested, ctx.dataDir);
-          resolved = validatePath(requested, [ctx.dataDir]);
-        }
-        const { path: safe, expected } = resolved;
+        const resolved = resolveWriteTarget(ctx.dataDir, resolvePluginPath(ctx.dataDir, path));
+        const { path: safe } = resolved;
 
         // 大小限制（F4）：内容长度 + 目标文件现有大小
         const bytes = Buffer.byteLength(content);
@@ -282,16 +461,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         }
 
         // 打开 + inode 比对（F5 TOCTOU）+ 写入
-        const fd = openSync(safe, 'w');
-        try {
-          if (expected) {
-            const st = fstatSync(fd);
-            assertInodeMatch({ dev: st.dev, ino: st.ino }, expected);
-          }
-          writeFileSync(fd, content, 'utf8');
-        } finally {
-          closeSync(fd);
-        }
+        writeVerified(resolved, content);
         return { ok: true, path: safe, bytes };
       },
     },
@@ -354,6 +524,279 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       },
     },
 
+    // ---- fs：`node:fs` / `node:fs/promises` 仿真层用的**原语** ----
+    //
+    // 分工（module-emulation-design §3.2.1）：**真实动作在宿主（这里是唯一能做系统调用的地方），
+    // 形状外壳在沙箱**（node-fs.js 负责解析 options、造 Stats/Dirent、翻译 errno）。
+    // 所以这组方法刻意**不做 Node 的 API 形状**：不解析 options、不造对象、不翻译错误码，
+    // 参数与返回值都是桥能直接过的朴素形状（字符串 / 字节 / JSON）。
+    // 上面那四个（read/write/list/stat）是 `@host/api` 的老能力面，契约已发布，保持原样。
+
+    'fs.readBytes': {
+      permission: 'fs.read.data',
+      // 二进制通道：返回 ArrayBuffer（失败仍是字符串错误信封），见 sandbox.ts 的「ArrayBuffer = 数据」
+      binaryResult: true,
+      fn: (path: string) => {
+        const safe = resolveReadTarget(ctx.dataDir, path);
+        const st = statSync(safe);
+        if (!st.isFile()) throw new SpcError('NOT_A_FILE', { path: safe });
+        if (st.size > MAX_READ_BYTES) {
+          throw new SpcError('FILE_TOO_LARGE', { bytes: String(st.size), limit: String(MAX_READ_BYTES) });
+        }
+        return readFileSync(safe);
+      },
+    },
+
+    'fs.readText': {
+      permission: 'fs.read.data',
+      // 为什么单独有一个"读文本"原语（而不是让仿真层拿字节自己解码）：
+      // 解码要过 `bytes.decode` 权限点，那会让"用 node:fs 读一个文本文件"额外依赖 `bytes.*` 声明——
+      // 而设计 §6 的映射表写的是 `fs.readFile → fs.read.data`。**仿真模块不得引入新的权限语义**，
+      // 所以编码这一步跟读取一起放在宿主这一个方法里（顺带少一次跨界）。
+      fn: (path: string, encodingJson?: HostArg) => {
+        const enc = assertEncoding(encodingJson);
+        const safe = resolveReadTarget(ctx.dataDir, path);
+        const st = statSync(safe);
+        if (!st.isFile()) throw new SpcError('NOT_A_FILE', { path: safe });
+        if (st.size > MAX_READ_BYTES) {
+          throw new SpcError('FILE_TOO_LARGE', { bytes: String(st.size), limit: String(MAX_READ_BYTES) });
+        }
+        const content = readFileSync(safe, enc);
+        return { path: safe, content, bytes: Buffer.byteLength(content, enc) };
+      },
+    },
+
+    'fs.writeText': {
+      permission: 'fs.write.data',
+      fn: (path: string, text: string, optsJson?: HostArg) => {
+        const opts = parseOptsJson(optsJson);
+        const enc = assertEncoding(typeof opts.encoding === 'string' ? opts.encoding : undefined);
+        // 同 `fs.writeBytes`：不补建父目录（Node 的语义就是 ENOENT）
+        const resolved = validatePath(resolvePluginPath(ctx.dataDir, path), [ctx.dataDir]);
+        const bytes = Buffer.byteLength(text, enc);
+        if (bytes > MAX_FILE_BYTES) {
+          throw new SpcError('FILE_TOO_LARGE', { bytes: String(bytes), limit: String(MAX_FILE_BYTES) });
+        }
+        const { path: safe } = resolved;
+        if (existsSync(safe) && statSync(safe).size > MAX_FILE_BYTES) {
+          throw new SpcError('TARGET_TOO_LARGE', { path: safe, limit: String(MAX_FILE_BYTES) });
+        }
+        writeVerified(resolved, text, {
+          append: opts.append === true,
+          exclusive: opts.exclusive === true,
+          encoding: enc,
+        });
+        return { ok: true, path: safe, bytes };
+      },
+    },
+
+    'fs.writeBytes': {
+      permission: 'fs.write.data',
+      fn: (path: string, data: HostArg, optsJson?: HostArg) => {
+        const opts = parseOptsJson(optsJson);
+        // **不补建父目录**（与上面 `fs.write` 的能力面刻意不同）：这里服务的是 `node:fs` 仿真，
+        // Node 的 `writeFileSync('a/b/c')` 在 `a/b` 不存在时就是 ENOENT —— 差一个 errno，
+        // 依赖的分支就走岔了（"Node 是契约宗主"）。
+        const resolved = validatePath(resolvePluginPath(ctx.dataDir, path), [ctx.dataDir]);
+        const { path: safe } = resolved;
+        const bytes = asBuffer(data);
+        if (bytes.byteLength > MAX_FILE_BYTES) {
+          throw new SpcError('FILE_TOO_LARGE', {
+            bytes: String(bytes.byteLength),
+            limit: String(MAX_FILE_BYTES),
+          });
+        }
+        if (existsSync(safe) && statSync(safe).size > MAX_FILE_BYTES) {
+          throw new SpcError('TARGET_TOO_LARGE', { path: safe, limit: String(MAX_FILE_BYTES) });
+        }
+        writeVerified(resolved, bytes, {
+          append: opts.append === true,
+          exclusive: opts.exclusive === true,
+        });
+        return { ok: true, path: safe, bytes: bytes.byteLength };
+      },
+    },
+
+    'fs.statFull': {
+      permission: 'fs.read.data',
+      fn: (path: string, followJson?: HostArg) => {
+        // `follow=false` 走 lstat。⚠️ **诚实说明**：路径收敛（F2/F5）在 stat 之前就把软链解析成了目标，
+        // 所以当前 `follow=false` 与 `true` 的结果**是一样的**（`lstatSync` 因此认不出软链，见
+        // node-fs.js 的已知边界 2）。参数留着是为了将来在 safe-path 里加"不解析最后一段"的通道时
+        // 不必改契约；现在写它只是把"要 lstat 的意图"传下来，不是已经实现了精确 lstat。
+        const follow = followJson === undefined ? true : String(followJson) !== 'false';
+        const safe = resolveReadTarget(ctx.dataDir, path);
+        const st = follow ? statSync(safe) : lstatSync(safe);
+        return { path: safe, ...statFields(st) };
+      },
+    },
+
+    'fs.readdirEntries': {
+      permission: 'fs.read.data',
+      fn: (path: string) => {
+        const safe = resolveReadTarget(ctx.dataDir, path);
+        const st = statSync(safe);
+        if (!st.isDirectory()) throw new SpcError('NOT_A_DIRECTORY', { path: safe });
+        const entries = readdirSync(safe, { withFileTypes: true });
+        if (entries.length > MAX_ENTRIES) {
+          throw new SpcError('ENTRY_LIMIT_EXCEEDED', {
+            path: safe,
+            count: String(entries.length),
+            limit: String(MAX_ENTRIES),
+          });
+        }
+        // 不查 size：Node 的 `readdir(withFileTypes)` 也不给 size，而每条一次 stat 会让
+        // 大目录遍历变成 N 次系统调用（Windows 上尤其慢）。要 size 的走 stat/statFull。
+        return { path: safe, entries: entries.map((e) => ({ name: e.name, kind: kindOf(e) })) };
+      },
+    },
+
+    'fs.mkdir': {
+      permission: 'fs.write.data',
+      fn: (path: string, optsJson?: HostArg) => {
+        const opts = parseOptsJson(optsJson);
+        const requested = resolvePluginPath(ctx.dataDir, path);
+        const mode = typeof opts.mode === 'number' ? opts.mode : undefined;
+        if (opts.recursive !== true) {
+          // 非递归：父目录必须存在（F6）——缺失时是 **PARENT_MISSING**，仿真层翻成 Node 的 ENOENT
+          const { path: safe } = validatePath(requested, [ctx.dataDir]);
+          if (existsSync(safe)) throw new SpcError('ALREADY_EXISTS', { path: safe });
+          mkdirSync(safe, { mode });
+          return { path: safe, created: safe };
+        }
+        let resolved: PathValidation;
+        try {
+          resolved = validatePath(requested, [ctx.dataDir]);
+        } catch (err) {
+          // 整条父链都可能不存在。按 fs.write 的同一判据补建，但返回值要照 Node：
+          // **第一个被创建的目录**（不是最终目录）——`mkdirp` 一类依赖会用它做后续拼接。
+          if (toErrorShape(err)?.code !== 'PARENT_MISSING') throw err;
+          const first = firstMissingAncestor(requested);
+          assertAncestorInside(first, ctx.dataDir);
+          // ⚠️ 要建的是**整条链到目标**，不是只建 `first`：`first` 只用于返回值（Node 给的
+          // "第一个被创建的目录"），只建它的话中间层仍然缺失，紧随其后的 validatePath 又会在
+          // F6 上炸（实测踩到过：`mkdir -r a/b/c` 报 PARENT_MISSING）。
+          mkdirSync(requested, { recursive: true, mode });
+          return { path: validatePath(requested, [ctx.dataDir]).path, created: first };
+        }
+        const { path: safe } = resolved;
+        if (existsSync(safe)) {
+          // 已存在：是目录就静默成功（Node 的 recursive 语义），是文件/软链才是 EEXIST
+          if (!statSync(safe).isDirectory()) throw new SpcError('ALREADY_EXISTS', { path: safe });
+          return { path: safe, created: null };
+        }
+        mkdirSync(safe, { recursive: true, mode });
+        return { path: safe, created: safe };
+      },
+    },
+
+    'fs.mkdtemp': {
+      permission: 'fs.write.data',
+      fn: (prefix: string) => {
+        // 同 `fs.writeBytes`：不补建父目录（Node 的 `mkdtempSync('/no/such/p-')` 是 ENOENT）
+        const { path: safe } = validatePath(resolvePluginPath(ctx.dataDir, prefix), [ctx.dataDir]);
+        // 随机后缀用宿主 CSPRNG：可预测的临时目录名是老牌漏洞（Node 自己也用随机名）
+        for (let i = 0; i < MAX_MKDTEMP_TRIES; i += 1) {
+          const suffix = randomBytes(6).toString('hex');
+          const candidate = safe + suffix;
+          try {
+            mkdirSync(candidate);
+            // 后缀也回给仿真层：Node 的 `mkdtempSync('t-')` 返回的是**调用方那个前缀 + 后缀**
+            // （WSL 实测：相对前缀回相对形式），所以还原要靠拼接，不能把绝对路径裁一段
+            // （裁出来的是宿主分隔符，调用方写的是 `/` 就对不上了）。
+            return { path: candidate, suffix };
+          } catch (err) {
+            if (toErrorShape(err)?.code !== 'EEXIST') throw err;
+          }
+        }
+        throw new SpcError('ALREADY_EXISTS', { path: safe });
+      },
+    },
+
+    'fs.rm': {
+      permission: 'fs.write.data',
+      fn: (path: string, optsJson?: HostArg) => {
+        const opts = parseOptsJson(optsJson);
+        const { path: safe } = validatePath(resolvePluginPath(ctx.dataDir, path), [ctx.dataDir]);
+        if (!existsSync(safe)) {
+          if (opts.force === true) return { path: safe, removed: false };
+          throw new SpcError('NOT_FOUND', { path: safe });
+        }
+        // 目录必须显式 recursive —— Node 的 `rmSync(目录)` 不给 recursive 也是错的（ERR_FS_EISDIR），
+        // 仿真层据此造出 Node 那个 SystemError 形状。
+        if (lstatSync(safe).isDirectory() && opts.recursive !== true) {
+          throw new SpcError('IS_A_DIRECTORY', { path: safe });
+        }
+        rmSync(safe, { recursive: opts.recursive === true, force: opts.force === true });
+        return { path: safe, removed: true };
+      },
+    },
+
+    'fs.rmdir': {
+      permission: 'fs.write.data',
+      fn: (path: string) => {
+        const { path: safe } = validatePath(resolvePluginPath(ctx.dataDir, path), [ctx.dataDir]);
+        if (!existsSync(safe)) throw new SpcError('NOT_FOUND', { path: safe });
+        // 与 `fs.rm` **刻意不同**：rmdir 只删空目录（非空 → 宿主 ENOTEMPTY，目标不是目录 → ENOTDIR），
+        // 而 `rm` 不给 recursive 时对目录是"拒绝"（EISDIR）——两套语义都由宿主给出，仿真层不自己判。
+        rmdirSync(safe);
+        return { path: safe, removed: true };
+      },
+    },
+
+    'fs.rename': {
+      permission: 'fs.write.data',
+      fn: (from: string, to: string) => {
+        const src = validatePath(resolvePluginPath(ctx.dataDir, from), [ctx.dataDir]).path;
+        // 目标按"新文件"规则校验：父目录必须已存在且收敛在数据目录内（Node 也要求 dest 父目录存在）
+        const dst = validatePath(resolvePluginPath(ctx.dataDir, to), [ctx.dataDir]).path;
+        if (!existsSync(src)) throw new SpcError('NOT_FOUND', { path: src });
+        renameSync(src, dst);
+        return { from: src, to: dst };
+      },
+    },
+
+    'fs.copyFile': {
+      permission: 'fs.write.data',
+      fn: (from: string, to: string, flagsJson?: HostArg) => {
+        const opts = parseOptsJson(flagsJson);
+        const src = validatePath(resolvePluginPath(ctx.dataDir, from), [ctx.dataDir]).path;
+        const dst = validatePath(resolvePluginPath(ctx.dataDir, to), [ctx.dataDir]).path;
+        const st = statSync(src); // 源不存在 → 宿主 ENOENT（仿真层翻成 Node 形状）
+        if (st.isDirectory()) throw new SpcError('IS_A_DIRECTORY', { path: src });
+        // 正文不过沙箱（宿主内核直接拷），但仍按单文件上限封顶：同步拷贝几十 MB 会卡住核心事件循环
+        if (st.size > MAX_FILE_BYTES) {
+          throw new SpcError('FILE_TOO_LARGE', { bytes: String(st.size), limit: String(MAX_FILE_BYTES) });
+        }
+        const flags = opts.exclusive === true ? FS_CONSTANTS.COPYFILE_EXCL : 0;
+        copyFileSync(src, dst, flags);
+        return { from: src, to: dst, bytes: st.size };
+      },
+    },
+
+    'fs.realpath': {
+      permission: 'fs.read.data',
+      fn: (path: string) => {
+        const requested = resolvePluginPath(ctx.dataDir, path);
+        const { path: safe } = validatePath(requested, [ctx.dataDir]);
+        // validatePath 对新文件是**放行**的（返回"父目录 + 名字"），而 realpath 必须报不存在
+        if (!existsSync(safe)) throw new SpcError('NOT_FOUND', { path: safe });
+        return { path: safe };
+      },
+    },
+
+    'fs.access': {
+      permission: 'fs.read.data',
+      fn: (path: string, modeJson?: HostArg) => {
+        const mode = modeJson === undefined ? FS_CONSTANTS.F_OK : Number(String(modeJson));
+        const { path: safe } = validatePath(resolvePluginPath(ctx.dataDir, path), [ctx.dataDir]);
+        // 不自己判权限位：交给宿主（POSIX 权限、ACL、只读挂载的真相都在那儿），错误码原样上抛
+        accessSync(safe, Number.isFinite(mode) ? mode : FS_CONSTANTS.F_OK);
+        return { ok: true, path: safe };
+      },
+    },
+
+  
     // ---- kv：插件作用域存储 ----
     'kv.get': {
       permission: 'kv.read',
@@ -456,6 +899,58 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       permission: 'bytes.encode',
       fn: (text: HostArg, encoding?: HostArg) => Buffer.byteLength(asText(text), assertEncoding(encoding)),
     },
+
+    // ---- url：WHATWG `URL` / `URLSearchParams` 的**宿主代工**（设计 §13.1 第 7 条）----
+    //
+    // 为什么代工：QuickJS **没有 URL/URLSearchParams**，而这两样是全表最难自己写的——
+    // 畸形输入（非法端口、IDNA、百分号编码的边角、`+` 与 `%20` 的区别）多到无法穷举，
+    // 自己写的必然逐条漂移。宿主就是 Node，解析结果天然一致（同 §3.2.1 的"语义难 ⇒ 代工"）。
+    // **对象身份留在沙箱**（node-url.js 里的 `URL` 类），这里只做"解析一次 / 变更一次 → 全量快照"，
+    // 于是每次赋值 ≈0.21ms 跨界——赋值不是热路径，换来的是规范级保真。
+    'url.resolveHref': {
+      permission: 'url.parse',
+      fn: (input: string, base?: HostArg) => urlSnapshot(parseUrl(input, base === undefined ? undefined : String(base))),
+    },
+    'url.setPart': {
+      permission: 'url.parse',
+      fn: (href: string, part: string, value: string) => {
+        if (!URL_SETTERS.has(part)) {
+          throw new SpcError('INVALID_ARGS', { reason: 'unknown-url-part', part });
+        }
+        const u = parseUrl(href);
+        // 用真实 URL 的 setter 做规范化：非法值"静默忽略"、合法值重写 href 的语义都在宿主里
+        (u as unknown as Record<string, string>)[part] = value;
+        return urlSnapshot(u);
+      },
+    },
+    'url.paramsParse': {
+      permission: 'url.encode',
+      fn: (text: string) => [...new URLSearchParams(text)].map(([k, v]) => [k, v]),
+    },
+    'url.paramsStringify': {
+      permission: 'url.encode',
+      fn: (pairsJson: string) => {
+        let pairs: unknown;
+        try {
+          pairs = JSON.parse(pairsJson);
+        } catch {
+          throw new SpcError('INVALID_ARGS', { reason: 'pairs-not-json' });
+        }
+        if (!Array.isArray(pairs) || pairs.some((p) => !Array.isArray(p) || p.length !== 2)) {
+          throw new SpcError('INVALID_ARGS', { reason: 'pairs-not-pair-array' });
+        }
+        return new URLSearchParams(pairs as [string, string][]).toString();
+      },
+    },
+    'url.domainToASCII': {
+      permission: 'url.encode',
+      fn: (domain: string) => domainToASCII(domain),
+    },
+    'url.domainToUnicode': {
+      permission: 'url.encode',
+      fn: (domain: string) => domainToUnicode(domain),
+    },
+
 
     // ---- exec：**只能调用已注册模板**（没有自由命令）。两种写法都接受：----
     //   ① 模板 ID：exec.run('core:git.status', { repo: '/srv/demo' })

@@ -6,17 +6,41 @@
 //     不会出现"我机器上绿、CI 上红"。
 //   · 代价：若将来部署到 Windows，`path.win32` 需要真实现（现在是明确抛错，不静默假装）。
 //
-// **一处故意与 Node 不同（需评审）**：`resolve()` 没有"当前工作目录"可依据。
-// Node 用 `process.cwd()` 兜底；沙箱里没有 cwd 概念，这里固定用虚拟根 `/`。
-// 于是 `resolve('a.txt')` → `/a.txt`。这与 fs 作用域无关（相对路径在 **fs 层**按数据目录解析）。
+// **一处与 Node 的差别（原来是"故意用虚拟根 /"，现已改为按沙箱 cwd 解析）**：
+// `resolve()` 的兜底基准 = **沙箱 cwd（= 插件数据目录，`__spcEnv.dataDir`）**，与 `process.cwd()`、
+// 以及 fs 层"相对路径按数据目录解析"三者同源。取值失败（宿主 realm 里跑单测、没有 `__spcEnv`）回退 `/`。
+//
+// 为什么改：虚拟根 `/` 会让 `path.resolve('out/a')` 得到 `/out/a`，再交给 fs 就是**作用域外** →
+// EACCES。真实依赖正是这么写的——`mkdirp/dist/mjs/path-arg.js:11` 就是 `path = resolve(path)`，
+// 于是 `mkdirp.sync('out/a/b/c')` 直接 EACCES（实测：`_audit/dep-smoke.mts`）。
+// 已知边界：Windows 开发机上数据目录是 `D:\…` 形态，这里统一换成 `/` 分隔（`D:/…`）让 POSIX 的
+// `dirname`/`join`/`..` 都能用；但 `isAbsolute('D:/…')` 仍按 POSIX 语义给 **false**（不认盘符）。
+// Linux 上（部署目标）完全自洽。
 //
 // 内联约束：静态、无占位符，可被构建层直接打进插件产物。
 
 const SLASH = 47; // '/'
 const DOT = 46; // '.'
 
-/** 沙箱没有 cwd：用虚拟根做 `resolve` 的兜底（见文件头"故意与 Node 不同"） */
-const VIRTUAL_CWD = '/';
+/**
+ * 沙箱 cwd = 数据目录（与 `process.cwd()`、fs 的相对路径解析同一个出处）。
+ * 只在第一次调用时解析；拿不到（没有引导层注入 / 宿主 realm 单测）就回退 `/`。
+ * Windows 盘符路径把 `\` 换成 `/`：POSIX 的那套字符串算法只认 `/`。
+ */
+let sandboxCwd;
+function cwd() {
+  if (sandboxCwd === undefined) {
+    let dir = '/';
+    try {
+      const env = JSON.parse(globalThis.__spcEnv);
+      if (env && typeof env.dataDir === 'string' && env.dataDir.length > 0) dir = env.dataDir;
+    } catch {
+      dir = '/';
+    }
+    sandboxCwd = dir.indexOf('\\') === -1 ? dir : dir.split('\\').join('/');
+  }
+  return sandboxCwd;
+}
 
 function assertPath(value, name) {
   if (typeof value !== 'string') {
@@ -80,7 +104,7 @@ export function resolve(...args) {
   let absolute = false;
   // 从最后一个参数往前拼，遇到绝对路径就停（Node 的语义）
   for (let i = args.length - 1; i >= -1 && !absolute; i--) {
-    const seg = i >= 0 ? args[i] : VIRTUAL_CWD;
+    const seg = i >= 0 ? args[i] : cwd();
     if (i >= 0) assertPath(seg, 'path');
     if (seg.length === 0) continue;
     resolved = seg + '/' + resolved;
