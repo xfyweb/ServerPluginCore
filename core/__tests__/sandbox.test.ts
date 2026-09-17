@@ -213,7 +213,65 @@ test.block();
   assert.doesNotThrow(() => sandbox.dispose());
 });
 
+// ---- C9：dispose 的幂等与"dispose 之后"的行为 ----
+
+test('C9：dispose 幂等；dispose 之后再装载/调钩子 → 明确报错（不是崩）', async () => {
+  const sandbox = await createSandbox(hostApi, OPTIONS);
+  await sandbox.runModule('@xfy2412/sandbox-test', 'export function init() {}');
+  assert.doesNotThrow(() => sandbox.dispose());
+  // 幂等：stop 失败路径与正常卸载路径都会调到它
+  assert.doesNotThrow(() => sandbox.dispose(), 'dispose 应当幂等');
+  assert.equal(sandbox.isBusy(), false);
+  // 卸载后再用：必须是**明确的错误码**，不能是"用了已释放的句柄"那种崩（D2 那类断言）
+  await assert.rejects(
+    () => sandbox.runModule('@xfy2412/sandbox-test', 'export function init() {}'),
+    (err: unknown) => (err as { code?: string }).code === 'PLUGIN_DISPOSED',
+  );
+  await assert.rejects(
+    () => sandbox.callHook('init', 100),
+    (err: unknown) => (err as { code?: string }).code === 'PLUGIN_DISPOSED',
+  );
+});
+
 // ---- S-4：宿主资源的计量（定时器数量） ----
+
+test('C9：dispose 之后定时器不再触发（卸载即摘干净，不留回调）', async () => {
+  const { buildHostApi } = await import('../hostApi.ts');
+  const bridge: SandboxBridge = {};
+  const dataDir = mkdtempSync(join(tmpdir(), 'spc-timer-dispose-'));
+  const api = buildHostApi({ pluginId: '@xfy2412/sandbox-test', dataDir, bridge });
+  const sandbox = await createSandbox(api, {
+    pluginId: '@xfy2412/sandbox-test',
+    permissions: ['timers.schedule'],
+    grants: ['timers.schedule'],
+    bridge,
+  });
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import { timers } from '@host/api';
+export function init() { console.log('ID ' + timers.every(100, () => { console.log('TICK'); }).timerId); }
+`,
+    );
+    await sandbox.callHook('init', 1_000);
+    const timerId = /ID (\S+)/.exec(logs.join('\n'))?.[1];
+    assert.ok(timerId, `没拿到 timerId：${logs.join('|')}`);
+    sandbox.dispose();
+    // ① 宿主侧真的把定时器**摘掉了**（不是只靠 `disposed` 标志挡住回调）
+    //    这条对 `dispose()` 里的 `clearInterval` 有判别力：去掉那行这里会返回 true
+    assert.equal(bridge.timers!.clear(timerId), false, 'dispose 应当已经清掉宿主定时器');
+    await new Promise((r) => setTimeout(r, 350)); // 至少 3 个间隔
+  } finally {
+    console.log = origLog;
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+  // ② 也确认没有回调漏出来（这道由 `disposed` 标志保证）
+  assert.deepEqual(logs.filter((l) => l === 'TICK'), [], `卸载后仍收到定时器回调：${logs.join(',')}`);
+});
 
 test('timers 有同时存活上限，且 clear 立即释放名额（S-4 回归）', async () => {
   const { buildHostApi } = await import('../hostApi.ts');

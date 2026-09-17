@@ -893,6 +893,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     },
 
     async callHook(name: 'init' | 'start' | 'stop', timeoutMs: number) {
+      // 卸载后再调：必须报**明确的码**。少了这道检查，句柄已释放，抛出来的是
+      // `QuickJSUseAfterFree: Lifetime not alive` —— 上层没法按 code 分支，看着像内核崩了。
+      if (disposed) throw new SpcError('PLUGIN_DISPOSED', { pluginId: options.pluginId, hook: name });
       if (!namespace) throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: options.pluginId, hook: name });
       await invoke('hook', name, name, timeoutMs);
     },

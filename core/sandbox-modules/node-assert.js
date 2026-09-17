@@ -27,16 +27,22 @@
 
 export class AssertionError extends Error {
   constructor(options) {
-    const hasMessage = options && options.message !== undefined;
+    // Node 对 `new AssertionError()` / 传非对象**是抛错**（ERR_INVALID_ARG_TYPE），不是容忍：
+    // 依赖里"自己造 AssertionError"的写法（测试工具、断言封装）靠这个错误发现自己写错了参数。
+    // 少了这道检查，我们会安静地造出一个 message 为 'Assertion failed' 的错误——比抛错更难查。
+    if (options === null || typeof options !== 'object') {
+      const err = new TypeError('The "options" argument must be of type object. Received ' + (options === null ? 'null' : typeof options));
+      err.code = 'ERR_INVALID_ARG_TYPE';
+      throw err;
+    }
+    const hasMessage = options.message !== undefined;
     super(hasMessage ? String(options.message) : 'Assertion failed');
     this.name = 'AssertionError';
     this.code = 'ERR_ASSERTION';
     this.generatedMessage = !hasMessage;
-    if (options) {
-      this.actual = options.actual;
-      this.expected = options.expected;
-      this.operator = options.operator;
-    }
+    this.actual = options.actual;
+    this.expected = options.expected;
+    this.operator = options.operator;
   }
 }
 

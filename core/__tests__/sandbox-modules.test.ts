@@ -67,6 +67,12 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
     'a/./b', '/a/./b/', 'a/b/c/../../..', '/..', '//foo//bar',
   ]);
 
+  it('C9：toNamespacedPath 在 posix 下是恒等（与 Node 一致）', () => {
+    for (const p of ['', '/', '/a/b', 'a/b', '.', '//x']) {
+      assert.equal(shim.toNamespacedPath(p), (node as any).toNamespacedPath(p), `toNamespacedPath(${p})`);
+    }
+  });
+
   // A4：`relative` 走的是 `resolve`，所以**继承虚拟根兜底**——有意差异，用测试钉住而不是留给下一个人猜
   it('relative 的相对参数按**虚拟根**解析（与 Node 的 cwd 语义不同），绝对-绝对与 Node 一致', () => {
     // 沙箱里没有"当前工作目录"：相对参数先按 '/' 解析（否则结果会随宿主 cwd 变，插件根本没法推理）
@@ -326,9 +332,40 @@ describe('仿真 node:events —— 与 node:events 对齐', async () => {
   });
 
   it('defaultMaxListeners 是惰性继承（构造后改静态值仍生效）', () => {
-    const e = new shim.EventEmitter();
-    const real = new nodeEvents.EventEmitter();
-    assert.equal(e.getMaxListeners(), real.getMaxListeners());
+    // C5 回归：这条用例的名字一直说"改静态值仍生效"，但**从来没改过静态值**——
+    // 于是"构造时快照了 defaultMaxListeners"的错误实现照样能过。现在真的改，并比 Node。
+    const mine = shim.EventEmitter;
+    const theirs = nodeEvents.EventEmitter;
+    const prevMine = mine.defaultMaxListeners;
+    const prevTheirs = theirs.defaultMaxListeners;
+    try {
+      const builtBefore = new mine();
+      const nodeBuiltBefore = new theirs();
+      mine.defaultMaxListeners = 3;
+      theirs.defaultMaxListeners = 3;
+      // 构造**之后**才改的静态值也必须生效（惰性继承，不是构造时快照）
+      assert.equal(builtBefore.getMaxListeners(), 3);
+      assert.equal(builtBefore.getMaxListeners(), nodeBuiltBefore.getMaxListeners());
+
+      // 显式 setMaxListeners 之后不再跟随静态值
+      const pinned = new mine();
+      pinned.setMaxListeners(9);
+      mine.defaultMaxListeners = 5;
+      theirs.defaultMaxListeners = 5;
+      assert.equal(pinned.getMaxListeners(), 9);
+      assert.equal(new mine().getMaxListeners(), new theirs().getMaxListeners());
+
+      // 非法值两边都拒（Node 抛 ERR_OUT_OF_RANGE）
+      assert.throws(() => {
+        mine.defaultMaxListeners = -1;
+      }, (err: any) => err.code === 'ERR_OUT_OF_RANGE');
+      assert.throws(() => {
+        theirs.defaultMaxListeners = -1;
+      }, (err: any) => err.code === 'ERR_OUT_OF_RANGE');
+    } finally {
+      mine.defaultMaxListeners = prevMine;
+      theirs.defaultMaxListeners = prevTheirs;
+    }
   });
 
   // ── A14–A18：这些语义**不是"某个方法返回什么"**，逐方法断言抓不住，只能整段剧本比 ──
@@ -601,6 +638,34 @@ describe('仿真 node:events —— 与 node:events 对齐', async () => {
     }
   });
 
+  // C9：零散缺口（审计期间靠随机剧本覆盖过，但仓库里没有会红的用例）
+  it('C9：`__proto__` 作事件名是普通键（不污染原型）', () => {
+    for (const EE of [shim.EventEmitter, nodeEvents.EventEmitter]) {
+      const e = new EE();
+      let seen = 0;
+      e.on('__proto__', () => seen++);
+      assert.equal(e.listenerCount('__proto__'), 1, EE.name);
+      assert.equal(e.emit('__proto__'), true);
+      assert.equal(seen, 1);
+      // `_events` 是无原型对象，写 `__proto__` 不会改掉它（也不是 setter）
+      assert.equal(Object.getPrototypeOf(e), EE.prototype);
+      assert.deepEqual(e.eventNames(), ['__proto__']);
+    }
+  });
+
+  it('C9：prependOnceListener 的位置与一次性都对', () => {
+    for (const EE of [shim.EventEmitter, nodeEvents.EventEmitter]) {
+      const e = new EE();
+      const log: string[] = [];
+      e.on('x', () => log.push('on1'));
+      e.prependOnceListener('x', () => log.push('ponce'));
+      e.prependListener('x', () => log.push('p'));
+      e.emit('x');
+      e.emit('x');
+      assert.deepEqual(log, ['p', 'ponce', 'on1', 'p', 'on1'], EE.name);
+    }
+  });
+
   it("`emit('error')` 无监听器：非 Error 值包成 ERR_UNHANDLED_ERROR（带 context）", () => {
     for (const EE of [shim.EventEmitter, nodeEvents.EventEmitter]) {
       // Error 实例原样抛出（不包装）
@@ -774,6 +839,11 @@ describe('桥的二进制通道（@host/api bytes 组）', async () => {
 
   const SAMPLE = 'héllo→世界';
 
+  /**
+   * C7 回归：这里原来用 `assert.match(out, new RegExp('B64 …'))` 做**子串**匹配 ——
+   * 两个毛病：① 输出尾部带垃圾也能过；② base64 里的 `+` / `/` 是正则元字符，
+   * 某些输入下**正确输出反而不匹配**。现在改成"按行解析 + 逐值相等"。
+   */
   it('utf8 编码：字节数 / hex / base64 与宿主 Node 逐项一致', async () => {
     const out = await runInSandbox(`
 import { bytes } from '@host/api';
@@ -784,28 +854,70 @@ console.log('B64 ' + bytes.toString(b, 'base64'));
 console.log('BACK ' + bytes.toString(b, 'utf8'));
 `);
     const expected = Buffer.from(SAMPLE, 'utf8');
-    assert.match(out, new RegExp(`LEN ${expected.length} ${expected.length}`));
-    assert.match(out, new RegExp(`HEX ${expected.toString('hex')}`));
-    assert.match(out, new RegExp(`B64 ${expected.toString('base64')}`));
-    assert.match(out, /BACK héllo→世界/);
+    const field = (name: string): string => {
+      const line = out.split('\n').find((l) => l.startsWith(name + ' '));
+      assert.ok(line, `输出里没有 ${name} 行：${out}`);
+      return line.slice(name.length + 1);
+    };
+    assert.equal(field('LEN'), `${expected.length} ${expected.length}`);
+    assert.equal(field('HEX'), expected.toString('hex'));
+    assert.equal(field('B64'), expected.toString('base64'));
+    assert.equal(field('BACK'), SAMPLE);
   });
 
-  it('编码别名与宿主 Node 一致（ucs2 / utf16le / latin1 / binary / base64url / ascii / hex）', async () => {
-    const encs = ['ucs2', 'utf16le', 'latin1', 'binary', 'base64url', 'ascii', 'hex', 'utf-8'];
+  /**
+   * C6 回归：原来只比 `'Ab9'` 的**往返**——纯 ASCII 且往返自洽，于是"完全忽略 encoding"
+   * 的实现照样通过。判别力来自**字节长度**：同一个 `'Ab9'` 在 ucs2 下是 6 字节、
+   * base64 下 2 字节、hex 下 1 字节……忽略 encoding 就全变成 3 字节。
+   */
+  it('编码别名：字节长度与往返都与宿主 Node 一致（忽略 encoding 会立刻露馅）', async () => {
+    // 别名的**有效集合**由宿主 Node 说了算（`Buffer.isEncoding`）：例如 `utf-16-le` 在
+    // 这一版 Node 上是未知编码，那 shim 也必须拒——两边用同一把尺子，不靠记忆。
+    const candidates = ['utf8', 'utf-8', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le', 'utf-16-le', 'latin1', 'binary', 'ascii', 'base64', 'base64url', 'hex'];
+    const valid = candidates.filter((e) => Buffer.isEncoding(e));
+    const invalid = candidates.filter((e) => !Buffer.isEncoding(e));
     const out = await runInSandbox(`
 import { bytes } from '@host/api';
+const text = 'Ab9';
 const r = [];
-for (const e of ${JSON.stringify(encs)}) {
-  try { r.push(e + '=' + bytes.toString(bytes.fromString('Ab9', e), e)); }
-  catch (err) { r.push(e + '!=' + err.code); }
+for (const e of ${JSON.stringify(candidates)}) {
+  try {
+    const b = bytes.fromString(text, e);
+    r.push(e + '=' + b.length + ':' + bytes.toString(b, e));
+  } catch (err) { r.push(e + '!' + err.code); }
 }
 console.log(r.join('|'));
 `);
     const mine = out.trim().split('|');
-    encs.forEach((e, i) => {
-      const expected = Buffer.from('Ab9', e as BufferEncoding).toString(e as BufferEncoding);
-      assert.equal(mine[i], `${e}=${expected}`, `编码 ${e} 与 Node 不一致`);
+    assert.equal(mine.length, candidates.length, `别名数量对不上：${out}`);
+    const at = (e: string): string => mine[candidates.indexOf(e)];
+
+    valid.forEach((e) => {
+      const buf = Buffer.from('Ab9', e as BufferEncoding);
+      assert.equal(at(e), `${e}=${buf.length}:${buf.toString(e as BufferEncoding)}`, `编码 ${e} 与 Node 不一致`);
     });
+    // 反方向同样重要：Node 拒的我们必须也拒（否则"靠 String() 兜底"的实现会静默接受任何名字）
+    invalid.forEach((e) => {
+      assert.equal(at(e), `${e}!ENCODING_UNKNOWN`, `编码 ${e}：Node 拒了，我们也该拒`);
+    });
+    // 别名等价关系本身也是契约（映射写错时"长度"未必看得出来）
+    const value = (e: string): string => at(e).split(':')[1];
+    assert.equal(value('utf8'), value('utf-8'));
+    assert.equal(value('ucs2'), value('utf16le'));
+    assert.equal(value('ucs-2'), value('utf16le'));
+    assert.equal(value('latin1'), value('binary'));
+  });
+
+  it('未知编码 → ENCODING_UNKNOWN（与 Node 的 ERR_UNKNOWN_ENCODING 同一个位置拦）', async () => {
+    const out = await runInSandbox(`
+import { bytes } from '@host/api';
+let code = 'NO-THROW';
+try { bytes.fromString('x', 'nope'); } catch (e) { code = e.code; }
+console.log('CODE ' + code);
+`);
+    assert.equal(out.trim(), 'CODE ENCODING_UNKNOWN');
+    // 宿主 Node 也在同一位置拒（只是码不同：Node 是 ERR_UNKNOWN_ENCODING）
+    assert.throws(() => Buffer.from('x', 'nope' as BufferEncoding), /Unknown encoding|unknown encoding/i);
   });
 
   it('**非法 UTF-8 字节的解码与 Node 同一套语义**（畸形输入才是重点）', async () => {
@@ -820,9 +932,14 @@ const s = bytes.toString(bad, 'utf8');
 console.log('DEC ' + s);
 console.log('REENC ' + bytes.toString(bytes.fromString(s, 'utf8'), 'hex'));
 `);
+    const field = (name: string): string => {
+      const line = out.split('\n').find((l) => l.startsWith(name + ' '));
+      assert.ok(line, `输出里没有 ${name} 行：${out}`);
+      return line.slice(name.length + 1);
+    };
     const decoded = Buffer.from(bad).toString('utf8');
-    assert.ok(out.includes(`DEC ${decoded}`), `实际输出：${out.slice(0, 200)}`);
-    assert.ok(out.includes(`REENC ${Buffer.from(decoded, 'utf8').toString('hex')}`), out.slice(0, 200));
+    assert.equal(field('DEC'), decoded);
+    assert.equal(field('REENC'), Buffer.from(decoded, 'utf8').toString('hex'));
   });
 
   it('**已知的桥属性（记录在案，不是待修 bug）**：字符串参数过桥按 UTF-8 走', async () => {
@@ -834,12 +951,14 @@ console.log('REENC ' + bytes.toString(bytes.fromString(s, 'utf8'), 'hex'));
 import { bytes } from '@host/api';
 console.log('HEX ' + bytes.toString(bytes.fromString('a\\uD800b', 'utf8'), 'hex'));
 `);
-    assert.ok(out.includes('HEX 61efbfbdefbfbdefbfbd62'), out.slice(0, 200));
-    assert.equal(
-      Buffer.from('a\uD800b', 'utf8').toString('hex'),
-      '61efbfbd62',
-      '宿主 Node 的行为应与桥不同——若相同，说明这条"已知属性"已不成立',
-    );
+    const mine = /HEX ([0-9a-f]+)/.exec(out)?.[1];
+    assert.ok(mine, `没拿到 HEX 行：${out}`);
+    // C8 回归：不把**宿主 Node 的字节**写死（Node 改语义时不该让我们变红），
+    // 而是断言"两者必须不同"——相同就说明这条已知属性已不成立
+    const nodeHex = Buffer.from('a\uD800b', 'utf8').toString('hex');
+    assert.notEqual(mine, nodeHex, '桥与宿主 Node 的行为不该相同（见本用例注释）');
+    // 我们这边是"3 个 U+FFFD"：这是我们自己的行为，写死它才是对的
+    assert.equal(mine, '61efbfbdefbfbdefbfbd62');
   });
 
   it('**非字符串文本参数要被拒**（而不是 `String()` 后静默算错）', async () => {
@@ -1137,6 +1256,28 @@ console.log('STRICT-OK');
       (err: any) => JSON.stringify(err).includes('沙箱尚未支持') || String(err?.message).includes('沙箱尚未支持'),
     );
   });
+
+  /**
+   * C4：`assert` 是**唯一没在真沙箱里跑过**的 shim（其余都在上面那条里 import 过）。
+   * 顺带把"零环境权力"钉住：沙箱里没有 `process` / `require` / `Buffer`，
+   * 能力只能从 `@host/api` 拿——这条不变量比任何单个 API 的行为都重要。
+   */
+  it('C4：assert 在真沙箱里可用；且沙箱里没有 process / require / Buffer', async () => {
+    const out = await runInSandbox(`
+import assert from 'node:assert';
+import { strictEqual } from 'node:assert';
+assert(true);
+strictEqual(1, 1);
+let thrown = 'none';
+try { assert(false, 'boom'); } catch (e) { thrown = e.name + ':' + e.code; }
+console.log('ASSERT ' + thrown);
+console.log('ENV ' + [typeof process, typeof require, typeof Buffer, typeof globalThis.__host].join(','));
+`);
+    const lines = out.split('\n');
+    assert.equal(lines[0], 'ASSERT AssertionError:ERR_ASSERTION');
+    // 零环境权力：前三个必须是 undefined，只有显式注入的桥在
+    assert.equal(lines[1], 'ENV undefined,undefined,undefined,object');
+  });
 });
 
 describe('仿真 node:constants', async () => {
@@ -1367,6 +1508,18 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
         assert.equal(e.name, 'AssertionError');
         assert.ok(e instanceof a.AssertionError);
       }
+    }
+  });
+
+  it('C9：`new AssertionError()` 无参/错类型参数与 Node 同码（Node 是**抛**，不是容忍）', () => {
+    for (const a of [shim, nodeAssert]) {
+      assert.throws(() => new a.AssertionError(), (e: any) => e.code === 'ERR_INVALID_ARG_TYPE', a.name);
+      assert.throws(() => new a.AssertionError('nope'), (e: any) => e.code === 'ERR_INVALID_ARG_TYPE', a.name);
+      const err = new a.AssertionError({ message: 'x', actual: 1, expected: 2, operator: '===' });
+      assert.equal(err.code, 'ERR_ASSERTION');
+      assert.equal(err.message, 'x');
+      assert.equal(err.actual, 1);
+      assert.equal(err.generatedMessage, false);
     }
   });
 
