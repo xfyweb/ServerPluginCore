@@ -884,7 +884,12 @@ console.log('VIEW ' + bytes.toString(big.subarray(1, 3), 'utf8'));
     assert.match(out, /VIEW hi/);
   });
 
-  it('**成本回归守门**：二进制通道必须显著快于字符串通道', async () => {
+  /**
+   * C2 回归：这条守门曾经**守的不是它声称的东西**——`grants: []` 让两边都只拿到
+   * 60 字节的 `PERMISSION_DENIED` 信封，而且插件**不看返回值**，于是"二进制通道更快"
+   * 实际比的是两条错误路径。现在：真的授予权限 + 断言载荷**确实过了桥**（尺寸对得上）。
+   */
+  it('**成本回归守门**：二进制通道必须显著快于字符串通道（且载荷真的过了桥）', async () => {
     // 为什么用**相对比较**而不是绝对阈值：
     //   ① 绝对毫秒数随机器波动，容易 flaky；
     //   ② 实测"跨界底价"≈0.2ms/次，**小载荷下两条通道测不出差别**（都被底价盖住）；
@@ -896,7 +901,7 @@ console.log('VIEW ' + bytes.toString(big.subarray(1, 3), 'utf8'));
     const { createSandbox } = await import('../sandbox.ts');
     const N = 1024 * 1024;
 
-    async function measure(method: string, binaryResult: boolean): Promise<number> {
+    async function measure(method: string, binaryResult: boolean): Promise<{ ms: number; size: number }> {
       const api = {
         [method]: binaryResult
           ? { permission: 'bytes.encode', binaryResult: true, fn: () => new Uint8Array(N) }
@@ -905,7 +910,7 @@ console.log('VIEW ' + bytes.toString(big.subarray(1, 3), 'utf8'));
       const sandbox = await createSandbox(api, {
         pluginId: '@spc-test/bridge-cost',
         permissions: ['bytes.encode'],
-        grants: [],
+        grants: ['bytes.encode'], // **必须授予**：否则两侧都只是错误信封，测的就不是通道了
       });
       const logs: string[] = [];
       const orig = console.log;
@@ -916,25 +921,147 @@ console.log('VIEW ' + bytes.toString(big.subarray(1, 3), 'utf8'));
           `
 const H = globalThis.__host;
 const s = [];
+let size = -1;
 // 取值不必多：这条守的是"塌到 1x"的结构性回归，5x 的余量下精度够用，跑太久不值
-for (let r = 0; r < 3; r++) { const t = Date.now(); for (let i = 0; i < 4; i++) H[${JSON.stringify(method)}](); s.push(Date.now() - t); }
-console.log(JSON.stringify(s));
+for (let r = 0; r < 3; r++) {
+  const t = Date.now();
+  for (let i = 0; i < 4; i++) {
+    const v = H[${JSON.stringify(method)}]();
+    // 尺寸断言是这条守门的**前提**：拿到错误信封时"更快"毫无意义
+    size = v && v.byteLength !== undefined ? v.byteLength : typeof v === 'string' ? v.length : -1;
+  }
+  s.push(Date.now() - t);
+}
+console.log(JSON.stringify({ s: s, size: size }));
 `,
         );
       } finally {
         console.log = orig;
         sandbox.dispose();
       }
-      const samples = JSON.parse(logs.join('\n').trim()) as number[];
-      return [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+      const out = JSON.parse(logs.join('\n').trim()) as { s: number[]; size: number };
+      return { ms: [...out.s].sort((a, b) => a - b)[Math.floor(out.s.length / 2)], size: out.size };
     }
 
-    const binMs = await measure('bridgecost.bin', true);
-    const strMs = await measure('bridgecost.str', false);
+    const bin = await measure('bridgecost.bin', true);
+    const str = await measure('bridgecost.str', false);
+    // 前提：1 MB 真的过了桥（不是 60 字节的错误信封）
+    assert.equal(bin.size, N, '二进制侧没拿到完整载荷——权限或桥路走错了');
+    // 字符串通道走的是 JSON 信封（`"…"` 会多两个引号），所以是 ≥ N
+    assert.ok(str.size >= N && str.size <= N + 8, `字符串侧载荷尺寸异常：${str.size}`);
     assert.ok(
-      strMs >= binMs * 5,
-      `二进制 ${binMs}ms vs 字符串 ${strMs}ms（比值 ${(strMs / binMs).toFixed(1)}x < 5x）——` +
+      str.ms >= bin.ms * 5,
+      `二进制 ${bin.ms}ms vs 字符串 ${str.ms}ms（比值 ${(str.ms / bin.ms).toFixed(1)}x < 5x）——` +
         '二进制通道可能被改成走字符串/base64 了，见 tools/bridge-bench.mjs',
+    );
+  });
+
+  /**
+   * C3：二进制通道的**失败与越权分支**曾经零覆盖（S-6/S-7 也因此没有回归）。
+   * 这四条的分支各不相同，且后两条是审计不变量的现场：
+   *   ① 参数不是 ArrayBuffer → 桥的二进制读取失败（**参数读取失败也必须留痕** = S-7）
+   *   ② 宿主实现声明了 binaryResult 却返回字符串（宿主侧缺陷，必须响亮报错而不是静默零字节）
+   *   ③ 已声明未授予 → 越权（审计记**权限点**）
+   *   ④ 权限点解析失败 → 审计**不得落明文 target**（S-6：`strings[0]` 完全由插件控制）
+   */
+  it('C3 二进制通道的失败/越权四分支（含 S-6/S-7 审计不变量）', async () => {
+    const { createSandbox } = await import('../sandbox.ts');
+    const PLUGIN = '@spc-test/bridge-fail';
+    const api = {
+      'bridgefail.ok': {
+        permission: 'bytes.encode',
+        binaryResult: true,
+        fn: () => new Uint8Array([1, 2, 3]),
+      },
+      'bridgefail.notbytes': { permission: 'bytes.encode', binaryResult: true, fn: () => 'oops' },
+      'bridgefail.unresolved': { permissionFor: () => null, fn: () => 'never' },
+      // 越权那条要挑**没声明**的点：`bytes.encode` 是 scope=self，不需要管理员授予
+      // （见 safe-path 里"scope=self 没有授予那道闸"的说明），拿它测不出拒绝分支
+      'bridgefail.notdeclared': { permission: 'bytes.decode', fn: () => 'never' },
+    };
+    const sandbox = await createSandbox(api, {
+      pluginId: PLUGIN,
+      permissions: ['bytes.encode'],
+      grants: [],
+    });
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        PLUGIN,
+        `
+const H = globalThis.__host;
+// 直调 __host 会**绕过** @host/api 的还原层（那层把错误信封变成 throw），
+// 所以这里自己解信封——测的正是**桥**的四个分支本身（包装层另有测试）
+const sig = (name, ...args) => {
+  let raw;
+  try { raw = H[name](...args); }
+  catch (e) { return 'SANDBOX-THROW:' + e.message; }
+  if (typeof raw !== 'string') return 'NO-ERROR';
+  const info = JSON.parse(raw).__spcError;
+  if (!info) return 'NO-ERROR';
+  return info.code + ':' + ((info.params && (info.params.reason || info.params.permission)) || '');
+};
+console.log([
+  'arg=' + sig('bridgefail.ok', {}),          // 普通对象 → 不是 ArrayBuffer
+  'result=' + sig('bridgefail.notbytes'),     // 宿主声明 binaryResult 却返回字符串
+  'denied=' + sig('bridgefail.notdeclared'),  // 用了没声明的权限点
+  'unresolved=' + sig('bridgefail.unresolved', 'C:/secret-dir/token-abc123'), // 明文参数由插件控制
+].join('|'));
+`,
+      );
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+
+    assert.equal(
+      logs.join('\n').trim(),
+      [
+        'arg=INVALID_ARGS:binary-arg-not-arraybuffer',
+        'result=INVALID_ARGS:binary-result-not-bytes',
+        // 越权的信封里 `reason` 比 `permission` 更具体（NOT_DECLARED / NOT_GRANTED），
+        // 这里取的是 reason，所以断言里看到的是它
+        'denied=PERMISSION_DENIED:NOT_DECLARED',
+        'unresolved=PERMISSION_DENIED:(unresolved)',
+      ].join('|'),
+    );
+
+    // ── 审计不变量 ──
+    const entries = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, any>)
+      .filter((e) => e.pluginId === PLUGIN);
+    const pick = (method: string, result: string) =>
+      entries.find((e) => e.method === method && e.result === result);
+
+    // S-7：参数读取失败**必须**落审计（原先这条分支完全绕过 audit()）
+    const argFail = pick('bridgefail.ok', 'error');
+    assert.ok(argFail, '二进制参数读取失败没有落审计');
+    assert.equal(argFail.error.code, 'INVALID_ARGS');
+
+    const badResult = pick('bridgefail.notbytes', 'error');
+    assert.ok(badResult, 'binaryResult 返回非字节没有落审计');
+    assert.equal(badResult.error.code, 'INVALID_ARGS');
+
+    // 越权：审计里记的是**权限点**（可复盘、非明文参数）
+    const denied = pick('bridgefail.notdeclared', 'denied');
+    assert.ok(denied, '越权没有落审计');
+    assert.equal(denied.target, 'bytes.decode');
+    assert.equal(denied.permission.decision, 'deny');
+
+    // S-6：权限点解析失败那一支**不得**写明文 target，改用 paramsDigest 关联。
+    // 上面特意带了一个"像凭据"的实参——旧实现会把 `strings[0]` 原样写进 target
+    // （明文永久落盘），所以这条断言是有判别力的，不是"恰好 undefined"。
+    const unresolved = pick('bridgefail.unresolved', 'denied');
+    assert.ok(unresolved, '权限点解析失败没有落审计');
+    assert.equal(unresolved.target, undefined, '解析失败那一支不该写 target');
+    assert.ok(unresolved.paramsDigest, '应当留下 paramsDigest 供复盘关联');
+    assert.ok(
+      !JSON.stringify(unresolved).includes('token-abc123'),
+      '审计里出现了明文参数（应由 paramsDigest 替代）',
     );
   });
 });
