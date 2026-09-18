@@ -217,7 +217,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 |---|---|---|
 | `scope` | **碰不碰宿主资源**（资源作用域，用于路径收敛与文案） | `self` = 只碰插件自身（自己的数据目录 / kv / 定时器）；`host` = 碰宿主管理的资源。注册期一致性约束：**`self` 只能是 `auto`**（违反 → `SCOPE_GRANT_INVALID`），与既有的 `executionLevel ≥ confidentiality` 同属注册期校验 |
 | `grant` | **要不要管理员逐点授予**（判定链第 3 步读取） | `auto` 安装即生效；`install` 读安装清单即生效、可一键收回；`explicit` 默认拒绝、**必须逐点授予**（intent-capture §8.1） |
-| `confidentiality` / `executionLevel` | 授予时的**提示强度**、审计分级与 `effective` 合成 | `effective = max(调用方声明, 用户目录覆盖, 权限点默认)`，**只升不降**；不变式 `executionLevel ≥ confidentiality`（封死仲裁旁路） |
+| `confidentiality` / `executionLevel` | **权限点的默认等级（兜底）** + `effective` 合成的输入之一 | `effective = max(调用方/核心声明, 用户目录覆盖, 权限点默认)`，**只升不降**；不变式 `executionLevel ≥ confidentiality`（封死仲裁旁路）。⚠️ **等级不是"每个权限点写死一个值"**：真正决定它的是**这一次调用碰到了什么**（同一次 `fs.read`，读无关文件是 `public/low`、读管理员的机密目录是 `secret/high`），注册表里那两个字段只是"没人声明时兜底"。落地现状与缺口见 §7 末尾。 |
 
 > v3 修订：**删除 `protectionLevel`**（Android 的"授予仪式"枚举：normal / dangerous / signature）。理由：(1) 它在本仓库里从未被判定逻辑读取，是装饰性字段；(2) 其中 `signature`（仅同签名可申请）把身份塞进权限定义，与"来源不参与权限判定"冲突；(3) `normal` 真正表达的是"这个能力够不着别人"，用 `scope: self` 表达更准确。按信任档分档的 `defaults` 同时删除。
 >
@@ -259,6 +259,33 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 > ⚠️ **`fs.read.data` / `fs.write.data` 暂留 `self`**：它们碰的是宿主文件系统里的真实文件，
 > 按 `scope` 的定义更像 `host`（`grant: install` 那一档）。「内容式权限」（按路径/内容而不是按
 > 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦。见 `_audit/batch-4-plan.md` §2.3。
+
+### 7.1 等级（`confidentiality` / `executionLevel`）的落地现状与缺口
+
+**规矩本身没变**（§3.3 + §6）：等级由**这一次调用碰到了什么**决定 ——
+插件通过 `meta` 声明本次操作、用户用 `pathLevels`（目录 → 等级）覆盖、权限点的值是**兜底默认**，
+合成 `effective = max(...)`（只升不降），审计记 `effective`。
+
+**但代码里目前只有一半**（2026-09 核实，第四批 B 时发现）：
+
+| 环节 | 状态 |
+|---|---|
+| `effectiveLevel()` 合成（含"只升不降"+ `e ≥ c` 校正） | ✅ 有，`core/permissions/check.ts` |
+| `checkPermission(..., { meta, userOverride })` 两个入参 | ✅ 有 |
+| **桥把 `meta` / `userOverride` 传进判定** | ❌ **没有**——`core/sandbox.ts` 调用时根本没传 ⇒ 每次 API 调用拿到的都是**权限点默认值** |
+| **`pathLevels`（用户目录覆盖）** | ❌ 配置里不存在 |
+| 审计记 `effective`（真值） | ⚠️ 记的是 `check.params` 里那三个字段，等于默认值 |
+
+**结论**：等级机制目前**只在单测里活着**；生产路径上等于"每个权限点一个固定等级"——
+与设计意图不符（这正是"读无关文件低、读机密目录高"做不到的原因）。
+
+**补法（待与「内容式权限」一起定，见 `_audit/batch-4-plan.md` §5）**：
+① `HostApi` 的方法表加 `metaFor?(args, ctx)` —— **原语自己声明"这次碰的是什么"**
+（`fs.readText` 看路径落在哪个目录、`exec.run` 看模板与命令、`events.publish` 看事件等级）；
+② 桥把它与 `pathLevels` 覆盖一起交给 `checkPermission`；
+③ 审计记合成后的 `effective`。
+⚠️ 不要在仿真层（`node-fs.js`）里塞等级判断：那会让"同一个 `fs.readFileSync` 在不同仿真模块下等级不同"，
+等级必须由**碰资源的那一层**（宿主原语）声明。
 
 - `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / **出网类权限点（exec 模板或驱动插件注册的端点）** / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；
