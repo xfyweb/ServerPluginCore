@@ -158,6 +158,11 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
 
   // 数据目录由宿主创建并保证存在：这是插件唯一可写位置（也是 fs 权限点的作用域）
   const dataDir = ensureDir(pluginDataDir(id));
+  // `os.tmpdir()` 返回的是 **`<dataDir>/tmp`**（设计 §13.1-2：返回宿主 tmp 会让插件一用就 EACCES），
+  // 所以这个目录也得**宿主建好**——否则 `tmp`、`fs.mkdtempSync(os.tmpdir()+'/x-')` 这类用法直接 ENOENT
+  // （实测：`tmp` 包默认 dir 就是 os.tmpdir()，装载期就炸）。放这儿而不是 os 仿真层：
+  // 那是只读快照，不该有副作用。
+  ensureDir(join(dataDir, 'tmp'));
 
   // 主题包：无后端脚本 → 不建沙箱、不要求 init，装载只做"登记主题令牌"（§1.2）
   if (isTheme) {

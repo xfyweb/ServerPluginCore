@@ -289,6 +289,9 @@ const cases: Case[] = [
   { name: 'accessSync mode 不是数字', run: (f, r) => f.accessSync(join(r, 'a.txt'), '4') },
   { name: 'accessSync mode null', run: (f, r) => (f.accessSync(join(r, 'a.txt'), null), 'no-throw') },
   { name: 'existsSync 存在/不存在', run: (f, r) => [f.existsSync(join(r, 'a.txt')), f.existsSync(join(r, 'nope.txt'))] },
+  // chmod：唯一做掉的元数据写（见 hostApi 的 fs.chmod 注释）。只比**权限位低位**（高位文件类型位两平台同）
+  { name: 'chmodSync 改权限位（stat.mode 低位可见）', run: (f, r) => { const p = join(r, 'mode.txt'); f.writeFileSync(p, 'x'); f.chmodSync(p, 0o600); return (f.statSync(p).mode & 0o777).toString(8); } },
+  { name: 'chmodSync 回调形态存在', run: (f, r) => { const p = join(r, 'mode2.txt'); f.writeFileSync(p, 'x'); return typeof f.chmod === 'function'; }, oursOnly: true },
   { name: 'existsSync 非法参数不抛', run: (f) => f.existsSync(undefined) },
 
   // ── 形状 / 常量（我们自己的判据，宿主上不一定同名同值）──
@@ -446,7 +449,7 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     const names = [
       'open', 'openSync', 'closeSync', 'readSync', 'writeSync', 'fstatSync', 'fsyncSync',
       'createReadStream', 'createWriteStream', 'watch', 'watchFile', 'unwatchFile',
-      'symlinkSync', 'linkSync', 'readlinkSync', 'chmodSync', 'chownSync', 'utimesSync',
+      'symlinkSync', 'linkSync', 'readlinkSync', 'fchmodSync', 'chownSync', 'utimesSync',
       'opendirSync', 'statfsSync', 'cpSync', 'globSync', 'truncateSync',
     ];
     for (const name of names) {

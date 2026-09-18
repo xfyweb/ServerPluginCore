@@ -106,6 +106,15 @@ function translateBridgeError(err, encoding) {
     e.spcCode = 'ENCODING_UNKNOWN';
     return e;
   }
+  // 权限拒绝（插件没声明 `bytes.encode`/`bytes.decode`）也要翻成 Node 的码：§7 的取向是
+  // "对外像 POSIX，对内不丢信息"——真实 Node 里插件拿不到这种错，但**生态里的分支是按 EACCES 写的**，
+  // 露出裸的 `PERMISSION_DENIED` 会让它们走进 `else` 那一支（静默错路）。原始码留在 spcCode。
+  if (err && err.code === 'PERMISSION_DENIED') {
+    const e = new Error('PERMISSION_DENIED');
+    e.code = 'EACCES';
+    e.spcCode = 'PERMISSION_DENIED';
+    return e;
+  }
   return err;
 }
 

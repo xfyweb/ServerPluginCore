@@ -72,14 +72,27 @@ export function buildEnvFacts(
   host: { platform: string; arch: string; pid: number } = process,
 ): EnvFacts {
   const isLinux = host.platform === 'linux';
+  // **统一成 POSIX 形态（`\` → `/`）**：沙箱的路径语义固定 posix（`node-path.js`），而 Windows 开发机上
+  // 数据目录是 `C:\Users\…`。不统一的话，凡是"把沙箱路径喂回沙箱 path 函数"的地方都会错位——
+  // 实测：`tmp` 包对 `os.tmpdir()` 调 `path.relative(tmpdir, resolved)`，反斜杠让它算出 `../C:\…`
+  // 然后自己抛 "template option must be relative to …"（`_audit/dep-smoke.mts` 里抓到的）。
+  // 统一之后 `path.join/dirname/relative` 全都能用，fs 侧也认（`validatePath` 会先 `resolve()` 归一化）。
+  //
+  // ⚠️ **不要再补前导 `/`**（试过、错了）：`/C:/Users/…` 在宿主上被 `path.resolve` 解析成
+  // `<cwd>/C:/Users/…`（Windows 上盘符前的 `/` 会被当成当前盘）⇒ `validatePath` 判成越界，真实依赖
+  // 立刻 EACCES（实测 `fast-glob` 的 `scandir '/C:/…/tree'` 就是这条）。沙箱可见形态必须与
+  // **宿主侧 `resolve` 的解释**一致，而不是与 posix 的"绝对路径"直觉一致。
+  const normalized = dataDir.indexOf('\\') === -1 ? dataDir : dataDir.split('\\').join('/');
   return {
     platform: EMULATED_PLATFORM,
     arch: host.arch,
     eol: EMULATED_EOL,
     nodeVersion: EMULATED_NODE_VERSION,
     pid: host.pid,
-    dataDir,
-    tmpDir: join(dataDir, 'tmp'),
+    dataDir: normalized,
+    // ⚠️ 这里**不能用 `node:path.join`**：Windows 上它会把刚统一好的 `/` 又还原成 `\`
+    // （实测：`os.tmpdir()` 回了反斜杠，`tmp` 包的 `path.relative` 立刻错位）。手工拼。
+    tmpDir: (normalized.endsWith('/') ? normalized : normalized + '/') + 'tmp',
     kernelRelease: isLinux ? readKernelField('/proc/sys/kernel/osrelease', FALLBACK_RELEASE) : FALLBACK_RELEASE,
     kernelVersion: isLinux ? readKernelField('/proc/sys/kernel/version', FALLBACK_VERSION) : FALLBACK_VERSION,
     cpuCount: safe(() => nodeOs.availableParallelism(), 1),

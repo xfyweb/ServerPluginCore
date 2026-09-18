@@ -10,6 +10,7 @@ import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSyn
 import { strict as assert } from 'node:assert';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
+import * as nodeOs from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
@@ -217,13 +218,17 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
       assert.equal(fresh.resolve('out', 'a', '..', 'b'), '/srv/data/plugins/demo/out/b');
       // 有绝对段时绝对段说了算（与 Node 语义一致，不受 cwd 影响）
       assert.equal(fresh.resolve('/x', 'a'), '/x/a');
-      // Windows 形态的数据目录：分隔符统一成 `/`（POSIX 的 dirname/join/.. 才work），
-      // 但 `isAbsolute` 仍按 POSIX 给 false —— 记在案的已知边界
+      // Windows 形态的数据目录：分隔符统一成 `/`（POSIX 的 dirname/join/.. 才 work），
+      // **且盘符路径算绝对**——这条曾经是"已知边界"（isAbsolute 给 false），但它会让
+      // `resolve('C:/…/tree')` 把 cwd 再拼一次（`C:/…/C:/…/tree`）⇒ 真实依赖（fast-glob 拿
+      // `path.resolve(task.base)` 当 glob base）算出错误 base、**一个条目都匹配不到且不报错**。
+      // 实测：`_audit/diag-fastglob.mts`。所以现在认盘符（Linux 部署上这条分支不触发）。
       (globalThis as any).__spcEnv = JSON.stringify({ dataDir: 'D:\\spc\\data' });
       const winFresh = await loadShimFresh('node-path.js');
       assert.equal(winFresh.resolve('a'), 'D:/spc/data/a');
+      assert.equal(winFresh.resolve('D:/spc/data/a'), 'D:/spc/data/a'); // 幂等：不再拼 cwd
       assert.equal(winFresh.dirname(winFresh.resolve('a')), 'D:/spc/data');
-      assert.equal(winFresh.isAbsolute(winFresh.resolve('a')), false);
+      assert.equal(winFresh.isAbsolute(winFresh.resolve('a')), true);
     } finally {
       if (prev === undefined) delete (globalThis as any).__spcEnv;
       else (globalThis as any).__spcEnv = prev;
@@ -738,13 +743,14 @@ describe('仿真模块登记表', async () => {
   it('isRegistered 同时认裸名与前缀名；未登记的一律 false', () => {
     assert.equal(reg.isRegistered('path'), true);
     assert.equal(reg.isRegistered('node:path'), true);
-    // 第二批登记了 fs/fs/promises/url；**未登记**的例子要用还没排到的模块
-    // （原来这里拿 `node:fs` 举例，第二批落地后它自己就失效了）
-    for (const spec of ['fs', 'node:fs', 'fs/promises', 'node:fs/promises', 'node:url', 'url']) {
-      assert.equal(reg.isRegistered(spec), true, `${spec} 在第二批里应当已登记`);
+    // 第二批登记了 fs/fs/promises/url、第三批登记了 stream 一族；**未登记**的例子要用
+    // 设计上永不登记的模块（这条断言已经随排期失效过两次：`node:fs`、`node:stream`）
+    for (const spec of ['fs', 'node:fs', 'fs/promises', 'node:fs/promises', 'node:url', 'url',
+      'stream', 'node:stream', 'stream/promises', 'querystring', 'worker_threads']) {
+      assert.equal(reg.isRegistered(spec), true, `${spec} 应当已登记`);
     }
-    assert.equal(reg.isRegistered('node:stream'), false, 'stream 尚未仿真，应为未登记');
-    assert.equal(reg.isRegistered('stream/promises'), false, 'stream/promises 尚未仿真，应为未登记');
+    assert.equal(reg.isRegistered('node:child_process'), false, 'child_process 是永不登记的能力面');
+    assert.equal(reg.isRegistered('node:http'), false, 'http 是永不登记的能力面');
     assert.equal(reg.isRegistered('@host/api'), false, '@host/api 不是仿真模块');
   });
 
@@ -1320,10 +1326,11 @@ console.log('STRICT-OK');
   });
 
   it('未登记的 node 内建 → 报错指出"沙箱尚未支持"，而不是让作者以为写错了', async () => {
-    // 用 `node:stream`（设计上排在第二批之后，仍未登记）——`node:fs` 在第二批里已经登记了，
-    // 拿它当"未登记"的例子会随排期推进而失效（这条用例本身踩过一次）。
+    // 样本要挑**设计上永不登记**的模块：这条用例已经随排期推进失效过两次
+    // （`node:fs` → 第二批登记；`node:stream` → 第三批 P2-D 登记）。
+    // `node:child_process` 属于"一律拒绝的能力面"（设计 §9/§3.1），不会再被登记。
     await assert.rejects(
-      () => runInSandbox(`import { Readable } from 'node:stream';\nconsole.log(String(Readable));`),
+      () => runInSandbox(`import { spawn } from 'node:child_process';\nconsole.log(String(spawn));`),
       (err: any) => JSON.stringify(err).includes('沙箱尚未支持') || String(err?.message).includes('沙箱尚未支持'),
     );
   });
@@ -1381,15 +1388,14 @@ import process from 'node:process';
 console.log('OS ' + os.platform() + '/' + os.EOL.length + '/' + os.homedir().length);
 console.log('PROC ' + process.platform + '/' + process.version + '/' + process.cwd().length);
 console.log('TMPINSIDE ' + (os.tmpdir().startsWith(os.homedir()) ? 'yes' : 'no'));
-let code = 'NO-THROW';
-try { os.cpus(); } catch (e) { code = e.code; }
-console.log('CPUS ' + code);
+// cpus 是**混合**的（2026-09-18 决策）：条数是容量类（给），身份字段给空值（不给宿主真值）
+console.log('CPUS ' + os.cpus().length + '/' + os.cpus()[0].model + '/' + os.cpus()[0].speed);
 `);
     const [osLine, procLine, tmpLine, cpus] = out.split('\n');
     assert.match(osLine, /^OS linux\/1\/\d+$/); // platform 固定 linux；EOL 是 '\n'（长度 1）
     assert.match(procLine, /^PROC linux\/v22\.22\.1\/\d+$/); // 版本是固定仿真值
     assert.equal(tmpLine, 'TMPINSIDE yes'); // tmpdir 必须落在数据目录内（fs 作用域里）
-    assert.equal(cpus, 'CPUS ERR_NOT_SUPPORTED_IN_SANDBOX'); // 身份类明确抛错
+    assert.equal(cpus, 'CPUS ' + nodeOs.availableParallelism() + '//0'); // 条数=容量类真值；身份字段空
   });
 });
 

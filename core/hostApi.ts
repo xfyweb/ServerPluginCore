@@ -20,11 +20,14 @@ import {
   renameSync,
   rmSync,
   rmdirSync,
+  chmodSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import type { Dirent, Stats } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import * as crypto from 'node:crypto';
+import * as zlib from 'node:zlib';
 import { domainToASCII, domainToUnicode } from 'node:url';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { SpcError, toErrorShape } from './errors';
@@ -319,6 +322,90 @@ const URL_SETTERS = new Set([
   'search',
   'hash',
 ]);
+
+/**
+ * crypto 参数必须是字符串（算法名/编码名）。
+ * 用 `String()` 兜底会把类型错误变成"神秘算法名"——响亮报错更安全（同 `asText` 的理由）。
+ */
+function assertCryptoText(value: HostArg | undefined, what: string): string {
+  if (typeof value !== 'string') {
+    throw new SpcError('INVALID_ARGS', { reason: `expected-${what}`, got: typeof value });
+  }
+  return value;
+}
+
+/** 单次 randomBytes 的上限（字节要整块进 32 MiB 的沙箱堆，见方法注释） */
+const MAX_CRYPTO_BYTES = 8 * 1024 * 1024;
+
+/**
+ * 宿主 **crypto / zlib** 调用的统一入口：失败时把 Node 错误的 `name` / `message` / `errno` 一起带过桥。
+ *
+ * 为什么必须带：这些错误是**契约的一部分**，依赖按 `name`/`message`/`code` 分支——
+ * `dotenv` 的加密 .env 路径写着 `error instanceof RangeError`、`error.message === 'Invalid key length'`、
+ * `'Unsupported state or unable to authenticate data'`（`_deps-survey/node_modules/dotenv/lib/main.js:350-360`）；
+ * `zlib` 的错误带 `code: 'Z_DATA_ERROR'` 与 `errno: -3`（adm-zip 一类按 code 分支）。
+ * 桥的错误信封只有 `{code, params}`，所以把这些字段塞进 params（设计 §7 新增的一条约定）。
+ * 我们自己的 `SpcError`（INVALID_ARGS / OUTPUT_TOO_LARGE）原样透出，不套娃。
+ */
+function runCrypto<T>(thunk: () => T): T {
+  try {
+    return thunk();
+  } catch (err) {
+    if (err instanceof SpcError) throw err;
+    const e = err as { code?: unknown; name?: unknown; message?: unknown; errno?: unknown };
+    const params: Record<string, string> = {
+      name: typeof e?.name === 'string' ? e.name : 'Error',
+      message: typeof e?.message === 'string' ? e.message : String(err),
+    };
+    if (typeof e?.errno === 'number') params.errno = String(e.errno);
+    // 哨兵：Node 有些原生错误**本来就没有 code**（如 'Digest method not supported'），
+    // 不能自造一个 ERR_ 开头的码——沙箱侧会把它当 Node 真码还原，插件看到的 code 就凭空多出来了。
+    throw new SpcError(typeof e?.code === 'string' ? e.code : 'CRYPTO_NATIVE_ERROR', params);
+  }
+}
+
+/** zlib 的 options：把需要 Buffer 的字段（dictionary）从 hex 还原，其余原样带给 Node */
+function parseZlibOpts(optsJson: HostArg | undefined): Record<string, unknown> {
+  const raw = parseOptsJson(optsJson);
+  const out: Record<string, unknown> = {};
+  for (const key of ['level', 'maxOutputLength', 'strategy', 'windowBits', 'memLevel', 'flush', 'finishFlush']) {
+    if (raw[key] !== undefined) out[key] = raw[key];
+  }
+  if (typeof raw.dictionary === 'string' && raw.dictionary.length > 0) {
+    // 桥只认字符串/ArrayBuffer，所以字节用 hex 过桥（字典很小，一次编解码可接受）
+    out.dictionary = Buffer.from(raw.dictionary, 'hex');
+  }
+  return out;
+}
+
+/**
+ * 一次性对称解密（GCM 等 AEAD 的 tag 也要）。
+ *
+ * 为什么是"一次性"：跨调用保持 cipher 状态等于要求对象身份（桥没有，§3.2.1 阻断 1）。
+ * 沙箱侧的 `Decipheriv` 把 key/iv/tag/密文攒齐后调这一支，宿主一次算完。
+ * 返回的是个**懒惰对象**：`bytes` 按需产出 Buffer，`text(enc)` 按需产出字符串——
+ * 因为同一个方法要服务 `decipherBytes` 与 `decipherText` 两个入口。
+ */
+function runDecipher(
+  algJson: string,
+  key: HostArg,
+  iv: HostArg,
+  tagJson: string,
+  data: HostArg,
+): { bytes: Uint8Array; text: (encoding: string) => string } {
+  const alg = assertCryptoText(algJson, 'algorithm');
+  // tag 用 JSON 传（可能是 null = 非 AEAD 算法不带 tag）
+  const tag = parseOptsJson(tagJson).tag;
+  const out = runCrypto(() => {
+    const decipher = crypto.createDecipheriv(alg, asBuffer(key), asBuffer(iv));
+    if (typeof tag === 'string' && tag.length > 0) {
+      // `setAuthTag` 只存在于 GCM/CCM 变体上（@types/node 的 Decipheriv 联合类型没收进来），运行时确实有
+      (decipher as unknown as { setAuthTag(t: Buffer): void }).setAuthTag(Buffer.from(tag, 'hex'));
+    }
+    return Buffer.concat([decipher.update(asBuffer(data)), decipher.final()]);
+  });
+  return { bytes: out, text: (encoding) => out.toString(encoding as BufferEncoding) };
+}
 
 /**
  * kv：每个插件一个 `<dataDir>/kv.json`。
@@ -732,6 +819,22 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       },
     },
 
+    'fs.chmod': {
+      permission: 'fs.write.data',
+      fn: (path: string, modeJson: string) => {
+        const mode = Number(modeJson);
+        if (!Number.isInteger(mode) || mode < 0 || mode > 0o7777) {
+          throw new SpcError('INVALID_ARGS', { reason: 'bad-mode', mode: String(modeJson) });
+        }
+        const { path: safe } = validatePath(resolvePluginPath(ctx.dataDir, path), [ctx.dataDir]);
+        // 为什么这个"元数据写"可以做（而 chown/utimes 不做）：它作用在**插件自己的数据目录**里的
+        // 文件上，改的是这个文件自己的权限位——不是宿主资源、也够不着别人。实测真实依赖要用它：
+        // adm-zip 写完条目后 chmodSync(path, attr) 落 zip 里记的权限（_deps-survey）。
+        runCrypto(() => chmodSync(safe, mode));
+        return { ok: true, path: safe, mode };
+      },
+    },
+
     'fs.rmdir': {
       permission: 'fs.write.data',
       fn: (path: string) => {
@@ -951,12 +1054,184 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       fn: (domain: string) => domainToUnicode(domain),
     },
 
+    // ---- crypto：摘要 / HMAC / 随机 / 对称解密（设计 §3.2.1：**加密原语一律交宿主**）----
+    //
+    // 为什么全代工：加密原语的正确性不可能靠"我们在沙箱里再写一遍"保证（恒定时间比较、GCM 认证标签、
+    // 填充与 OpenSSL 边角都不可复刻），而它们天生是"字节进、字节出"——正是桥最擅长的形状。
+    // 沙箱侧只留**形状搬运**：`Hash`/`Hmac`/`Decipheriv` 的类与状态、编码参数、错误文案。
+    //
+    // ⚠️ 错误保真：Node 的 crypto 错误**依赖 name 与 message**（`dotenv` 就按 `error instanceof RangeError`
+    // 与 `message === 'Invalid key length'` 分支），而桥的错误信封只带 `{code, params}`
+    // ⇒ 这里把 name/message 放进 params 显式带过去（设计 §7 新增的一条约定）。
+    'crypto.digestBytes': {
+      permission: 'crypto.hash',
+      binaryResult: true,
+      fn: (algJson: string, data: HostArg) => {
+        const alg = assertCryptoText(algJson, 'algorithm');
+        return runCrypto(() => crypto.createHash(alg).update(asBuffer(data)).digest());
+      },
+    },
+    'crypto.digestText': {
+      permission: 'crypto.hash',
+      fn: (algJson: string, data: HostArg, encodingJson: string) => {
+        const alg = assertCryptoText(algJson, 'algorithm');
+        return runCrypto(() =>
+          crypto
+            .createHash(alg)
+            .update(asBuffer(data))
+            .digest(assertCryptoText(encodingJson, 'encoding') as BufferEncoding),
+        );
+      },
+    },
+    'crypto.hmacBytes': {
+      permission: 'crypto.hash',
+      binaryResult: true,
+      fn: (algJson: string, key: HostArg, data: HostArg) => {
+        const alg = assertCryptoText(algJson, 'algorithm');
+        return runCrypto(() => crypto.createHmac(alg, asBuffer(key)).update(asBuffer(data)).digest());
+      },
+    },
+    'crypto.hmacText': {
+      permission: 'crypto.hash',
+      fn: (algJson: string, key: HostArg, data: HostArg, encodingJson: string) => {
+        const alg = assertCryptoText(algJson, 'algorithm');
+        return runCrypto(() =>
+          crypto
+            .createHmac(alg, asBuffer(key))
+            .update(asBuffer(data))
+            .digest(assertCryptoText(encodingJson, 'encoding') as BufferEncoding),
+        );
+      },
+    },
+    /**
+     * 只为"让 `createHmac` 的**急切校验**与 Node 一致"而存在：Node 里 `createHash('nope')`
+     * 不报错（到 `digest()` 才抛 `Digest method not supported`），而 `createHmac('nope', k)`
+     * **当场**抛 `ERR_CRYPTO_INVALID_DIGEST` —— 两种时机不同（WSL 真值表实测）。
+     * 沙箱侧的 Hash 是懒的，所以 Hmac 构造时要问一次宿主。
+     */
+    'crypto.assertDigest': {
+      permission: 'crypto.hash',
+      fn: (algJson: string) => {
+        runCrypto(() => crypto.createHmac(assertCryptoText(algJson, 'algorithm'), '').destroy());
+        return { ok: true };
+      },
+    },
+    'crypto.randomBytes': {
+      permission: 'crypto.random',
+      binaryResult: true,
+      fn: (sizeJson: string) => {
+        const size = Number(sizeJson);
+        // 上限是**我们的**（Node 允许到 2^31-1）：这些字节要整块进 32 MiB 的沙箱堆，
+        // 让它自己炸出来的是 PLUGIN_MEMORY_LIMIT（误导）。8 MiB 够任何正常用途。
+        if (!Number.isInteger(size) || size < 0 || size > MAX_CRYPTO_BYTES) {
+          throw new SpcError('OUTPUT_TOO_LARGE', { bytes: String(size), limit: String(MAX_CRYPTO_BYTES) });
+        }
+        return runCrypto(() => crypto.randomBytes(size));
+      },
+    },
+    'crypto.randomUUID': {
+      permission: 'crypto.random',
+      fn: () => runCrypto(() => crypto.randomUUID()),
+    },
+    'crypto.timingSafeEqual': {
+      permission: 'crypto.hash',
+      fn: (a: HostArg, b: HostArg) => runCrypto(() => crypto.timingSafeEqual(asBuffer(a), asBuffer(b))),
+    },
+    // 对称解密：**一次性**（沙箱侧把 key/iv/tag/密文攒齐再一次调用）。
+    // 为什么不做"流式解密"：那需要跨调用保持 cipher 状态 = 对象身份（§3.2.1 阻断 1）。
+    // `dotenv` 的用法正好是单次 (`update(ct)` + `final()`)，见 _deps-survey 的源码。
+    /**
+     * 只为"让 `createDecipheriv` 的**急切校验**与 Node 一致"而存在：Node 当场就抛未知算法与坏 key 长度
+     * （坏 iv 长度不抛，见真值表），所以这里真的建一次再销毁——把准确性交给宿主，不自己复刻 OpenSSL 的判定。
+     */
+    'crypto.assertDecipher': {
+      permission: 'crypto.cipher',
+      fn: (algJson: string, key: HostArg, iv: HostArg) => {
+        const alg = assertCryptoText(algJson, 'algorithm');
+        runCrypto(() => crypto.createDecipheriv(alg, asBuffer(key), asBuffer(iv)).destroy());
+        return { ok: true };
+      },
+    },
+    'crypto.decipherBytes': {
+      permission: 'crypto.cipher',
+      binaryResult: true,
+      fn: (algJson: string, key: HostArg, iv: HostArg, tagJson: string, data: HostArg) =>
+        runDecipher(algJson, key, iv, tagJson, data).bytes,
+    },
+    'crypto.decipherText': {
+      permission: 'crypto.cipher',
+      fn: (
+        algJson: string,
+        key: HostArg,
+        iv: HostArg,
+        tagJson: string,
+        data: HostArg,
+        encodingJson: string,
+      ) => runDecipher(algJson, key, iv, tagJson, data).text(assertCryptoText(encodingJson, 'encoding')),
+    },
 
-    // ---- exec：**只能调用已注册模板**（没有自由命令）。两种写法都接受：----
+
+    // ---- zlib：压缩/解压（**同步面 + 回调面**；流式面等 stream 落地）----
+    //
+    // 与 crypto 同型：宿主代工、字节进字节出。这里只做 Node 的**同步与回调**两种形态——
+    // `createGzip` 那一族返回的是流对象（要 stream 仿真），本批明确抛错；
+    // brotli / zstd 同理（宿主一支调用就能做，但没有实测需求，不铺开）。
+    'zlib.deflateRaw': {
+      permission: 'zlib.compress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.deflateRawSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.deflate': {
+      permission: 'zlib.compress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.deflateSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.gzip': {
+      permission: 'zlib.compress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.gzipSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.inflateRaw': {
+      permission: 'zlib.decompress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.inflateRawSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.inflate': {
+      permission: 'zlib.decompress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.inflateSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.gunzip': {
+      permission: 'zlib.decompress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.gunzipSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.unzip': {
+      permission: 'zlib.decompress',
+      binaryResult: true,
+      fn: (data: HostArg, optsJson?: HostArg) =>
+        runCrypto(() => zlib.unzipSync(asBuffer(data), parseZlibOpts(optsJson))),
+    },
+    'zlib.crc32': {
+      permission: 'zlib.compress', // 与压缩同属"对数据算出结果"，单列一个点不值当
+      fn: (data: HostArg, seedJson?: HostArg) => {
+        const seed = seedJson === undefined ? 0 : Number(seedJson);
+        return zlib.crc32(asBuffer(data), Number.isFinite(seed) ? seed : 0);
+      },
+    },
+
+
     //   ① 模板 ID：exec.run('core:git.status', { repo: '/srv/demo' })
     //   ② 原生写法：exec.run('git -C /srv/demo status --porcelain=v1 --branch')
     //      —— 原生写法只用于**匹配模板**，执行的仍是模板的 argv；匹配不到直接拒（core/exec/request.ts）
     // 权限点由匹配到的模板决定：`exec.template.<action>.<op>`，scope=host ⇒ 必须管理员逐点授予
+    // ---- exec：**只能调用已注册模板**（没有自由命令）。两种写法都接受：----
     'exec.run': {
       permissionFor: (args) => {
         const def = matchExecTemplate(args);

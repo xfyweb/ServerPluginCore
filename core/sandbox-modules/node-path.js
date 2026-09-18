@@ -21,6 +21,7 @@
 
 const SLASH = 47; // '/'
 const DOT = 46; // '.'
+const COLON = 58; // ':'（盘符分隔符，见 `isDriveAbsolute`）
 
 /**
  * 沙箱 cwd = 数据目录（与 `process.cwd()`、fs 的相对路径解析同一个出处）。
@@ -82,9 +83,17 @@ export function normalize(path) {
   return trailing ? result + '/' : result;
 }
 
+/**
+ * `isAbsolute`：`/x` **或** `C:/x`（盘符形态）。
+ *
+ * 为什么 posix 口径也要认盘符：`resolve()`/`process.cwd()`/fs 的相对路径解析**共用同一个 cwd**，
+ * 而那个 cwd 在 Windows 宿主上是 `C:/Users/…`。不认盘符就会出现
+ * "`isAbsolute(cwd())` 为 false 而 `resolve()` 拿它当相对路径"这种自相矛盾（实测后果见 `resolve` 注释）。
+ * Linux 部署（目标环境）上 cwd 是 `/…`，这条分支永远不触发 ⇒ 对齐测试不受影响。
+ */
 export function isAbsolute(path) {
   assertPath(path, 'path');
-  return path.length > 0 && path.charCodeAt(0) === SLASH;
+  return path.length > 0 && (path.charCodeAt(0) === SLASH || isDriveAbsolute(path));
 }
 
 export function join(...args) {
@@ -99,19 +108,52 @@ export function join(...args) {
   return normalize(joined);
 }
 
+/**
+ * `C:/…` 这种**盘符绝对路径**也算绝对（见 `isAbsolute` 的说明）。
+ *
+ * ⚠️ 这条不是"为了兼容 Windows 顺手加的"，而是**自洽性要求**：`process.cwd()`（= 数据目录）在
+ * Windows 宿主机上就是 `C:/Users/…` 这个形态，如果 `resolve` 不认它是绝对路径，就会把 cwd 再拼一次：
+ * `resolve('C:/Users/x/tree')` → `C:/Users/x/C:/Users/x/tree`（**实测**，见 `_audit/diag-fastglob.mts`）。
+ * 后果是真实依赖（`fast-glob` 拿 `path.resolve(task.base)` 当 glob base）算出错误的 base ⇒ 一个条目都匹配不到，
+ * 而且**不报错、只给空结果**。
+ *
+ * 判定与 `node:path` 的 win32 版一致：`/^[A-Za-z]:/`（盘符后跟不跟 `/` 都算，`C:` 也算）。
+ */
+function isDriveAbsolute(path) {
+  if (path.length < 2 || path.charCodeAt(1) !== COLON) return false;
+  const c = path.charCodeAt(0);
+  return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+
+/** 取路径的根（`'/'` 或 `'C:'`；没有根返回 `''`） */
+function pathRoot(path) {
+  if (path.charCodeAt(0) === SLASH) return '/';
+  if (isDriveAbsolute(path)) return path.slice(0, 2);
+  return '';
+}
+
 export function resolve(...args) {
   let resolved = '';
-  let absolute = false;
+  let absoluteRoot = '';
   // 从最后一个参数往前拼，遇到绝对路径就停（Node 的语义）
-  for (let i = args.length - 1; i >= -1 && !absolute; i--) {
+  for (let i = args.length - 1; i >= -1 && absoluteRoot === ''; i--) {
     const seg = i >= 0 ? args[i] : cwd();
     if (i >= 0) assertPath(seg, 'path');
     if (seg.length === 0) continue;
     resolved = seg + '/' + resolved;
-    absolute = seg.charCodeAt(0) === SLASH;
+    // 根单独留着：盘符在 `normalizeParts` 眼里只是一个普通段（`'C:'`），
+    // 不摘掉就会得到 `C:/C:/Users/…` —— 这个不一致正是本轮踩到的坑
+    absoluteRoot = pathRoot(seg);
   }
-  const body = normalizeParts(resolved, !absolute);
-  if (absolute) return body.length > 0 ? '/' + body : '/';
+  // ⚠️ 盘符根必须**先摘掉再规整**：`normalizeParts` 不认识盘符，会把它当成一个普通段留着
+  const forNormalize = absoluteRoot !== '' && absoluteRoot !== '/' && resolved.startsWith(absoluteRoot)
+    ? resolved.slice(absoluteRoot.length)
+    : resolved;
+  const body = normalizeParts(forNormalize, absoluteRoot === '');
+  if (absoluteRoot !== '') {
+    // 根是 `/` 时 body 已经不含前导斜杠 ⇒ 直接拼；否则补一个斜杠
+    return absoluteRoot === '/' ? '/' + body : body.length > 0 ? absoluteRoot + '/' + body : absoluteRoot + '/';
+  }
   return body.length > 0 ? body : '.';
 }
 

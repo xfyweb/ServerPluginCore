@@ -34,6 +34,17 @@ after(() => rmSync(SHIM_DIR, { recursive: true, force: true }));
 const DATA_DIR = mkdtempSync(join(tmpdir(), 'spc-data-'));
 after(() => rmSync(DATA_DIR, { recursive: true, force: true }));
 
+/**
+ * 沙箱里看到的路径一律是 **POSIX 形态**（`\` → `/`）：沙箱路径语义固定 posix，而 Windows 开发机上
+ * 数据目录是 `C:\Users\…`。两边不一致就会出错——实测：`tmp` 包拿
+ * `path.relative(fs.realpathSync(os.tmpdir()), …)` 一对，反斜杠立刻算出 `../C:\…` 然后自己抛错
+ * （见 `core/emulated-env.ts` 与 `_audit/dep-smoke.mts`）。所以断言也按沙箱形态写。
+ *
+ * ⚠️ **不要补前导 `/`**：那会让宿主侧 `path.resolve('/C:/…')` 解析成 `<cwd>/C:/…` ⇒ `validatePath`
+ * 判越界、真实依赖 EACCES（试过，`fast-glob` 的 scandir 立刻炸）。
+ */
+const SANDBOX_DIR = DATA_DIR.split('\\').join('/');
+
 /** shim 依赖引导层注入的两个全局：环境事实 + 卸载钩子（见 core/sandbox.ts 的 BOOTSTRAP） */
 function installSandboxGlobals(): void {
   (globalThis as any).__spcEnv = JSON.stringify(buildEnvFacts(DATA_DIR));
@@ -64,8 +75,8 @@ describe('仿真 node:os —— 仿真基线 vs 宿主真值', async () => {
   });
 
   it('路径类收敛到插件数据目录内（不是宿主 tmp——那个在 fs 作用域外，一用就 EACCES）', () => {
-    assert.equal(osShim.tmpdir(), join(DATA_DIR, 'tmp'));
-    assert.equal(osShim.homedir(), DATA_DIR);
+    assert.equal(osShim.tmpdir(), SANDBOX_DIR + '/tmp');
+    assert.equal(osShim.homedir(), SANDBOX_DIR);
     assert.notEqual(osShim.tmpdir(), nodeOs.tmpdir());
   });
 
@@ -89,7 +100,7 @@ describe('仿真 node:os —— 仿真基线 vs 宿主真值', async () => {
   });
 
   it('**身份类明确抛错**（不是返回空值——空值会让依赖安静地走另一条路）', () => {
-    for (const name of ['cpus', 'hostname', 'networkInterfaces', 'userInfo', 'getPriority', 'setPriority']) {
+    for (const name of ['hostname', 'networkInterfaces', 'userInfo', 'getPriority', 'setPriority']) {
       assert.equal(typeof osShim[name], 'function', `${name} 应当是函数`);
       assert.throws(
         () => osShim[name](),
@@ -99,6 +110,27 @@ describe('仿真 node:os —— 仿真基线 vs 宿主真值', async () => {
       // 逐个都确认过：宿主上它是可用的，所以这是我们**有意**的缺失（不是抄漏了）
       assert.equal(typeof (nodeOs as any)[name], 'function');
     }
+  });
+
+  it('`cpus()` 是**混合**的：条数照容量类、身份字段给空值（决策见 node-os.js 文件头）', () => {
+    // 为什么不能继续抛错：真实依赖在**模块顶层**就拿它算并发度
+    // （`fast-glob/out/settings.js:10` 的 `Math.max(os.cpus().length, 1)`）⇒ 抛错 = 整个包装载失败。
+    const list = osShim.cpus();
+    assert.equal(Array.isArray(list), true);
+    assert.equal(list.length, nodeOs.availableParallelism()); // 与 availableParallelism 同源
+    assert.equal(list.length, osShim.availableParallelism());
+    // 形状与基线一致：三个键、times 五个计数（真值 `_audit/os-cpus-truth.json`，v22.22.1）
+    assert.deepEqual(Object.keys(list[0]), ['model', 'speed', 'times']);
+    assert.deepEqual(Object.keys(list[0].times), ['user', 'nice', 'sys', 'idle', 'irq']);
+    // 身份字段不给宿主真值（不给型号、也不编造主频）
+    for (const entry of list) {
+      assert.equal(entry.model, '');
+      assert.equal(entry.speed, 0);
+      assert.equal(typeof entry.times.user, 'number');
+    }
+    // 每次调用返回**新**数组与新对象（基线实测 `os.cpus() !== os.cpus()`，条目也不同）
+    assert.notEqual(osShim.cpus(), list);
+    assert.notEqual(osShim.cpus()[0], list[0]);
   });
 
   it('os.constants 分四组，且与常量表的值逐项一致（前缀归类不串味）', () => {
@@ -152,7 +184,7 @@ describe('仿真 node:process —— 只读事实与明确的边界', async () =
   });
 
   it('cwd 收敛到数据目录；argv/execPath/pid 形状与 Node 一致', () => {
-    assert.equal(processShim.cwd(), DATA_DIR);
+    assert.equal(processShim.cwd(), SANDBOX_DIR);
     assert.deepEqual([...processShim.argv], ['node', 'plugin.js']);
     assert.equal(processShim.execPath, 'node');
     assert.equal(processShim.pid, process.pid); // 度量性事实：宿主真值
@@ -198,10 +230,10 @@ describe('仿真 node:process —— 只读事实与明确的边界', async () =
     assert.equal(processShim.stderr.fd, 2);
   });
 
-  it('**不做的东西明确抛错**（exit/kill/hrtime/身份类…），而不是静默 no-op', () => {
+  it('**不做的东西明确抛错**（exit/kill/hrtime/组身份/权限变更…），而不是静默 no-op', () => {
     const unsupported = [
       'exit', 'abort', 'kill', 'chdir', 'hrtime', 'uptime', 'memoryUsage', 'cpuUsage',
-      'resourceUsage', 'umask', 'binding', 'dlopen', 'getuid', 'geteuid', 'setuid',
+      'resourceUsage', 'umask', 'binding', 'dlopen', 'getgroups', 'setuid', 'setgid',
       'setUncaughtExceptionCaptureCallback',
     ];
     for (const name of unsupported) {
@@ -212,6 +244,22 @@ describe('仿真 node:process —— 只读事实与明确的边界', async () =
         `${name} 应当明确抛错`,
       );
     }
+  });
+
+  it('身份类 uid/gid 返回**固定仿真事实 1000**（不是抛错，也不是宿主真值）', () => {
+    // 为什么是 1000：Linux 上 `process.getuid` 是**函数**，于是
+    // `!process.getuid || process.getuid() !== 0`（write-file-atomic 的 root 探测）会去**调用**它；
+    // 抛错等于让包在探测环境这一步就死。给"非 root 的固定值"是诚实的仿真事实：
+    // 插件在沙箱里确实只碰得到自己的数据目录。**不能给宿主 uid**（泄露身份 + 随部署漂移）。
+    for (const name of ['getuid', 'geteuid', 'getgid', 'getegid']) {
+      assert.equal(typeof processShim[name], 'function', `${name} 应当是函数`);
+      assert.equal(processShim[name](), 1000, `${name}() 应当恒为 1000`);
+      assert.equal(processShim.default[name](), 1000);
+    }
+    // 基线核对：Linux/node v22.22.1 上这四个都存在；Windows 宿主上**属性不存在**
+    // （`internal/bootstrap/node.js:214` 的 implementsPosixCredentials 门），
+    // 我们统一给"Linux 基线"的答案 ⇒ 与 `path` 恒 posix 同一取向。
+    assert.equal(typeof (nodeProcess as any).getuid, process.platform === 'linux' ? 'function' : 'undefined');
   });
 
   it('**信号事件注册即抛错**（不留"永不触发的监听器"——那是 events 那轮吃过的亏）', () => {

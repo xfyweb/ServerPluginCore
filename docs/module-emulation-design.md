@@ -60,10 +60,15 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | P2-B | `node:os` | 只读 | `platform` / `arch` / `EOL` / `tmpdir`（宿主值） |
 | **P2-B** | `node:buffer` | 无（编解码走宿主，不碰资源） | **最小集（已定）**：`from` / `alloc` / `allocUnsafe` / `concat` / `isBuffer` / `byteLength` + 实例 `toString` / `slice` / `subarray` / `equals` / `compare` / 数值读写。**字节存沙箱（`Uint8Array` 子类），编解码宿主代工**——见 §3.2。已从 P2-C 提前到 P2-B（构建期口径低估了它；它是二进制的通用货币，`fs` 一支持二进制就必然需要） |
 | **P2-B** | `node:string_decoder` | 无（宿主代工） | `StringDecoder`——流式 utf8 解码的**状态机放宿主**（跨 chunk 的不完整多字节序列由 Node 处理）。实测需求面 7 个包，与 buffer 共用同一条代工通道 |
-| P2-C | `node:crypto` | `crypto.hash`（待注册） | 只做摘要（sha256/md5）与 `randomUUID`；加密原语走宿主，不在沙箱内自实现 |
-| 后置 | `node:stream` / `node:zlib` / `node:string_decoder` … | 视需求 | 按真实插件需求逐块评估，一律"先登记后可用" |
+| **P2-C** | `node:crypto` | `crypto.hash` / `crypto.random` / `crypto.cipher` | **已完成**：摘要/HMAC/`randomBytes`/`randomUUID`/`getRandomValues`/`randomInt`/`timingSafeEqual`/**对称解密**（`createDecipheriv`，一次性）；`constants`/`getHashes`/`getCiphers`/`getCurves` 按固定基线。`sign`/`verify`/`KeyObject`/`diffieHellman`/`pbkdf2` 一族**明确抛错**（密钥对象要求对象身份）。加密原语一律宿主代工 |
+| **P3** | `node:zlib` | `zlib.compress` / `zlib.decompress` | **已完成（同步面 + 回调面）**：`deflateRaw(Sync)`/`deflate(Sync)`/`gzip(Sync)`/`inflateRaw(Sync)`/`inflate(Sync)`/`gunzip(Sync)`/`unzip(Sync)` + `crc32` + `constants`/`codes`（固定基线）。**流式入口**（`createGzip` 一族）与 brotli/zstd 明确抛错（前者等 `stream`，后者无实测需求） |
+| **P3** | `node:querystring` | 无（唯一宿主代工点是坏转义的 UTF-8 回退） | **已完成**：`parse`/`stringify`（`encode`/`decode` 是**同一个函数对象**，照 Node 的别名）+ `escape`/`unescape`/`unescapeBuffer`，逐行移植 `node/lib/querystring.js`（含自定义 `sep`/`eq`/`maxKeys`/`decodeURIComponent`）。与 `node-url.js` 内部那份 legacy 子集**并存且有意不合并** |
+| **P3** | `node:worker_threads` | 无 | **已完成（只报事实）**：`threadId`(0)/`isMainThread`(true)/`workerData`(null)/`parentPort`(null)/`SHARE_ENV`；`Worker`/`MessageChannel`/`MessagePort`/`receiveMessageOnPort`/`markAsUntransferable` 等**一律明确抛错**。存在理由只有一个：`write-file-atomic` 一类包在装载时读 `threadId` 决定临时文件名后缀（§3.1 的"按属性判断"） |
+| **P2-D** | `node:stream` | 无 | **已完成（B1：极小形状）**：`Stream`（**legacy 函数基类**，`Stream.call(this)` 可用）+ `Readable`/`Writable`/`Duplex`/`Transform`/`PassThrough` + `pipe`/`push`/`_transform`/`_flush`/objectMode + `finished`/`pipeline`；`stream/promises`/`stream/web`/`stream/consumers` **登记但明确抛错**。范围是**逐包读出来的**，不是照 Node 文档写的——见 §9 的 stream 条目 |
+| 后置 | `node:string_decoder` 之外的剩余模块 | 视需求 | 按真实插件需求逐块评估，一律"先登记后可用" |
 
-未列入本表的模块（`node:net`、`node:http`、`node:dns`、`node:tls`、`node:cluster`、`node:child_process`、`node:worker_threads`、`node:vm`、`node:v8`、`node:module`、`node:repl` …）**一律拒绝**。
+未列入本表的模块的**能力面**（`node:net`、`node:http`、`node:dns`、`node:tls`、`node:cluster`、`node:child_process`、`node:vm`、`node:v8`、`node:module`、`node:repl`、`node:worker_threads` 的 `Worker` …）**一律拒绝**；
+但"只报事实、不碰能力"的子集可以登记（`worker_threads` 的 `threadId`/`isMainThread` 就是范例，见 §3.1）。
 
 > **每个模块"自己实现"还是"让宿主代工"，按下表判据决定**（§3.2.1 通则：调用频率 × 载荷 × 是否需要对象身份），
 > 不要按"它是不是纯计算"想当然：`util.inspect` 看着该代工，实际必须沙箱（要遍历沙箱值）；
@@ -128,6 +133,23 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 | 需要真实资源 | **宿主能力 + 权限点 + 审计** | `fs`（含 errno 翻译）、`exec` |
 | 只读事实、不是调用 | **启动时注入快照**（连桥都不用） | `process.platform`/`versions`、`os.platform`/`arch`/`EOL`/`tmpdir` |
 | 需要对象身份 / 子类化 / 闭包 | **沙箱外壳 + 重活代工** | `buffer`（存储与索引在沙箱、编解码代工）、`stream` 形状 |
+
+> **关于"桥没有对象身份"这条阻断的最新证据（2026-09，已验证未采用）**：`quickjs-emscripten` **自带**
+> `vm.newHostRef(hostObject)` / `vm.toHostRef(handle)` / `vm.unwrapHostRef(handle)`——沙箱里拿到的是个
+> **有身份的 guest 对象**（`a === a`、`a !== b`），宿主方法把它收回来就能得到**当初那个宿主对象**
+> （`toHostRef(h).value === 原对象`，可继续改它的状态），宿主值的释放由 wrapper 的 host refs 表 + guest GC 驱动。
+> 所以"身份"这条**不是引擎级缺口，也不需要魔改 QuickJS**：它只是"桥还没支持第三种参数"。
+> 实测证据：`_audit/hostref-probe.mts`（两个 `Hash` 对象各自累积状态、互不串味、收尾干净）。
+>
+> 采用它要付的代价（都不是小事，所以本批没用）：
+> ① 桥要加第三种参数类型（宿主对象引用）与对应的 `HostApi` 签名；
+> ② **句柄所有权纪律**：宿主函数里 `return ref.handle` 会把所有权交给 VM，之后再 `dispose()` 会抛
+> `QuickJSUseAfterFree: Lifetime not alive`（实测踩到）——漏管则收尾时命中 `JS_FreeRuntime` 的
+> `list_empty(&rt->gc_obj_list)` 断言（**abort 整个进程**，不是抛错）；
+> ③ guest 侧的宿主对象是**不透明**的（没有方法/属性），插件面的类（`Hash`）仍然要在沙箱里组装，
+> 方法调用照样一次一跨界。
+> ⇒ 结论：等真需要"跨调用保持真状态"的模块（`crypto` 的 `Hash`/`Cipher`、`stream`）时再引入，
+> 并且是**先扩桥**、不是先改引擎。
 
 **已落地模块的核对（2026-09，逐条对判据）**
 
@@ -376,17 +398,36 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 |---|---|
 | 原生模块（`.node`） | **构建期失败**（ADR-005 §7）：由驱动插件在核心侧提供 `@host/api` 端点 |
 | `child_process` | exec 模板（interface-audit-exec-fs.md / exec-sandbox-design.md） |
-| `worker_threads` | 不做；重计算拆成多次宿主调用或由驱动插件承担 |
+| `worker_threads` | **只做事实子集**（`threadId`/`isMainThread`/`workerData`/`parentPort`）；`Worker`/`MessageChannel` 等**不做**——重计算拆成多次宿主调用或由驱动插件承担。判定依据是 §3.1 的"按属性判断"：被访问的只有一个事实字段，不是能力 |
 | 真 `Buffer`（C++） | 最小纯 JS 实现（§3 P2-C）：只保证常见编码与操作 |
 | `fs.watch` / inotify | 不做；轮询或宿主专用事件 |
 | 网络（`net`/`http`/`dns`/`tls`） | 驱动插件提供的端点 |
 | `process.exit` / 信号 | 不做；插件生命周期由核心管理（init/start/stop） |
 | `fs` 的 **fd 面**（`open`/`read`/`write`/`fstat`/`fsync`/`ftruncate`…） | 不做（持有 fd 等于拿到沙箱外的句柄）；能力插件用路径式 API，宿主侧同一批原语 |
-| `fs` 的**流**（`createReadStream`/`createWriteStream`）与 `fs.watch`/`watchFile` | 不做（前者要 `node:stream`，后者要 inotify 面）；轮询走 `timers` |
-| `fs` 的**软链创建**（`symlink`/`link`）与**元数据**（`chmod`/`chown`/`utimes`） | 不做；宿主侧资源语义（属主/权限位）不交给插件 |
+| `fs` 的**流**（`createReadStream`/`createWriteStream`）与 `fs.watch`/`watchFile` | 不做（前者要 `node:stream`，后者要 inotify 面）；轮询走 `timers`。⚠️ **待决策**：`fs.watch` 是"新宿主资源 + 权限点"，与 fd 面一起挂在**HostRef 审定**之后（见 §14.4 末） |
+| `fs` 的**软链创建**（`symlink`/`link`）与 `chown`/`utimes` | 不做；属主/时间戳是宿主语义，且实测依赖对这些调用都是 best-effort 包裹（`adm-zip` 的 issue #379 注释）。**例外：`chmod` 做了**——它只改插件自己数据目录里那个文件的权限位，不是宿主资源（实测 `adm-zip` 写完条目要 `chmodSync` 落权限） |
+| `fs` 的 **fd 面**（`open`/`read`/`write`/`fstat`/`fsync`/`ftruncate`/`fchmod`…） | 不做（持有 fd 等于拿到沙箱外的句柄）。⚠️ **待决策**：它是**有状态句柄**（生命周期 + 上限 + 审计），与 `fs.watch` 一起挂在 HostRef 审定之后。代价可见：`tmp.fileSync`、`adm-zip` 的写盘路径、`tar`/`archiver` 都要它（`adm-zip` 内存路径不需要，已跑通） |
 | `fs.lstat` 认不出软链 | **已知边界**：路径收敛（F2/F5）在 lstat 之前就把软链解析成了目标。补偿能力是 `readdirSync(withFileTypes)` 的 `Dirent`（不经过收敛，能认出 `isSymbolicLink()`）。要精确 lstat 需要在 `safe-path` 里加"不解析最后一段"的校验通道，与安全设计强相关，等真实需求 |
 | `fs.readdir(…, { recursive: true })` / `statSync(…, { bigint: true })` | 明确抛 `ERR_NOT_SUPPORTED_IN_SANDBOX`（不静默降级） |
 | 插件传 `URL` 作为 `fs` 路径参数 | **只在 POSIX 语义下成立**（`fileURLToPath` 是 POSIX 基线）；Windows 宿主上数据目录是 Windows 路径，`file:///C:/…` 与沙箱路径语义对不上 ⇒ 用字符串路径 |
+
+### 9.1 `stream` 的已知差异（P2-D，全是"有意不同"）
+
+| # | 差异 | 影响与处置 |
+|---|---|---|
+| 1 | **只有微任务，没有 `process.nextTick` / `setImmediate` 的区分**（沙箱补的是 `queueMicrotask`）。Node 的流内部靠这个区分排续体 | **事件交错顺序可能与宿主不同** ⇒ 差分测试只比"**终态 + 事件集合**"（`emulation-stream.test.ts` 的 `diff()` 就是这么写的）。真实依赖只看"数据对不对、有没有 `end`/`finish`、错误码是什么"，所以这个差异可接受 |
+| 2 | **没有完整背压阈值**：`highWaterMark` 只影响 `write()` 的返回值，不影响数据路径（我们缓冲不设上限） | 保证"不丢数据、不卡死"；`'drain'` 在排空且**未 `end()`** 时发。依赖用 `write()` 的返回值做流控时行为正确，但"内存不会因为不读而涨"这条不成立 |
+| 3 | `pipeline`/`finished` 只做**基础**串联与错误传播 | 不做 `AbortSignal`（`addAbortSignal` 抛错）、不做 `stream/web`、不做 `compose`。成功时回调参数是 **`undefined`**（不是 `null`——基线 v22.22.1 实测） |
+| 4 | legacy `Stream.call(this)` 只初始化**事件面** | 与 Node 一致（Node 的 `Stream` 本来就是空壳）；`graceful-fs` 那条路只用到事件面 |
+| 5 | **`Transform` 的结束是"我们补的"**：队列排空 → `_flush` → `push(null)` → `'finish'` | 这是照 `node/lib/internal/streams/transform.js:126-152` 的 `final()` 做的（子类实现 `_final` 时 Node 不补，我们不支持那种写法）。少了它可读侧永远不发 `'end'`，`pipeline`/`for await` 会**挂住且无报错** |
+
+### 9.2 沙箱补的 Node 全局（第三批新增）
+
+| 全局 | 实现 | 为什么 / 代价 |
+|---|---|---|
+| `__filename` / `__dirname` | `process.cwd() + '/' + argv[1]` 与 `process.cwd()`（引导层 define，writable/configurable） | esbuild 把 CJS 包搬进 ESM 时**自己**会留下对它们的引用（包源码里没有；实测 `write-file-atomic` 的临时名 = `hash(__filename, pid, threadId, n)`）。值是**沙箱形态**的稳定路径，不是可打开的真实入口 —— 单个 bundle 没有源文件路径可指，编造一个宿主路径会随部署漂移 |
+| `setImmediate` / `clearImmediate` | **微任务**（`queueMicrotask`）+ 一个带 `ref/unref/hasRef` 的对象；`clearImmediate` **真的会取消** | 语义上属于"下一 tick"那一档，但沙箱只有微任务。真实依赖在**模块顶层**就用它起步（`@nodelib/fs.walk/out/readers/async.js:26`）⇒ 不补 = 整个包装载失败。**不提供 `setTimeout`**：那才是真正的宏任务能力面（要权限/上限/审计）。差异：回调时机比 Node 早（微任务 vs check 阶段） |
+| `queueMicrotask`（第二批就有） | `Promise.resolve().then(fn)` | QuickJS 没有它；`process.nextTick` 与 events 的 rejection 路由都靠它 |
 
 ## 10. 与构建层的联动（构建期即失败）
 
@@ -431,6 +472,8 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 7 | WHATWG `URL` 实现路径 | **宿主快照 + 变更回宿主**（解析一次、畸形输入保真）；沙箱内自实现的只有 `pathToFileURL`/`fileURLToPath`/legacy `parse`/`format`/`resolve` | `node-url.js` |
 | 8 | `process` 的信号事件 | **注册即抛错**，不留"永不触发的监听器"（events 那轮的教训）；核心唯一主动触发的是卸载前的 `'exit'` | `node-process.js`、`core/sandbox.ts` 的引导层 |
 | 9 | `stream` 是否入批 | 入第二批之后（单独一步）：按实测属性清单做**极小形状** shim，以"跑通那 5 个包"为界 | 见 ROADMAP |
+| 10 | `process.getuid` 一族的语义（第三批） | **返回固定仿真事实 `1000`**（四个 getter 一致），不是抛错也不是宿主真值。理由：Linux 基线上 `process.getuid` 是**函数**（`internal/bootstrap/node.js:214` 的 `implementsPosixCredentials` 门），于是 `!process.getuid \|\| process.getuid() !== 0` 这种"探测自己是不是 root"的写法（`write-file-atomic/lib/index.js:70`）会去**调用**它 —— 抛错等于让包在探测环境这一步就死；给宿主真值则泄露身份且随部署漂移。`getgroups` 与 `setuid`/`setgid` 仍抛错（组/权限变更不是事实） | `node-process.js`、`emulation-os-process.test.ts` |
+| 11 | `querystring` 与 `node-url.js` 里那份 legacy 子集 | **并存、有意不合并**：`node-url.js` 的那份只服务 `url.parse(..., true)`（默认分隔符、无 `unescapeBuffer`），新 shim 是面向 `node:querystring` 的完整面。合并不省多少行，却要动已验证的模块 ⇒ 等真有需要 | `node-querystring.js` 文件头 |
 
 ### 13.2 仍未定
 
@@ -456,10 +499,12 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 | # | 坑 | 结论 / 做法 |
 |---|---|---|
-| 5 | **真实依赖用的是裸全局**，不是 `import`：`mkdirp/dist/mjs/path-arg.js` 写 `process.env.… \|\| process.platform`、`use-native.js` 写 `process.version`、`properties/lib/stringify.js` 写 `process.platform === 'win32' ? "\r\n" : "\n"`。沙箱里没有 `process` 时它们**装载期就 ReferenceError** | `core/sandbox.ts` 的 `GLOBALS_PRELUDE`：装 `process` / `Buffer` / `global` / `URL` / `URLSearchParams` / `TextEncoder` / `TextDecoder`——装的是**仿真件**（`platform` 固定 linux、`env` 冻结空、`exit`/`kill` 抛错），所以"零环境权力"（能力只能从 `@host/api` 拿）没被破坏；**`require` 仍然不存在**（动态 require 会让构建层静态闸失效）。守住它的用例：`sandbox-modules.test.ts` 的 C4 |
+| 5 | **真实依赖用的是裸全局**，不是 `import`：`mkdirp/dist/mjs/path-arg.js` 写 `process.env.… \|\| process.platform`、`use-native.js` 写 `process.version`、`properties/lib/stringify.js` 写 `process.platform === 'win32' ? "\r\n" : "\n"`；**`uuid` v14 的 `rng.js` 写 `crypto.getRandomValues(...)` / `crypto.randomUUID()`**。沙箱里没有这些全局时它们**装载期就 ReferenceError** | `core/sandbox.ts` 的 `GLOBALS_PRELUDE`：装 `process` / `Buffer` / `global` / `crypto`(=`node:crypto` 的 **webcrypto**，与 Node 19+ 的全局语义一致) / `URL` / `URLSearchParams` / `TextEncoder` / `TextDecoder`——装的是**仿真件**（`platform` 固定 linux、`env` 冻结空、`exit`/`kill` 抛错），所以"零环境权力"（能力只能从 `@host/api` 拿）没被破坏；**`require` 仍然不存在**（动态 require 会让构建层静态闸失效）。守住它的用例：`sandbox-modules.test.ts` 的 C4 |
 | 6 | **`path.resolve()` 的兜底不能是虚拟根 `/`**：`resolve('out/a')` → `/out/a`，交给 fs 就是作用域外 → `EACCES`。而真实依赖普遍写 `fs.mkdirSync(path.resolve(p))`（`mkdirp/dist/mjs/path-arg.js:11`） | `node-path.js` 的兜底 = **沙箱 cwd（= 数据目录，与 `process.cwd()`、fs 相对路径解析同源）**；拿不到环境事实时回退 `/`。用例：`sandbox-modules.test.ts` 的"相对路径按沙箱 cwd 兜底" |
 | 7 | **`validatePath` 的前缀比较必须规范化**：Windows 上 `C:/a/b` 与 `C:\a\b` 是同一个位置，字符串却不同——正斜杠的绝对路径会被判**越界**（EACCES），且第 2 步的逐级软链扫描 `split(sep)` 切不开、整段被跳过（fail-open） | `core/fs/safe-path.ts` 用 `resolve(requested)` 做**所有判定**（错误文案仍报调用方那串）。用例：`safe-path.test.ts`（26 条）+ 真实依赖冒烟 |
-| 8 | Windows 开发机的数据目录可能是 `C:\Users\ADMINI~1\…`（8.3 短名）之类的形态 | 路径类 shim 里把 `\` 统一成 `/` 再走 POSIX 算法；`isAbsolute('D:/…')` 仍按 POSIX 给 `false`——属"暂不支持 Windows 部署"的已知边界 |
+| 8 | **沙箱可见的路径必须全是一个形态**：Windows 开发机上数据目录是 `C:\Users\…`，而沙箱路径语义固定 posix。两种形态一混，"把沙箱路径喂回沙箱 path 函数"就错位——实测 `tmp` 包拿 `path.relative(fs.realpathSync(os.tmpdir()), …)` 一对，反斜杠让它算出 `../C:\…`，随后自己抛 "template option must be relative to …" | **一律转成 POSIX 形态**（`\` → `/`），而且**四个出口必须一起转**：`process.cwd()` / `os.tmpdir()` / `os.homedir()`（`core/emulated-env.ts` 里 dataDir/tmpDir 归一化；注意**不能用 `node:path.join`** 拼 tmpDir——Windows 上它会把刚统一的 `/` 又还原成 `\`）、`fs.realpathSync()`（`node-fs.js` 的 `toSandboxForm`）。宿主侧照旧用宿主形态（`validatePath` 会先 resolve 归一化） |
+| 8b | **`os.tmpdir()` 指向 `<dataDir>/tmp`，但没人建它** | 宿主**预建**（`core/plugin/loader.ts` 在 `ensureDir(dataDir)` 之后 `ensureDir(<dataDir>/tmp)`）。否则 `tmp` 包（默认 dir 就是 `os.tmpdir()`）、`fs.mkdtempSync(os.tmpdir()+'/x-')` 一律 ENOENT——实测踩到 |
+| 8c | **钩子失败的诊断信息**：`init()` 抛错只报 `PLUGIN_INIT_FAILED` + `cause: 'ENOENT'`，**没有 message**（"哪个文件"完全看不到） | `hookError` 把 VM 失败的 `message` 也放进 params（截断 500 字），与装载失败那条路径一致。没有它，排查真实依赖等于盲猜——本轮就是靠它才看清 `'crypto' is not defined` |
 
 ### 14.3 Node 形状与错误语义（差分测试抓出来的）
 
@@ -487,6 +532,95 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | `properties@1.2.1` | CJS 互操作 + `fs.readFileSync` + **回调风格** `fs.readFile` | 解析出 `{name:'spc',port:8080}` |
 | `debug@4.4.3` | `util` + `os` + `process` + `tty` 组合，写 stderr | 格式化输出正确 |
 | `ejs@6.0.1` | 模板渲染 + 按 filename 读文件 | 渲染正确 |
+| `uuid@14.0.2` | **裸全局 `crypto`**（WebCrypto）→ `getRandomValues` / `randomUUID` | v4/v7 生成 + 校验通过 |
+| `tmp@0.2.7` | `os.tmpdir()` + `fs.mkdirSync` + **`crypto.randomBytes`** 起名 | 目录形态跑通；**文件形态要 fd，明确抛错**（边界被冒烟钉住） |
+| `dotenv@17.4.2` | 它的 `decrypt()`：`createDecipheriv('aes-256-gcm')` + `setAuthTag` + `update`/`final` | 解出明文 ✅（顺带验证了 `RangeError \"Invalid key length\"` 与认证失败文案要**逐字**过桥） |
+| `adm-zip@0.5.x` | 内存路径：读 zip 走 `inflateRawSync`、造 zip 走 `deflateRawSync` | 条目列表/内容/往返都对 ✅；**写盘路径要 fd**（`openSync`/`writeSync`/`closeSync`）⇒ 挂起中 |
+
+> 这四条（uuid/tmp/dotenv/adm-zip）都是**第三批**新增的靶子，用来验证 `crypto` 与 `zlib` 两个宿主代工模块——
+> 它们的价值在于：**规格表说"只差 crypto"，但真实调用路径里还有裸全局、tmpdir、fd 面这些规格表看不见的东西**。
+>
+> ⚠️ 一个观察：依赖把我们的"响亮抛错"**吞掉**之后，用户看到的可能是另一个错（`adm-zip` 的 `openSync` 抛
+> `ERR_NOT_SUPPORTED_IN_SANDBOX`，它自己 catch 掉，最后报出来的是 `chmod` 的 ENOENT）。
+> 排障的可靠入口因此是**审计日志**（那次未支持的调用一定有一条 `ERR_NOT_SUPPORTED_IN_SANDBOX`）。
+
+**两处待决策（挂在 HostRef 审定之后）**：`fs.watch`/`watchFile`（新宿主资源）与 **fd 面**（有状态句柄）。
+两者都属于 §3.2.1 那条"跨调用保持状态 = 对象身份"的范畴——是先看 HostRef 要不要正式采用，
+再决定"自建 id 表"还是"HostRef + 沙箱外壳"。它们不解锁新的仿真模块，只解锁少数依赖的**特定路径**
+（`chokidar` 的 watch、`tmp.fileSync`、`adm-zip` 写盘、`tar`/`archiver`）。
 
 > 正式的这层冒烟属于**构建层**（P2-2 的验收项）；这里先用同一套内联方式把仿真层单独验了。
-> 三个"包在装载期就 ReferenceError"的坑（第 5、6、7 条）全是它抓出来的。
+> 第 5/6/7 条那几个"包在装载期就 ReferenceError"的坑全是它抓出来的。
+
+### 14.5 收口三项（`worker_threads` / `process.getuid` / `querystring`）踩到的
+
+| # | 坑 | 结论 / 做法 |
+|---|---|---|
+| 19 | **"这个模块存在"本身就是依赖的探测信号**：`write-file-atomic` 用 `require('worker_threads').threadId \|\| 0` 决定临时文件名后缀；Linux 上 `process.getuid` 是**函数**，所以 `!process.getuid \|\| process.getuid() !== 0` 会**调用**它 | 事实类模块照"能诚实回答的就回答"做（`threadId`=0、`isMainThread`=true、`getuid()`=1000），能力类一律抛错。判据是"依赖访问的是事实还是能力"，不是"Node 文档里这个模块属于什么类别"（§3.1） |
+| 20 | **`querystring.escape` 的保留字符集容易记反**：`encodeURIComponent` **保留** `!'()*`，而 Node 的 `noEscape` 表里 `!` 不置位 ⇒ `escape("!'()*")` 只转义**空格**那类 | 移植时照抄表（`!-._~'()*` 与字母数字不转义），别用 `encodeURIComponent` 代替。真值：`escape("!'()*~ -._") === "!'()*~%20-._"` |
+| 21 | **移植时漏一个 `else` 会静默改变"键是否需要解码"的判定**：`parse` 里那段"先探 `%HH`"的三层 if，少了中间的 `else` 后 `%zz` 的 `z` 会被当成探测位继续累加，导致后面的 `%41` 被误判为"已编码"（`keyEncoded` 变 true）——症状是某些键**多解码一次**（`encodeURIComponent` 类值被二次解码） | 逐行照抄 `node/lib/querystring.js:404-422` 的嵌套结构；差分用例 `parse('a=%zz&b=%41')` 守着 |
+| 22 | **别拿宿主 CJS 内建的 ESM 命名空间键集当判卷人**：同一个测试文件在 `tsx` 与原生 ESM 下，`Object.keys(import('node:querystring'))` 的键集都不一样（Node 对 CJS 内建的具名导出是启发式产物） | 契约值取**基线真值**（`require()` 的对象 + 真值 JSON），宿主命名空间只做"方法存在"的弱断言。否则会得到工具相关的红灯（本轮踩了两次） |
+| 23 | `registry.ts` 里用 `edit` 改数组时，**删换行会把下一条注释和对象头粘在一起**（`…搬运）──  {` ⇒ esbuild `Expected "]" but found ":"`） | 这类"纯文本拼接"的编辑后立刻跑一次构建/测试（本轮是沙箱冒烟先炸出来的）。错误信息指向的是**下一行**，别顺着行号找 |
+| 24 | 加一个 shim 文件后，**它能被 import 的前提是文件名过 `isShimFileName` 且文件真的在 `sandbox-modules/`**（`shimFileExists` 用 readdir 缓存）| `node-querystring.js` / `node-worker_threads.js` 都符合约定；新建时对照 §5 的表，别自己起名 |
+
+### 14.6 `stream`（P2-D）踩到的（这几条都"没有任何报错"）
+
+| # | 坑 | 结论 / 做法 |
+|---|---|---|
+| 25 | **`this._transform = noop` 会把 ES class 的实现整个屏蔽掉**：class 的 `_transform`/`_flush` 是**非枚举的原型属性**，而实例自有属性优先。症状：`write()` 返回 true、队列也走了，但 `_transform` 一次都不被调用，且错误发生在微任务的 `'error'` 事件上——**没有监听器时完全看不见**。同理 `optionOf(options,'write',noop)` 会屏蔽 `Transform.prototype._write` | 只在**选项真的给了函数**时才挂到实例上（`inheritOr`）；`_write` 里 `typeof` 检查 + `ERR_METHOD_NOT_IMPLEMENTED`。差分用例"Transform 子类化"守着 |
+| 26 | **`Transform` 必须在 `_flush` 之后 `push(null)`**：Node 是在 `transform.js:126-152` 的 `final()` 里补的，子类不写它 | 不补的话可读侧永远不发 `'end'`，`pipeline`/`for await` **挂住且无报错**。我们的 `Transform.end` = 队列排空 → `_flush` → `push(null)` → `'finish'` |
+| 27 | **`push(null)` 不能同步发 `'end'`**：Node 走 `onEofChunk` → `emitReadable`，是下一 tick | 同步发的话"先 `push(null)`、后 `finished(r, cb)`"会**错过 `'end'`**，`finished` 误报 `ERR_STREAM_PREMATURE_CLOSE`。`finished()` 另外要做**状态感知**（`readableEnded`/`writableFinished` 已为真就直接回调） |
+| 28 | **`'error'` 只能发一次**：`destroy(err)` 自己会（异步）发，`errorOrDestroy` 里再排一个就是两次（差分实测：宿主 1 条、我们 2 条） | 已经销毁过的流才自己发，否则交给 `destroy`；`errored` 标记要**同步**打上——只排异步 `'error'` 的话，`end()` 的 `emitFinish` 微任务会先跑，于是"出错了却发了 `'finish'`" |
+| 29 | **`'drain'` 在 `end()` 已排队时不发**（Node 认为"都要结束了，没人需要再写"） | `state.ended` 时跳过；否则差分红灯 |
+| 30 | **别拿"事件的精确顺序"当差分判据**：我们与宿主在 `'end'`/`'finish'` 的先后上就有意不同（各自内部的排期不同） | `emulation-stream.test.ts` 的 `diff()` 比**终态 + 事件集合（排序后）**；另外**剧本一定要有超时**（本轮被"等一条永不到来的事件"挂死过一次） |
+| 31 | **差分脚本自己也会撒谎**：`record()` 挂的 `'data'` 监听会让流进入 flowing，于是"自己随后挂监听"时数据可能已被 flush 掉（看起来像我们的 bug）；同一事件挂两个监听会把一条错误记两遍 | 数据监听挂在自己那行；错误码只用一个监听读；比对前先确认"宿主是绿的"——宿主也挂的剧本是剧本写错了，不是实现错了 |
+
+### 14.7 真实依赖冒烟（第三批全跑，11 个靶子）
+
+`node node_modules/tsx/dist/cli.mjs D:\git-repo\_audit\dep-smoke.mts all`：
+
+**绿（9）**：`mkdirp` `properties` `debug` `uuid` `tmp` `dotenv` `adm-zip` `ejs` `write-file-atomic`（部分）。
+**红（2，都不是 stream 的问题，是各自的边界）**：
+
+| 靶子 | 卡在哪 | 性质 |
+|---|---|---|
+| `graceful-fs` | **装载期** `PLUGIN_LOAD_FAILED no setter for property`。根因已查明（见 §14.8）：它把 `fs` 的每个属性拷成**只读访问器**再改，而 QuickJS 对"写只读访问器"是**抛错**（V8 静默返回 false） | **有解**：构建层把 `graceful-fs` 换名成 `fs` shim（见 §14.8 的方案评估） |
+| `fast-glob` | ~~装载期 `os.cpus is not supported`~~ **已修**：`os.cpus()` 改成"条数照容量类、`model`/`speed` 给空值"，并补了 `setImmediate` 壳子 | 已跑通（`FG-SYNC` / `FG-STREAM` 都列出条目） |
+| `write-file-atomic` | 同步路径 `fs.openSync`、异步路径也是 `fs.open` ⇒ 两条路都在 **fd 面**上（不受 `__filename` 影响，那个已修） | **边界正确**：报 `ERR_NOT_SUPPORTED_IN_SANDBOX` + 明确消息（不再是误导性的 ReferenceError） |
+
+> `write-file-atomic` 的两条边界也是真的：同步写盘走 fd 面（挂起中），异步路径同样是 `fs.open`
+> （挂起中）。`__filename` 那条已经修了（引导层补了 CJS 全局，见 §9.2）。
+
+### 14.8 QuickJS 的"属性赋值失败"三态（把 `graceful-fs` 查到底）
+
+查 `graceful-fs` 装载失败花了大半轮，**卡点不是它，而是诊断链**：`classifyVmFailure` 原本把
+QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for property` —— 连"哪一行"都看不到。
+**已修**：`params.stack`（截断 1200 字）。下面这张表是拿真沙箱逐条试出来的（`_audit/probe-dump-keys.mts`）：
+
+| 写法 | QuickJS 的行为 | 消息 |
+|---|---|---|
+| 给**只读的普通属性**赋值（`writable:false`，或 ES 模块命名空间导出） | 抛 | `'x' is read-only` |
+| 给**自有访问器**（有 getter 无 setter）赋值 | **抛** | `no setter for property` |
+| 给**原型链上的访问器**赋值 | **抛** | `no setter for property` |
+| 给**不存在的属性**赋值（strict / ESM） | 抛（"no setter" 这条就是它，因为 `[[Set]]` 一路找不到） | `no setter for property` |
+| 给**不存在的属性**赋值（sloppy 脚本，非模块） | 静默创建 | — |
+
+**对照 V8（实测宿主 Node v24）**：上面第 2/3 条 V8 **静默返回 false**、不抛。这就是
+`graceful-fs` 在 Node 上能跑、在我们这儿装载期就死的原因。
+
+**根因（可复现）**：`graceful-fs/graceful-fs.js` 的 `patch(clone(fs))` 干这三件事：
+1. `clone.js:18` 把 `fs` 的每个属性**按原描述符**定义到副本上 —— 而内联产物里的 `node:fs` 是
+   esbuild 的 `__toESM(fs_exports)` 结果（§14.6 的命名空间问题在互操作之后仍然留下**只读访问器**）；
+2. `graceful-fs.js:107` `fs.createReadStream = …`、`:105` `fs.gracefulify = patch` —— 赋值；
+3. `:252`/`:262` `Object.defineProperty(fs,'ReadStream',…)` —— 这一条在只读访问器上**直接抛**。
+
+**方案评估（用户提的"构建层换名"）**：✅ **可行且推荐**。理由：
+- 它整个存在的意义是**在 EMFILE/ENFILE 上重试**——沙箱里没有 fd 上限（fd 面本身就不做），这个意义归零；
+- 它给 `fs` 加的 `createReadStream`/`createWriteStream` 是 fd 式，在我们这儿本来就抛错；
+- 它**不改** `node:fs` 模块对象（用局部副本）⇒ 换名成 `fs` 就是"函数一模一样、只少了 fd 流方法"，
+  副作用面极小；
+- 落点应在**构建层**（P2-2 的依赖别名表），并且**要写进产物清单**（"本插件依赖了 graceful-fs，已按
+  仿真语义替换"）——这正是用户说的"清单记录"。
+
+> 顺带记一条纪律：**遇到"某个包在沙箱里怪死"，先看 QuickJS 侧栈**（`params.stack` 现在有了），
+> 别急着写探针——本轮为此写了 5 个诊断脚本才发现是诊断信息本身被丢了。

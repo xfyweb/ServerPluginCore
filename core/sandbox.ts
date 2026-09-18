@@ -79,7 +79,7 @@ const SELF_IMPLEMENTED_GROUPS = new Set(['kv', 'timers', 'bytes']);
  * 统一在沙箱侧还原（否则插件代码里到处是 `JSON.parse(fs.read(...))`）。
  * exec 不在其列——它的返回值是带 stdout/stderr 的文本协议，由插件自己解析。
  */
-const JSON_RESULT_GROUPS = new Set(['fs', 'lifecycle', 'events', 'url']);
+const JSON_RESULT_GROUPS = new Set(['fs', 'lifecycle', 'events', 'url', 'crypto', 'zlib']);
 
 /**
  * 沙箱内引导代码：装两个宿主可用、插件不可见的内部函数。
@@ -152,6 +152,40 @@ const BOOTSTRAP = `
       Promise.resolve().then(fn);
     };
   }
+  // setImmediate：**壳子**——用微任务实现，语义差一档（见设计 §9.2）。
+  // 为什么还是要有：真实依赖在**模块顶层**就用它起步（@nodelib/fs.walk/out/readers/async.js:26，
+  // fast-glob 的流式/异步读目录都走它）⇒ 不补就是"整个包装载失败"。
+  // 为什么只给微任务：真正"下一轮宏任务"的语义要么靠宿主定时器（那是一个**能力点**：
+  // 插件能主动占用宿主调度 ⇒ 要权限 + 上限 + 审计），要么靠 QuickJS 的 job 队列
+  // （我们已经在用，但那是"微任务"）。微任务版对"把起步推迟一拍"的用法完全够，且与
+  // process.nextTick（同样是微任务）保持同源。**不提供 setTimeout**：那才是真正的宏任务能力面。
+  var immediateSeq = 0;
+  var cancelledImmediates = new Set();
+  if (typeof globalThis.setImmediate !== 'function') {
+    globalThis.setImmediate = function (fn) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      if (typeof fn !== 'function') {
+        throw new TypeError('The "callback" argument must be of type function');
+      }
+      var id = ++immediateSeq;
+      queueMicrotask(function () {
+        if (cancelledImmediates.has(id)) return; // 真的尊重 clearImmediate，不做假壳子
+        fn.apply(null, args);
+      });
+      return {
+        _id: id,
+        ref: function () { return this; },
+        unref: function () { return this; },
+        hasRef: function () { return true; },
+        refresh: function () { return this; },
+      };
+    };
+    globalThis.clearImmediate = function (handle) {
+      if (handle && typeof handle === 'object' && typeof handle._id === 'number') {
+        cancelledImmediates.add(handle._id);
+      }
+    };
+  }
 })();
 `;
 
@@ -171,6 +205,7 @@ import process from 'node:process';
 import { Buffer } from 'node:buffer';
 import { URL, URLSearchParams } from 'node:url';
 import { TextEncoder, TextDecoder } from 'node:util';
+import nodeCrypto from 'node:crypto';
 globalThis.process = process;
 globalThis.Buffer = Buffer;
 globalThis.URL = URL;
@@ -178,6 +213,22 @@ globalThis.URLSearchParams = URLSearchParams;
 globalThis.TextEncoder = TextEncoder;
 globalThis.TextDecoder = TextDecoder;
 globalThis.global = globalThis;
+// Node 19+ 的**全局 crypto** 等于 WebCrypto（不是整个 node:crypto 模块）——实测有真实依赖只用裸全局：
+// uuid v14 的 rng.js 就是 \`crypto.getRandomValues(...)\` / \`crypto.randomUUID()\`，没有 import。
+globalThis.crypto = nodeCrypto.webcrypto;
+// CJS 的 per-module 全局：esbuild 把 CJS 包搬进 ESM 产物时**自己**会留下对它们的引用
+// （包源码里没有；实测 \`write-file-atomic\` 的临时文件名就是 \`hash(__filename, pid, threadId, n)\`）。
+// 值 = 插件入口在**沙箱形态**下的路径（与 \`process.argv[1]\`、\`process.cwd()\` 同源）。
+// 只用于"派生一个稳定的字符串"，不是在指一个真文件——单个 bundle 根本没有源文件路径可指，
+// 所以给一个**稳定且显然是沙箱内**的值，而不是编造一个宿主机路径（那会随部署漂移）。
+Object.defineProperty(globalThis, '__filename', {
+  value: process.cwd() + '/' + process.argv[1], writable: true, configurable: true, enumerable: false,
+});
+Object.defineProperty(globalThis, '__dirname', {
+  value: process.cwd(), writable: true, configurable: true, enumerable: false,
+});
+export const __filename = globalThis.__filename;
+export const __dirname = globalThis.__dirname;
 `;
 
 /**
@@ -398,7 +449,15 @@ function hookError(
   failure: VmFailure,
   extra?: Record<string, string>,
 ): SpcError {
-  const base = { pluginId, hook, ...(extra ?? {}) };
+  // `message` 一定要带上：插件 `init()` 抛 ENOENT 时，只给一个 `cause: 'ENOENT'` 等于什么都没说
+  // （作者既不知道哪个文件，也不知道哪一行）。它本来就是**插件自己的**错误文本，
+  // 不泄露宿主额外的信息；长度封顶避免把日志/面板刷爆（装载失败那条路径一直是带 message 的，
+  // 钩子这条以前漏了——排查真实依赖时踩到）。
+  const detail: Record<string, string> = {};
+  if (failure.message !== undefined && failure.message !== '') {
+    detail.message = failure.message.length > 500 ? failure.message.slice(0, 500) + '…' : failure.message;
+  }
+  const base = { pluginId, hook, ...detail, ...(extra ?? {}) };
   switch (failure.kind) {
     case 'interrupt':
       return new SpcError(timeoutCodeFor(hook), base);

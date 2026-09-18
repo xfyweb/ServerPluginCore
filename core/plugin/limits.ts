@@ -154,7 +154,16 @@ export function classifyVmFailure(dumped: unknown): VmFailure {
     if (message === 'out of memory') return { kind: 'memory', message };
     if (message === 'stack overflow') return { kind: 'stack', message };
   }
-  return { kind: 'error', code: 'PLUGIN_ERROR', message };
+  // **QuickJS 侧的栈**：没有它，"插件装载失败：no setter for property"这类消息等于没有信息
+  // —— 定位不到是哪一行（本轮为了查 graceful-fs 的装载失败，绕了四五次探针才发现是这里丢了栈）。
+  // 截断到 1200 字：栈只是诊断线索，不该把它整个塞进错误信封与审计记录。
+  const stack = str(obj.stack);
+  return {
+    kind: 'error',
+    code: 'PLUGIN_ERROR',
+    message,
+    ...(stack ? { params: { stack: stack.slice(0, 1200) } } : {}),
+  };
 }
 
 /** 泵 job 的结果 */

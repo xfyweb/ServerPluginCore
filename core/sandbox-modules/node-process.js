@@ -11,9 +11,12 @@
 //   2. **`env` 是冻结的空对象**：沙箱里没有环境变量（宿主 env 可能含凭据，暴露面太大）；
 //      将来要白名单再谈权限点，现在给空对象是**唯一诚实**的答案；
 //   3. **不做**（明确抛错）：`exit`/`abort`/`kill`/`chdir`/`hrtime`/`uptime`/`memoryUsage`/
-//      `cpuUsage`/`resourceUsage`/`getuid` 系列/`binding`/`dlopen`/`setUncaughtExceptionCaptureCallback`。
+//      `cpuUsage`/`resourceUsage`/`getgroups`/`binding`/`dlopen`/`setUncaughtExceptionCaptureCallback`。
 //      信号事件（`process.on('SIGINT')`）也抛错——设计文档 §9 已定"信号不做"，静默注册一个
 //      永不触发的监听器，正是这个项目在 events 那轮吃过的亏（`newListener` 静默不触发）。
+//   4. **身份类返回仿真事实**（`getuid` 一族 → 1000）：沙箱里的插件确实不是 root（它只碰得到
+//      自己的数据目录），这个值既不泄露宿主身份、又让"探测自己是不是 root"的代码走对分支
+//      （`write-file-atomic` 就靠 `process.getuid() !== 0` 选写入策略）。决策见设计 §13.1。
 //
 // 唯一由核心**主动触发**的事件是 `'exit'`：沙箱销毁前发一次（落点在 `__spcDisposeHooks`，
 // 见 core/sandbox.ts 的引导层），于是 `process.on('exit', () => flush())` 这类常见写法是真的会跑的。
@@ -40,6 +43,17 @@ function unsupported(name, why) {
 
 /** 信号事件名（`SIGINT`/`SIGTERM`…）：沙箱没有信号，注册它只会得到一个永不触发的监听器 */
 const SIGNAL_EVENT = /^SIG[A-Z0-9]+$/;
+
+/**
+ * 沙箱身份（`getuid` 一族）。
+ *
+ * 为什么是常量 1000 而不是抛错：Linux 基线上 `process.getuid` 是**函数**，于是
+ * `!process.getuid || process.getuid() !== 0` 这种写法（`write-file-atomic` 的 root 探测）
+ * 会去**调用**它 —— 抛错等于让包在"探测环境"这一步就死。给 1000 是**诚实的仿真事实**：
+ * 插件在沙箱里就只能碰自己的数据目录，确实不是 root；而宿主真实 uid 从不外泄。
+ * 不用宿主真值：那会泄露宿主身份，也会让结果随部署环境漂移（仿真基线要固定）。
+ */
+const SANDBOX_UID = 1000;
 
 /** 写出口：沙箱里没有真终端，所有写都汇到插件日志（`stdout.isTTY` 恒 false，与 `node:tty` 一致） */
 function makeWriteStream(level) {
@@ -115,10 +129,19 @@ process.setUncaughtExceptionCaptureCallback = /* @__PURE__ */ unsupported(
   'setUncaughtExceptionCaptureCallback',
   'hook failures are reported to the core, not to the plugin',
 );
-process.getuid = /* @__PURE__ */ unsupported('getuid', 'host identity is not exposed to plugins');
-process.getgid = /* @__PURE__ */ unsupported('getgid', 'host identity is not exposed to plugins');
-process.geteuid = /* @__PURE__ */ unsupported('geteuid', 'host identity is not exposed to plugins');
-process.getegid = /* @__PURE__ */ unsupported('getegid', 'host identity is not exposed to plugins');
+process.getuid = function getuid() {
+  return SANDBOX_UID;
+};
+process.geteuid = function geteuid() {
+  return SANDBOX_UID;
+};
+process.getgid = function getgid() {
+  return SANDBOX_UID;
+};
+process.getegid = function getegid() {
+  return SANDBOX_UID;
+};
+process.getgroups = /* @__PURE__ */ unsupported('getgroups', 'group membership is not exposed to plugins');
 process.setuid = /* @__PURE__ */ unsupported('setuid', 'privilege changes are never exposed');
 process.setgid = /* @__PURE__ */ unsupported('setgid', 'privilege changes are never exposed');
 
@@ -169,6 +192,7 @@ export const {
   getgid,
   geteuid,
   getegid,
+  getgroups,
   setuid,
   setgid,
   setUncaughtExceptionCaptureCallback,

@@ -154,6 +154,55 @@ registry.register({
   executionLevel: 'low',
 });
 
+// crypto 组：**加密原语一律宿主代工**（摘要 / HMAC / 随机源 / 对称解密）。
+// scope=self 的理由同 bytes/url：输入是调用方给的字节或字符串，输出还给调用方，够不着别人；
+// 真会碰宿主资源的那部分（密钥对象、证书、非对称运算）**一律不做**——那才该是 host 级的东西。
+// zlib 组：压缩/解压也是**宿主代工**（原生压缩库不可复刻），scope=self 同理——输入输出都在调用方手里。
+registry.register({
+  name: 'zlib.compress',
+  group: 'zlib',
+  description: '压缩（deflate/gzip 及其 raw 形态）与 crc32',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
+registry.register({
+  name: 'zlib.decompress',
+  group: 'zlib',
+  description: '解压（inflate/gunzip/unzip 及其 raw 形态）',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
+registry.register({
+  name: 'crypto.hash',
+  group: 'crypto',
+  description: '摘要、HMAC 与 timingSafeEqual',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
+registry.register({
+  name: 'crypto.random',
+  group: 'crypto',
+  description: '随机源：randomBytes / randomUUID / getRandomValues',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
+registry.register({
+  name: 'crypto.cipher',
+  group: 'crypto',
+  description: '对称解密（decipheriv，含 AEAD 认证标签）；非对称与密钥对象不做',
+  scope: 'self',
+  confidentiality: 'public',
+  executionLevel: 'low',
+});
+
 registry.register({
   name: 'timers.schedule',
   group: 'timers',

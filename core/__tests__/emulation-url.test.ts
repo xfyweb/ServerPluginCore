@@ -1076,7 +1076,8 @@ console.log('CWD ' + process.cwd());
     const [relLine, cwdLine] = out.split('\n');
     const cwd = cwdLine.slice('CWD '.length);
     const rel = relLine.slice('REL '.length);
-    assert.equal(cwd, SMOKE_DIR);
+    // 沙箱里看到的路径一律 **POSIX 形态**（`\` → `/`），见 core/emulated-env.ts 的说明
+    assert.equal(cwd, SMOKE_DIR.split('\\').join('/'));
     // cwd 是数据目录 → 相对路径解析成它下面的路径（Windows 开发机上路径分隔符会被转义，故只比后缀）
     assert.ok(rel.startsWith('file:///'), `相对路径也必须得到合法的 file: URL，实际 ${rel}`);
     assert.ok(decodeURIComponent(rel).endsWith('/rel/x.txt'), `实际 ${rel}`);

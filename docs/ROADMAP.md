@@ -87,9 +87,17 @@
    - **已完成（P2-A 前半）**：`path`（POSIX）/ `events` / `assert` / `tty` / `constants` + **登记表**（`core/sandbox-modules/registry.ts`，构建层将来共用）+ loader 接线 + 对齐测试骨架（`core/__tests__/sandbox-modules.test.ts`）；
    - **已完成（第二批）**：`util`(+`util/types`) / `os` / `process` / `buffer` / `string_decoder` / `url` / **`fs` + `fs/promises`**（作用域=数据目录、errno 映射见 module-emulation-design §7）。`url` 的 WHATWG 部分**走宿主**（实测 QuickJS **没有** `URL`/`URLSearchParams`，不能"包装内置"，只能自实现或代工；且**禁止**启用 `quickjs-libc` 的 std：它带 fs/进程/curl，是能力泄漏），legacy `parse`/`format`/`resolve` 与 `pathToFileURL`/`fileURLToPath` 照 `node/lib/url.js` 移植；
    - **第二批的验收口径**（可复跑）：`node tools/dep-survey.mjs --set utils --coverage` 从 17/43 抬到 **26/43**（`debug` `ora` `cli-table3` `properties` `handlebars` `eta` `ejs` `which` 等 9 个包过闸，`joi` 由 `url` 解锁）；每模块一份与宿主 Node 的差分测试 + 至少一条**真沙箱冒烟**（宿主进程里的差分**测不出**"沙箱里缺某个全局"，这个坑踩过）；
-   - **P2-C**：`crypto` 摘要（`buffer` 已提前到 P2-B）；
+   - **已完成（第三批）**：`crypto`（摘要/HMAC/随机/`timingSafeEqual`/一次性 `createDecipheriv` + 固定基线静态表；非对称与密钥对象明确抛错）、`zlib`（同步 + 回调面 + `crc32`）、**收口三项**（`worker_threads` 只报事实 / `process.getuid` 一族 → 固定 1000 / `querystring` 完整面）、**`stream` B1**（`Stream` legacy 函数基类 + `Readable`/`Writable`/`Duplex`/`Transform`/`PassThrough` + `finished`/`pipeline`；已知差异见设计 §9.1）。**`csv-parse` 的流式入口（B2）与 `stream/promises` 真实现留到有靶子卡住时再做**。
+     覆盖度（**构建闸静态口径**，`node tools/dep-survey.mjs --set utils|core --coverage`）：utils **36/43**、core **16/27**；
+     ⚠️ 这个口径是"产物里出现过且已登记"，与"真能跑通"不是一回事——真实依赖冒烟 **10/11**（`_audit/dep-smoke.mts all`）。
+   - **第三批顺带修掉的三个"非仿真模块"缺陷**（都由真实依赖冒烟暴露，不是模块清单里的活）：
+     ① `os.cpus` 改成**混合口径**（条数=容量类真值、`model`/`speed` 给空值）——`fast-glob` 在模块顶层取核数，抛错等于整包装载失败；
+     ② 引导层补 CJS 全局 `__filename`/`__dirname` 与 `setImmediate` 壳子（esbuild 搬 CJS 包与 `@nodelib/fs.walk` 都要）；
+     ③ **`path.resolve` 认盘符**——之前 `resolve('C:/…/tree')` 会拼成 `C:/C:/…`，`fast-glob` 因此**一个条目都匹配不到且不报错**。
+   - **第三批遗留（1 项，落点在构建层不是仿真层）**：`graceful-fs` 在装载期给 `fs` 打补丁，而 QuickJS 对"写只读访问器"是**抛错**（V8 静默）⇒ 现状装载失败；方案已定并记档（构建层把它别名成 `fs` shim + 产物清单记一笔，理由见设计 §14.8）。
    - **交付物**：`core/sandbox-modules/*.js`（一模块一真实文件）+ 登记表 + 各模块对齐测试；
    - **排期依据是实测**（`tools/dep-survey.mjs --set utils --coverage`）：P2-A 在当前样本里解锁 **0** 个包（是**前置**、不是解锁项），真正的杠杆在 P2-B；`stream` 是单模块收益最高的（单独补它解锁 5 个包，且按包拆开多为 1–2 个属性）；
+     ⚠️ **实测修正**：`stream` 落地后那"5 个包"里 `fast-glob` 已真正跑通（第三批顺带修了三处）、`csv-parse` 待加靶子；`graceful-fs` 卡"装载期给 `fs` 打补丁"（方案已定）、`proper-lockfile`/`chokidar` 还缺 `fs.watch` 与 fd 面。**"解锁 N 个包"是候选估计，落地后要按真实冒烟重算**（设计 §14.7）。
 7. **权限档位落地**（intent-capture §8.1/§8.2）：`PermissionPoint.grant` 三档（`auto` / `install` / `explicit`）+ 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）+ 判定链第 3 步改为"**仅 `explicit` 需逐点授予**"（`auto`/`install` 审计记 `installed-grant`）；升级新增的 `install`/`explicit` 点走**增量同意**；
 8. **CLI 完善**（依赖管理约定的后半，plugin-lifecycle-design §5）：① **维护模式守护进程**——主进程停止时由 CLI 临时拉起，不触发装载、只处理 CLI 事件、30 秒无交互自动退出；② 卸载/禁用的**依赖树级联确认**（最多向下追溯 3 层，确认后连带**禁用**依赖方）；
 9. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。

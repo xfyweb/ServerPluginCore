@@ -131,8 +131,12 @@ test('fs：写/读/列/查都在数据目录内，相对路径按数据目录解
   assert.equal(probe.isFile, true);
   assert.equal(probe.isDir, false);
   assert.equal(probe.subIsDir, true);
-  // probe.json 是最后才写的，所以列目录时只看到刚建出来的 sub
-  assert.deepEqual(probe.entries, ['sub:dir']);
+  // probe.json 是最后才写的，所以列目录时只看到刚建出来的 sub；
+  // `tmp` 是**宿主预建**的（`os.tmpdir()` 指向 `<dataDir>/tmp`，必须存在，否则
+  // `tmp`/`fs.mkdtempSync(os.tmpdir()+…)` 这类用法直接 ENOENT——见 core/plugin/loader.ts）
+  assert.deepEqual(probe.entries, ['sub:dir', 'tmp:dir']);
+  // 顺带确认那个 tmp 目录确实在插件数据目录里（不是宿主 tmp）
+  assert.equal(existsSync(dataPath(id('fs'), 'tmp')), true);
   await manager.disable(id('fs'));
 });
 

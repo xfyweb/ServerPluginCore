@@ -11,7 +11,7 @@
 // 这是 CJS 依赖能用到仿真的前提——CJS 里的 require 无法标记为外部（会退化成运行期欠条）。
 
 /** 仿真阶段（与 module-emulation-design §3 对应，供文档与报告使用） */
-export type EmulationStage = 'P2-A' | 'P2-B' | 'P2-C';
+export type EmulationStage = 'P2-A' | 'P2-B' | 'P2-C' | 'P2-D' | 'P3';
 
 export interface SandboxModule {
   /** 规范名（已去 `node:` 前缀，保留子路径），如 `path` / `fs/promises` */
@@ -144,10 +144,60 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     needsHost: true,
     note: 'StringDecoder：跨 chunk 的不完整多字节序列由**宿主**处理（状态机不自己复刻），沙箱侧只做切片与缓存',
   },
+  // ── P2-C：加密（**原语一律宿主代工**，沙箱里只有形状与状态搬运）──
+  {
+    canonical: 'crypto',
+    stage: 'P2-C',
+    needsHost: true,
+    note: '最小集：摘要/HMAC（`createHash`/`createHmac`/一次性 `hash`）、随机源（`randomBytes`/`randomUUID`/`getRandomValues`/`randomFillSync`/`randomInt`）、`timingSafeEqual`、**对称解密** `createDecipheriv`、静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`，**固定 22.22.1 基线**）。`sign`/`verify`/`KeyObject`/`createPublicKey`/`diffieHellman`/`generateKeyPair` 等**一律明确抛错**（密钥对象要求对象身份，见设计 §3.2.1 阻断 1）',
+  },
+  {
+    canonical: 'zlib',
+    stage: 'P2-C',
+    needsHost: true,
+    note: '最小集：**同步面 + 回调面**（\`deflateRawSync\`/\`inflateRawSync\`/\`gzipSync\`/\`crc32\` … 与对应的回调形态），宿主代工、字节进字节出；错误保真（\`Z_DATA_ERROR\`/\`Z_BUF_ERROR\` + message + errno）。**流式入口**（\`createGzip\` 一族）与 brotli/zstd **明确抛错**（前者等 \`stream\`，后者无实测需求）',
+  },
+  // ── P2-C：纯计算兼容面（不碰宿主、不扩能力面）──
+  {
+    canonical: 'querystring',
+    stage: 'P2-C',
+    needsHost: true,
+    note: '查询串的 legacy 编解码：`parse`/`stringify`（`encode`/`decode` 是**同一个函数**）+ `escape`/`unescape`/`unescapeBuffer`；逐行移植 `node/lib/querystring.js`（含自定义 `sep`/`eq`/`maxKeys`/`decodeURIComponent`）。坏转义的回退解码要 UTF-8 语义 ⇒ 宿主代工（同 `string_decoder`）',
+  },
+  {
+    canonical: 'worker_threads',
+    stage: 'P2-C',
+    needsHost: false,
+    note: '**只报事实，不解锁线程**：`threadId`(0)/`isMainThread`(true)/`workerData`(null)/`parentPort`(null)；`Worker`/`MessageChannel`/`MessagePort`/`receiveMessageOnPort` 等**一律明确抛错**。存在理由：`write-file-atomic` 等包靠 `require("worker_threads").threadId` 决定临时文件名后缀',
+  },
+  // ── P2-D：流（**极小形状**，范围逐包实测得出，见 §9 的已知差异）──
+  {
+    canonical: 'stream',
+    stage: 'P2-D',
+    needsHost: false,
+    note: '极小形状：`Stream`（**legacy 函数基类**，`Stream.call(this)` 可用）+ `Readable`/`Writable`/`Duplex`/`Transform`/`PassThrough` + `pipe`/`push`/`_transform`/`_flush`/objectMode + `finished`/`pipeline`。**不做**：完整背压阈值、`AbortSignal`、`stream/web`、`compose`（一律明确抛错）。已知差异：只有微任务（没有 `nextTick`/`setImmediate` 的区分）⇒ 事件**顺序**不保证与 Node 相同，交付的是"终态 + 事件集合"',
+  },
+  {
+    canonical: 'stream/promises',
+    stage: 'P2-D',
+    needsHost: false,
+    note: '子路径入口：`finished`/`pipeline` 的 promise 形态。⚠️ 当前**明确抛错**（B1 不做，等真实依赖卡住再补——CSV 那条路用的是回调形态）',
+  },
+  {
+    canonical: 'stream/web',
+    stage: 'P2-D',
+    needsHost: false,
+    note: '子路径入口：WHATWG `TransformStream`/`ReadableStream`。⚠️ 当前**明确抛错**（`csv-parse/lib/stream.js` 用它，但那条入口不在 `main` 链上）',
+  },
+  {
+    canonical: 'stream/consumers',
+    stage: 'P2-D',
+    needsHost: false,
+    note: '子路径入口：把流读成 `text()`/`buffer()`/`json()` 的小工具。⚠️ 当前**明确抛错**（本批无实测需求，登记它是为了让"沙箱尚未支持"以运行期准确报错的形式出现）',
+  },
 ];
 
 const BY_CANONICAL = new Map(SANDBOX_MODULES.map((m) => [m.canonical, m]));
-
 /**
  * specifier 归一化：`node:path` / `path` → `path`；**保留子路径**（`node:fs/promises` → `fs/promises`）。
  *

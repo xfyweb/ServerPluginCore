@@ -815,6 +815,18 @@ function rmdirSync(path, options) {
   withSyscall('rmdir', p, undefined, () => callJson('fs.rmdir', p));
 }
 
+/**
+ * chmodSync：**唯一做掉的元数据写**。理由见 hostApi 的 fs.chmod 注释——它只作用于插件数据目录里的
+ * 文件自己的权限位（不是宿主资源）。chown / utimes / fchmod 仍然抛错（属主/时间戳是宿主语义；
+ * 实测依赖对这些调用都是 best-effort 包裹，抛错不会打断它们）。
+ */
+function chmodSync(path, mode) {
+  const p = toPathString(path);
+  const m = assertMode(mode, 'mode');
+  if (m === undefined) throw invalidArgType('mode', ['int32'], mode);
+  withSyscall('chmod', p, undefined, () => callJson('fs.chmod', p, String(m)));
+}
+
 function unlinkSync(path) {
   rmSyncImpl(path, { recursive: false, force: false }, 'unlink');
 }
@@ -834,12 +846,26 @@ function copyFileSync(src, dest, mode) {
   );
 }
 
+/**
+ * **返回给插件的路径必须是沙箱形态**（POSIX：\ → /）。
+ *
+ * 为什么：沙箱的路径语义固定 posix，而数据目录在 Windows 开发机上是 `C:\Users\…`。
+ * `process.cwd()` / `os.tmpdir()` 这些**出口**已经统一成 `C:/Users/…`（core/emulated-env.ts），
+ * 路径类的返回值必须跟着一致，否则"把沙箱路径喂回沙箱 path 函数"就会错位——
+ * 实测：`tmp` 包拿 `path.relative(fs.realpathSync(os.tmpdir()), …)` 一对，反斜杠立刻算出 `../C:\…`。
+ * 宿主侧照旧用宿主形态（`validatePath` 会先 resolve 归一化），只有**交回插件**的这一层要转。
+ */
+function toSandboxForm(p) {
+  return p.indexOf('\\') === -1 ? p : p.split('\\').join('/');
+}
+
 function realpathSync(path, options) {
   const enc = nameEncoding(options);
   const p = toPathString(path);
   // syscall 照真值：realpathSync 对不存在的路径报的是 lstat
   const res = withSyscall('lstat', p, undefined, () => callJson('fs.realpath', p));
-  return enc === 'buffer' ? Buffer.from(res.path, 'utf8') : res.path;
+  const out = toSandboxForm(res.path);
+  return enc === 'buffer' ? Buffer.from(out, 'utf8') : out;
 }
 realpathSync.native = realpathSync;
 
@@ -1011,8 +1037,6 @@ const link = stub('fs.link', SYMLINK_WHY);
 const linkSync = stub('fs.linkSync', SYMLINK_WHY);
 const readlink = stub('fs.readlink', SYMLINK_WHY);
 const readlinkSync = stub('fs.readlinkSync', SYMLINK_WHY);
-const chmod = stub('fs.chmod', META_WHY);
-const chmodSync = stub('fs.chmodSync', META_WHY);
 const lchmod = stub('fs.lchmod', META_WHY);
 const lchmodSync = stub('fs.lchmodSync', META_WHY);
 const chown = stub('fs.chown', META_WHY);
@@ -1095,6 +1119,7 @@ const fs = {
   realpath: callbackify(realpathSync),
   access: callbackify(accessSync),
   exists: existsCallback,
+  chmod: callbackify(chmodSync),
 
   // 明确不支持
   open,
@@ -1134,7 +1159,6 @@ const fs = {
   linkSync,
   readlink,
   readlinkSync,
-  chmod,
   chmodSync,
   lchmod,
   lchmodSync,
@@ -1222,7 +1246,6 @@ export {
   linkSync,
   readlink,
   readlinkSync,
-  chmod,
   chmodSync,
   lchmod,
   lchmodSync,
@@ -1271,5 +1294,6 @@ export const copyFile = fs.copyFile;
 export const realpath = fs.realpath;
 export const access = fs.access;
 export const exists = fs.exists;
+export const chmod = fs.chmod;
 
 export default fs;

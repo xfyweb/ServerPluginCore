@@ -117,6 +117,47 @@ test('装载结束后 deadline 被复位（不会把后续钩子一起掐掉）'
   sandbox.dispose();
 });
 
+test('CJS 全局 `__filename`/`__dirname` 存在且指向沙箱内（esbuild 搬 CJS 包时要用）', async () => {
+  // 为什么需要：esbuild 把 CJS 包搬进 ESM 产物时**自己**会留下对这两个标识符的引用，
+  // 而包源码里没有（实测 `write-file-atomic/lib/index.js` 的临时文件名 = hash(__filename, pid, threadId, n)）。
+  // 不给的话是运行期 ReferenceError，且症状只是"某个包写不了文件"。
+  const sandbox = await createSandbox(hostApi, OPTIONS);
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+export function init() {
+  console.log('FILE ' + __filename);
+  console.log('DIR ' + __dirname);
+  console.log('ARGV ' + process.argv.join('|'));
+  console.log('TYPES ' + typeof __filename + '/' + typeof __dirname);
+}
+`,
+    );
+    await sandbox.callHook('init', 3_000);
+  } finally {
+    console.log = origLog;
+    sandbox.dispose();
+  }
+  const [file, dir, argv, types] = logs;
+  // 值 = 沙箱形态的路径（POSIX 形态、以数据目录为根）——**不是**宿主路径形态，也不是空串。
+  // 这里用的是默认 `hostApi`（数据目录 = 进程 cwd），所以只断言形状与自洽性，不断言具体前缀。
+  // ⚠️ 不断言"以 `/` 开头"：Windows 宿主上数据目录是 `C:/…`，而**补前导 `/` 是错的**
+  // （宿主侧 `path.resolve('/C:/…')` → `<cwd>/C:/…` ⇒ validatePath 判越界，实测 fast-glob EACCES）。
+  assert.equal(types, 'TYPES string/string');
+  assert.match(file, /^FILE .*\/plugin\.js$/);
+  assert.match(dir, /^DIR .+/);
+  assert.equal(argv, 'ARGV node|plugin.js');
+  // `__filename` 必须是"目录 + argv[1]"这种自洽关系，否则拿它拼路径会对不上
+  assert.equal(file.slice(5), dir.slice(4) + '/plugin.js');
+  // 不能泄露宿主路径形态（反斜杠 = Windows 宿主泄露）
+  assert.equal(file.includes('\\'), false, `不该出现宿主路径形态：${file}`);
+  assert.equal(file.includes('file://'), false);
+});
+
 test('白名单外的模块被拒（零环境权力的执行点）', async () => {
   const sandbox = await createSandbox(hostApi, OPTIONS);
   await assert.rejects(
@@ -124,15 +165,16 @@ test('白名单外的模块被拒（零环境权力的执行点）', async () =>
       sandbox.runModule(
         '@xfy2412/sandbox-test',
         `
-import { Readable } from 'node:stream';
+import { spawn } from 'node:child_process';
 `,
       ),
     (err: unknown) => {
       assert.ok(err instanceof SpcError);
       assert.equal(err.code, 'PLUGIN_LOAD_FAILED');
-      // `node:stream`（设计上排在第二批之后）：**未登记**才是这条用例要的样本。
-      // 原来这里用 `node:fs`，第二批把它登记了，用例随排期推进自己失效了——样本要挑还没排到的模块。
-      assert.match(err.params.message, /module not allowed: node:stream/);
+      // 样本要挑**设计上永不登记**的模块：这条用例已经随排期推进失效过一次
+      // （`node:fs` → 第二批登记）与一次险情（`node:stream` → 第三批 P2-D 登记）。
+      // `node:child_process` 属于"一律拒绝的能力面"（设计 §9/§3.1），不会再被登记。
+      assert.match(err.params.message, /module not allowed: node:child_process/);
       return true;
     },
   );
