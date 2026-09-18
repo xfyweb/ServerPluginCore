@@ -254,16 +254,19 @@ export function init() {
     assert.equal(lines[6], 'ASYNC true/hello zlib');
   });
 
-  it('未声明权限 → EACCES（真桥的权限判定对 zlib 点同样生效）', async () => {
+  it('`zlib.*` 是 **self/auto：不声明也能用**（v4 免声明；以前这条断言的是 EACCES）', async () => {
+    // 前提变更（第四批 B）：判定链第 2/3 步改成只看 `grant`，`scope: self` 的点免声明免授予。
+    // 声明这道闸没消失——它只对 `grant != auto`（host 点）生效，那一路的判据在 permissions.test.ts。
     const out = await runInSandbox(
       `
 import zlib from 'node:zlib';
 export function init() {
-  try { zlib.deflateRawSync(Buffer.from('x')); } catch (e) { console.log('NOPERM ' + e.code + '/' + e.spcCode); }
+  const c = zlib.deflateRawSync(Buffer.from('x'));
+  console.log('NOPERM-OK ' + (zlib.inflateRawSync(c).toString() === 'x'));
 }
 `,
       [],
     );
-    assert.equal(out, 'NOPERM EACCES/PERMISSION_DENIED');
+    assert.equal(out, 'NOPERM-OK true');
   });
 });

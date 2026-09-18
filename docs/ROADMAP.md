@@ -98,7 +98,9 @@
    - **交付物**：`core/sandbox-modules/*.js`（一模块一真实文件）+ 登记表 + 各模块对齐测试；
    - **排期依据是实测**（`tools/dep-survey.mjs --set utils --coverage`）：P2-A 在当前样本里解锁 **0** 个包（是**前置**、不是解锁项），真正的杠杆在 P2-B；`stream` 是单模块收益最高的（单独补它解锁 5 个包，且按包拆开多为 1–2 个属性）；
      ⚠️ **实测修正**：`stream` 落地后那"5 个包"里 `fast-glob` 已真正跑通（第三批顺带修了三处）、`csv-parse` 待加靶子；`graceful-fs` 卡"装载期给 `fs` 打补丁"（方案已定）、`proper-lockfile`/`chokidar` 还缺 `fs.watch` 与 fd 面。**"解锁 N 个包"是候选估计，落地后要按真实冒烟重算**（设计 §14.7）。
-7. **权限档位落地**（intent-capture §8.1/§8.2）：`PermissionPoint.grant` 三档（`auto` / `install` / `explicit`）+ 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）+ 判定链第 3 步改为"**仅 `explicit` 需逐点授予**"（`auto`/`install` 审计记 `installed-grant`）；升级新增的 `install`/`explicit` 点走**增量同意**；
+7. **权限档位落地**（intent-capture §8.1/§8.2）：`PermissionPoint.grant` 三档（`auto` / `install` / `explicit`）+ 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）+ 判定链第 2/3 步改为"**只看 grant**"——`auto` 免声明免授予、`install` 要声明但免逐点授予、`explicit` 要声明 + 逐点授予（`auto`/`install` 审计记 `installed-grant`）；升级新增的 `install`/`explicit` 点走**增量同意**（P3 前端）。
+   **✅ 已落地（2026-09，第四批 B）**：判定链 + 注册期约束 + 17 个 API 点的档位清单（`core/__tests__/permissions-meta.test.ts` 钉成显式表）；
+   **遗留**：`fs.read.data`/`fs.write.data` 暂留 `self`/`auto`（"内容式权限"要单独讨论），增量同意 UI 属 P3；
 8. **CLI 完善**（依赖管理约定的后半，plugin-lifecycle-design §5）：① **维护模式守护进程**——主进程停止时由 CLI 临时拉起，不触发装载、只处理 CLI 事件、30 秒无交互自动退出；② 卸载/禁用的**依赖树级联确认**（最多向下追溯 3 层，确认后连带**禁用**依赖方）；
 9. 契约随实现演进 v0.3（事件授权模型、类型声明自动生成）。
 - 验收：**未登记内建 / 原生模块 → 构建期失败**；**解析不到的非内建可选依赖 → 自动 stub（不失败，行为与 Node 一致）**；**动态 require → 构建期失败**；产物自检（无 `"Dynamic require of "` 标记、残留 specifier ⊆ 白名单）；驱动插件注册的方法进注册表且可被沙箱能力插件调用；TaskHandle 全生命周期测试（阻塞/异步/取消/超时/杀树）；**权限档位判定**——`auto`/`install` 免逐点授予、`explicit` 未授予 → `NOT_GRANTED`、`scope: self` + `grant: explicit` 注册报 `SCOPE_GRANT_INVALID`。

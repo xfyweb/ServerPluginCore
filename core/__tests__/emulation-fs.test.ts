@@ -657,7 +657,11 @@ export async function init() {
     assert.equal(lines[10], 'RM false');
   });
 
-  it('未声明权限 → EACCES + spcCode=PERMISSION_DENIED（宿主的权限判定在真桥上生效）', async () => {
+  it('`fs.*.data` 是 **self/auto：未声明也能读**（v4 免声明）；越界仍然被路径收敛拦住', async () => {
+    // 前提变更（第四批 B）：这条用例以前断言"未声明 → EACCES/PERMISSION_DENIED"。
+    // 现在 `scope: self`（= `grant: auto`）的点**免声明**，所以第一步会真的去读文件：
+    // 文件不存在 ⇒ Node 形状的 ENOENT（说明"权限这关已经过了，是文件系统在回答"）。
+    // 第二步仍然要拦住越界——**免声明不等于免收敛**，路径作用域与权限是两套闸。
     const out = await runInSandbox(
       `
 import fs from 'node:fs';
@@ -669,8 +673,8 @@ export function init() {
       [],
     );
     const [noPerm, esc] = out.split('\n');
-    // 权限判定在路径校验**之前**（D3）：所以这里看到的是 PERMISSION_DENIED 而不是 PATH_OUT_OF_SCOPE
-    assert.equal(noPerm, 'NOPERM EACCES/PERMISSION_DENIED/open');
-    assert.equal(esc, 'ESC EACCES/PERMISSION_DENIED');
+    assert.equal(noPerm, 'NOPERM ENOENT/ENOENT/open');
+    assert.match(esc, /^ESC \w+\/\w+$/);
+    assert.ok(!esc.includes('PERMISSION_DENIED'), `免声明之后不该再是权限拒绝：${esc}`);
   });
 });

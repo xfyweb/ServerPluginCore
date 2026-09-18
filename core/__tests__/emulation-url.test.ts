@@ -1049,18 +1049,18 @@ console.log('OBJURL ' + thrown);
     assert.equal(lines[9], 'OBJURL ERR_NOT_SUPPORTED_IN_SANDBOX');
   });
 
-  it('没声明权限时宿主代工面被拒（fail-closed，不是静默给空值）', async () => {
-    await assert.rejects(
-      () =>
-        runInSandbox(
-          `
+  it('没声明权限时宿主代工面**照常可用**（v4：`url.*` 是 self/auto，免声明）', async () => {
+    // 前提变更（第四批 B）：以前这条断言"没声明 → PERMISSION_DENIED"。
+    // `url.parse`/`url.encode` 是 `scope: self`（输入是调用方给的串、输出还给调用方，够不着别人）
+    // ⇒ 现在免声明。宿主代工**不等于**要权限：判据是"够不够得着别人"，不是"在哪台机器上算的"。
+    const out = await runInSandbox(
+      `
 import { URL } from 'node:url';
 console.log('HREF ' + new URL('http://x/a').href);
 `,
-          [],
-        ),
-      (err: any) => String(err?.message ?? err).includes('PERMISSION_DENIED') || JSON.stringify(err).includes('PERMISSION_DENIED'),
+      [],
     );
+    assert.equal(out, 'HREF http://x/a');
   });
 
   it('沙箱里 `pathToFileURL` 的相对路径落在数据目录下（与 process.cwd() 同一事实）', async () => {

@@ -332,17 +332,19 @@ export function init() {
     assert.equal(out.split('\n')[5], 'PROTO true');
   });
 
-  it('未声明 bytes 权限 → 坏转义回退报 EACCES（真桥的权限判定同样生效）', async () => {
+  it('不声明 bytes 权限也能走坏转义回退（v4：`bytes.*` 是 self/auto，免声明）', async () => {
+    // 前提变更（第四批 B）：以前这条断言"未声明 → EACCES"。
+    // `bytes.encode`/`decode` 是 `scope: self`——输入是调用方给的字节/字符串、输出还给调用方。
+    // 宿主代工不等于要权限：判据是"够不够得着别人"。
     const out = await runInSandbox(
       `
 import { parse } from 'node:querystring';
 export function init() {
-  try { parse('a=%E4'); console.log('NOPERM none'); } catch (e) { console.log('NOPERM ' + e.code); }
+  try { console.log('NOPERM ' + parse('a=%E4').a.charCodeAt(0)); } catch (e) { console.log('NOPERM ' + e.code); }
 }
 `,
       [],
     );
-    // `decodeURIComponent('%E4')` 抛错后回退到宿主 UTF-8 ⇒ 权限拒绝
-    assert.equal(out, 'NOPERM EACCES');
+    assert.equal(out, 'NOPERM 65533'); // U+FFFD：UTF-8 回退真的走了宿主，且不再需要声明
   });
 });

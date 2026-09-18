@@ -11,7 +11,7 @@
 // 这是 CJS 依赖能用到仿真的前提——CJS 里的 require 无法标记为外部（会退化成运行期欠条）。
 
 /** 仿真阶段（与 module-emulation-design §3 对应，供文档与报告使用） */
-export type EmulationStage = 'P2-A' | 'P2-B' | 'P2-C' | 'P2-D' | 'P3';
+export type EmulationStage = 'P2-A' | 'P2-B' | 'P2-C' | 'P2-D' | 'P2-E' | 'P3';
 
 export interface SandboxModule {
   /** 规范名（已去 `node:` 前缀，保留子路径），如 `path` / `fs/promises` */
@@ -55,7 +55,7 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     canonical: 'path/win32',
     stage: 'P2-A',
     needsHost: false,
-    note: '入口存在但方法**一律抛错**：Windows 路径语义未实现，不静默给 posix 结果（同 `path.win32`）',
+    note: '入口存在但方法**一律抛错**：Windows 路径语义未实现，不静默给 posix 结果（同 `path.win32`）。⚠️ **P2-E 会把它改成真实现**（模型 B：仿真平台跟随宿主 ⇒ Windows 部署上 `path` 本身就是 win32 语义）',
   },
   {
     canonical: 'events',

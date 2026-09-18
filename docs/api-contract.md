@@ -221,7 +221,10 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 > v3 修订：**删除 `protectionLevel`**（Android 的"授予仪式"枚举：normal / dangerous / signature）。理由：(1) 它在本仓库里从未被判定逻辑读取，是装饰性字段；(2) 其中 `signature`（仅同签名可申请）把身份塞进权限定义，与"来源不参与权限判定"冲突；(3) `normal` 真正表达的是"这个能力够不着别人"，用 `scope: self` 表达更准确。按信任档分档的 `defaults` 同时删除。
 >
-> v4 修订：**新增 `grant` 三档**（intent-capture §8.1）。它和刚删掉的 `protectionLevel` 的区别是本质的——`grant` **被判定链读取**（第 3 步只看它），而 `protectionLevel` 是死字段；`scope` 则从"要不要授予"退为"碰不碰宿主资源"，并在注册期约束 `grant`。**目标态尚未落地**：当前代码仍是 `scope = host ⇒ 未授予即拒绝`，改动随 P2 权限层一起做。
+> v4 修订：**新增 `grant` 三档**（intent-capture §8.1）。它和刚删掉的 `protectionLevel` 的区别是本质的——`grant`
+> **被判定链读取**（第 2、3 步都只看它），而 `protectionLevel` 是死字段；`scope` 则从"要不要授予"退为"碰不碰宿主资源"，
+> 并在注册期约束 `grant`。**✅ 已落地（2026-09，第四批 B）**：判定链第 2 步放行 `auto` 档、第 3 步只看 `explicit`，
+> 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）。
 
 - **权限点不设 identity / trust 类字段**：它只描述"这个能力是什么、有多敏感"，不描述"谁有资格申请"。
 - 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
@@ -232,10 +235,30 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 ```
 1  权限点未在注册表登记               → UNKNOWN_POINT（未知即拒绝）
-2  manifest 未声明该点                → NOT_DECLARED（无默认放行）
+2  grant != auto 且 manifest 未声明   → NOT_DECLARED（无默认放行；**auto 档免声明**）
 3  grant = explicit 且管理员未授予    → NOT_GRANTED（auto / install 档免逐点授予，见 intent-capture §8）
 4  通过 → 作用域与参数校验在各方法内层（auto / install 通过时审计记 installed-grant）
 ```
+
+> **✅ 已落地（2026-09，第四批 B）**。两处与早期草案的差别，都是落地时才定死的：
+>
+> ① **第 2 步也看 `grant`，不再看 `scope`**。`scope` 回答"够不够得着别人"（资源语义），
+> "要不要在 manifest 里自报家门"是**摩擦**问题——两者混在一个字段里正是 v3 "self 也要声明"
+> 的由来（纯摩擦，且拦不住恶意方）。现在的口径：**`self` = 免声明免授予**；**`host` = 必须声明**
+> （哪怕是"插件自己的数据目录"，那也是宿主文件系统里的一块，管理员该在安装时看见它），
+> 再按 `grant` 档决定要不要逐点授予。
+>
+> ② **`grant` 缺省按 `scope` 推导**（`self → auto`、`host → explicit`），推导结果就是注册期校验的规则
+> （`self` 只允许 `auto`，违反 → `SCOPE_GRANT_INVALID`）。老调用点不写 `grant` 也不会松动：
+> `host` 兜到 `explicit` 是 fail-closed 的方向。**注册时存解析后的值**，判定链只读这一处。
+>
+> 当前档位分布（`core/__tests__/permissions-meta.test.ts` 把它钉成显式清单）：
+> **17 个 API 点全是 `self`/`auto`（免声明）**；`exec.template.*` 是 `host`/`explicit`
+> （机器上装了 git/nginx 才有，数量随机器变，但档位不变）。
+>
+> ⚠️ **`fs.read.data` / `fs.write.data` 暂留 `self`**：它们碰的是宿主文件系统里的真实文件，
+> 按 `scope` 的定义更像 `host`（`grant: install` 那一档）。「内容式权限」（按路径/内容而不是按
+> 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦。见 `_audit/batch-4-plan.md` §2.3。
 
 - `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / **出网类权限点（exec 模板或驱动插件注册的端点）** / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；

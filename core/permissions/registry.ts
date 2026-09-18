@@ -17,6 +17,16 @@ import { SpcError } from '../errors';
  */
 export type Scope = 'self' | 'host';
 export type Decision = 'allow' | 'deny';
+/**
+ * 授予方式（v4，`grant` 三档，见 docs/api-contract.md §6/§7）：
+ * - `auto`：**免声明、免授予、安装即用**（`self` 域：够不着别人）
+ * - `install`：**要声明**，读安装清单即生效、可一键收回（宿主资源，但资源本来就属于该插件）
+ * - `explicit`：**要声明 + 必须逐点授予**（写宿主资源 / 提权 / 出网 / `exec.template.*` / `process.*`）
+ *
+ * ⚠️ 与 v3 删掉的 `protectionLevel` 的**本质区别**：这个字段**被判定链读取**
+ * （第 2 步"要不要声明"与第 3 步"要不要授予"都只看它），不是装饰。
+ */
+export type Grant = 'auto' | 'install' | 'explicit';
 /** 保密等级（读门槛）：public < sensitive < secret */
 export type Confidentiality = 'public' | 'sensitive' | 'secret';
 /** 执行等级（写门槛）：low < medium < high */
@@ -30,12 +40,23 @@ export interface PermissionPoint {
   name: string;
   group: string;
   description: string;
-  /** 作用域：self 免授予 / host 必须逐点授予 */
+  /** 作用域：self 够不着别人（免声明免授予）/ host 碰宿主资源 */
   scope: Scope;
+  /**
+   * 授予方式。**缺省按 scope 推导**（`self → auto`、`host → explicit`），且推导结果就是注册期校验的规则
+   * —— 老调用点不写它也不会松动（`host` 兜到 `explicit` 是 fail-closed 的方向）。
+   */
+  grant?: Grant;
   /** 默认保密等级（调用方未声明 meta 时的兜底） */
   confidentiality: Confidentiality;
   /** 默认执行等级 */
   executionLevel: ExecutionLevel;
+}
+
+/** `grant` 的缺省推导：`self → auto`、`host → explicit`（偏保守；要 `install` 必须显式写） */
+export function resolveGrant(scope: Scope, grant?: Grant): Grant {
+  if (grant !== undefined) return grant;
+  return scope === 'self' ? 'auto' : 'explicit';
 }
 
 export class PermissionRegistry {
@@ -53,7 +74,17 @@ export class PermissionRegistry {
         confidentiality: point.confidentiality,
       });
     }
-    this.points.set(point.name, point);
+    // 一致性约束（v4）：**`self` 只能是 `auto`**——"够不着别人"的能力没有理由再要一次授予仪式。
+    // 反过来挡住的是"给 self 点写 explicit"这种把摩擦塞进 self 的写法。
+    if (point.scope === 'self' && point.grant !== undefined && point.grant !== 'auto') {
+      throw new SpcError('SCOPE_GRANT_INVALID', {
+        permission: point.name,
+        scope: point.scope,
+        grant: point.grant,
+      });
+    }
+    // 存**解析后**的档位：判定链只读这里，不再各自推导（单一事实源）
+    this.points.set(point.name, { ...point, grant: resolveGrant(point.scope, point.grant) });
   }
 
   get(name: string): PermissionPoint | undefined {

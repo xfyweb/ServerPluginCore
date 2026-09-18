@@ -422,26 +422,32 @@ test('lifecycle：version 做契约协商、health 回执（对象返回值被�
   await manager.disable(id('lc'));
 });
 
-test('权限：方法未在 manifest 声明 → PERMISSION_DENIED（NOT_DECLARED，无默认放行）', async () => {
-  // 只声明 fs.write.data，却去调 kv.set
+test('权限：`grant: auto`（self）的点**不声明也能用**，审计记 allowed + grant（v4 免声明）', async () => {
+  // 前提变更（第四批 B）：判定链第 2/3 步从"看 scope"改成"**只看 grant**"。
+  // 这条用例以前断言 `kv.set` 未声明 → NOT_DECLARED（纯摩擦：kv 是插件自己的数据）。
+  // 现在断言的是**免声明路径真的通**，并且**审计仍然留痕**（免声明 ≠ 不留痕）。
+  // 声明这道闸没有消失——它只对 `grant != auto`（host 点）生效，那一路的真桥用例
+  // 要等第一个 host 点（`exec.template.*`）落地再补；判定链层面的用例在 permissions.test.ts。
   const dir = makePlugin(
     'perm',
-    `import { fs, kv } from '@host/api';
-     export function init(){
-       let code = 'NO-ERROR';
-       try { kv.set('x', 1); } catch (e) { code = e.code; }
-       fs.write('code.txt', code);
-     }`,
-    { permissions: ['fs.write.data'] },
+    `import { kv } from '@host/api';
+     export function init(){ kv.set('x', 1); }`,
+    // 故意**不声明 kv.write**（清单里放的是别的点）：schema 要求 permissions 至少 1 项，
+    // 而"空清单"会先在 schema 那关被拒，测不到判定链。声明的那个点与调用无关，正好当对照。
+    { permissions: ['lifecycle.health'] },
   );
   await manager.install(dir);
-  assert.equal(readData(id('perm'), 'code.txt'), 'PERMISSION_DENIED');
   const audit = readFileSync(join(TMP, 'audit', 'audit.jsonl'), 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as { pluginId: string; method: string; result: string; permission?: { code: string } });
-  const denied = audit.find((e) => e.pluginId === id('perm') && e.method === 'kv.set');
-  assert.equal(denied?.result, 'denied');
-  assert.equal(denied?.permission?.code, 'NOT_DECLARED');
+    .map((l) => JSON.parse(l) as {
+      pluginId: string;
+      method: string;
+      result: string;
+      permission?: { code: string; params?: Record<string, string> };
+    });
+  const call = audit.find((e) => e.pluginId === id('perm') && e.method === 'kv.set');
+  assert.equal(call?.result, 'ok', '未声明也该放行（self/auto）');
+  assert.equal(call?.permission?.code, 'ALLOWED');
   await manager.disable(id('perm'));
 });

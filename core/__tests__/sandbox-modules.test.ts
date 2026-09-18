@@ -1169,13 +1169,27 @@ console.log(JSON.stringify({ s: s, size: size }));
       },
       'bridgefail.notbytes': { permission: 'bytes.encode', binaryResult: true, fn: () => 'oops' },
       'bridgefail.unresolved': { permissionFor: () => null, fn: () => 'never' },
-      // 越权那条要挑**没声明**的点：`bytes.encode` 是 scope=self，不需要管理员授予
-      // （见 safe-path 里"scope=self 没有授予那道闸"的说明），拿它测不出拒绝分支
-      'bridgefail.notdeclared': { permission: 'bytes.decode', fn: () => 'never' },
+      // 越权那条要挑**会真的被拒**的点：v4 起 `bytes.*` 是 `self/auto`（**免声明免授予**），
+      // 拿它测不出拒绝分支。所以这里挂一个 `host` + `explicit` 的合成点（形态同 `exec.template.*`，
+      // 但不依赖机器上装了什么）——它在下面 register 进注册表。
+      'bridgefail.notdeclared': { permission: 'test.bridge.host', fn: () => 'never' },
     };
+    // 合成 host 点：注册一次（注册表是全局的，重复名会抛 ⇒ 已存在就跳过）
+    const { registry: liveRegistry } = await import('../permissions/registry.ts');
+    if (!liveRegistry.get('test.bridge.host')) {
+      liveRegistry.register({
+        name: 'test.bridge.host',
+        group: 'test',
+        description: '合成 host/explicit 点（测试用）：形态同 exec.template.*',
+        scope: 'host',
+        grant: 'explicit',
+        confidentiality: 'sensitive',
+        executionLevel: 'medium',
+      });
+    }
     const sandbox = await createSandbox(api, {
       pluginId: PLUGIN,
-      permissions: ['bytes.encode'],
+      permissions: ['bytes.encode'], // 故意**不声明**那个 host 点 ⇒ 走到 NOT_DECLARED
       grants: [],
     });
     const logs: string[] = [];
@@ -1243,7 +1257,7 @@ console.log([
     // 越权：审计里记的是**权限点**（可复盘、非明文参数）
     const denied = pick('bridgefail.notdeclared', 'denied');
     assert.ok(denied, '越权没有落审计');
-    assert.equal(denied.target, 'bytes.decode');
+    assert.equal(denied.target, 'test.bridge.host');
     assert.equal(denied.permission.decision, 'deny');
 
     // S-6：权限点解析失败那一支**不得**写明文 target，改用 paramsDigest 关联。

@@ -158,6 +158,84 @@ export function init() {
   assert.equal(file.includes('file://'), false);
 });
 
+/**
+ * 合成宿主方法：`host` + `explicit` 档的权限点（模拟未来的 `exec.template.*`）。
+ *
+ * 为什么要一个合成的：**声明这道闸现在只对 host 点生效**，而内置的 host 点
+ * （`exec.template.git.*`）与"机器上装没装 git"有关 ⇒ 拿它写用例会随机器变红。
+ */
+function hostPointApi(): HostApi {
+  return {
+    'test.hostop': {
+      permission: 'test.host.gate',
+      fn: () => 'ran',
+      // 权限点由测试自己登记（注册表是全局的；`register` 对重复名会抛，所以这里用固定名 + 幂等）
+    },
+  };
+}
+
+test('host 点：**未声明 → NOT_DECLARED**；声明了但未授予 → **NOT_GRANTED**；授予后才放行', async () => {
+  const { PermissionRegistry } = await import('../permissions/registry');
+  const { registry: live } = await import('../permissions/registry');
+  assert.ok(live instanceof PermissionRegistry);
+  if (!live.get('test.host.gate')) {
+    live.register({
+      name: 'test.host.gate',
+      group: 'test',
+      description: '合成 host 点（测试用）：模拟 exec.template.* 的档位',
+      scope: 'host',
+      grant: 'explicit',
+      confidentiality: 'sensitive',
+      executionLevel: 'medium',
+    });
+  }
+
+  /** 跑一次调用并回收结果/错误码 */
+  async function call(permissions: string[], grants: string[]): Promise<string> {
+    const sandbox = await createSandbox(hostPointApi(), {
+      pluginId: '@xfy2412/sandbox-test',
+      permissions,
+      grants,
+    });
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        '@xfy2412/sandbox-test',
+        `
+const H = globalThis.__host;
+export function init() {
+  const raw = H['test.hostop']();
+  const parsed = JSON.parse(raw);
+  // 信封优先：越权是 {__spcError:{code,params}}；否则就是**返回值的 JSON**
+  // （桥的返回值一律是 JSON 文本，字符串返回值会是 "ran" 这种带引号的形态）
+  if (parsed && typeof parsed === 'object' && parsed.__spcError) {
+    const info = parsed.__spcError;
+    console.log('DENY ' + info.code + '/' + (info.params ? info.params.reason : ''));
+    return;
+  }
+  console.log('OK ' + String(parsed));
+}
+`,
+      );
+      await sandbox.callHook('init', 3_000);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    return logs.join('\n').trim();
+  }
+
+  // ① 未声明 → 声明这道闸先拦（host 资源要在安装时被看见）
+  const first = await call([], []);
+  assert.equal(first, 'DENY PERMISSION_DENIED/NOT_DECLARED', `实际拿到：${JSON.stringify(first)}`);
+  // ② 声明了但没授予 → 授予这道闸拦（explicit 档默认拒绝）
+  assert.equal(await call(['test.host.gate'], []), 'DENY PERMISSION_DENIED/NOT_GRANTED');
+  // ③ 逐点授予 → 放行
+  assert.equal(await call(['test.host.gate'], ['test.host.gate']), 'OK ran');
+});
+
 test('白名单外的模块被拒（零环境权力的执行点）', async () => {
   const sandbox = await createSandbox(hostApi, OPTIONS);
   await assert.rejects(
@@ -188,8 +266,9 @@ import { spawn } from 'node:child_process';
  * 这是 CPU deadline 的**盲区**：插件一进宿主方法，解释器就停了，中断处理器一次都不会被调用
  * —— 预算到期了也没人查。修复前实测：1 秒预算 + 阻塞式 exec = 40777ms，且被记成**成功**。
  *
- * 合成方法也必须挂一个已授予的权限点：桥对"没有权限点"的方法一律 PERMISSION_DENIED
- * （`fs.write.data` 就是 OPTIONS 里已授予的那个，这里借它过闸，不涉及真实文件操作）。
+ * 合成方法也必须挂一个已登记的权限点（**桥对"没有权限点"的方法一律 PERMISSION_DENIED**，
+ * 那条与声明/授予无关）。这里借 `fs.write.data` 过闸——它是 self/auto（v4 起免声明免授予），
+ * 不涉及真实文件操作。声明这道闸只对 host 点生效，用例见下面"host 点必须申报"那条。
  */
 function blockingApi(): HostApi {
   return {

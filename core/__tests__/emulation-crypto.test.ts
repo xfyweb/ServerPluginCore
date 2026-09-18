@@ -433,16 +433,21 @@ export function init() {
     assert.equal(lines[9], 'REFUSE ERR_NOT_SUPPORTED_IN_SANDBOX');
   });
 
-  it('未声明权限 → EACCES（真桥的权限判定对 crypto 点同样生效）', async () => {
+  it('`crypto.*` 是 **self/auto 档：不声明也能用**（v4 免声明；以前这条断言的是 EACCES）', async () => {
+    // 这条用例的**前提变过**（第四批 B）：`scope: self` 的点从"要声明"改成"免声明免授予"。
+    // 于是"不声明就 EACCES"不再是期望行为——它现在断言的是**免声明路径真的通**。
+    // ⚠️ 声明这道闸仍然存在，只是只对 `grant != auto`（即 host 点）生效：
+    // 那一路的判据在 `permissions.test.ts`（`host + install` 未声明 → NOT_DECLARED）。
+    // 真桥上的 host 点用例要等第一个 host 点落地（`exec.template.*`）再补。
     const out = await runInSandbox(
       `
 import crypto from 'node:crypto';
 export function init() {
-  try { crypto.createHash('sha256').update('abc').digest('hex'); } catch (e) { console.log('NOPERM ' + e.code + '/' + e.spcCode); }
+  console.log('NOPERM-OK ' + crypto.createHash('sha256').update('abc').digest('hex').length);
 }
 `,
       [],
     );
-    assert.equal(out, 'NOPERM EACCES/PERMISSION_DENIED');
+    assert.equal(out, 'NOPERM-OK 64');
   });
 });

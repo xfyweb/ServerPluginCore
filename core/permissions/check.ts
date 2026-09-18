@@ -1,10 +1,18 @@
 // 三态判定（D1/D2）：ALLOW / DENY / UNSET→DENY
 //
-// 判定链（v3，见 docs/api-contract.md §7）：
+// 判定链（v4，见 docs/api-contract.md §7）：
 //   1  权限点未在注册表登记            → UNKNOWN_POINT（未知即拒绝）
-//   2  manifest 未声明该点             → NOT_DECLARED（无默认放行）
-//   3  scope = host 且管理员未授予     → NOT_GRANTED
+//   2  `grant != auto` 且 manifest 未声明 → NOT_DECLARED（无默认放行；**auto 档免声明**）
+//   3  `grant = explicit` 且管理员未授予 → NOT_GRANTED（auto / install 档免逐点授予）
 //   4  通过 → 作用域与参数校验在各方法内层
+//
+// **v4 的变化（第四批 B）**：第 2、3 步从"看 scope"改成"**只看 grant**"。
+// 为什么要把"要不要声明"也交给 grant：`scope` 回答的是"够不够得着别人"（资源语义），
+// 而"要不要在 manifest 里自报家门"是**摩擦**问题——两者混在一个字段里就是 v3 那套
+// "self 也要声明"的由来（纯摩擦，且拦不住恶意方）。
+// 现在的口径：**`self` = 免声明免授予**（够不着别人，没有理由再要一次仪式）；
+// **`host` = 必须声明**（哪怕是"插件自己的数据目录"，那也是宿主文件系统里的一块，
+// 管理员该在安装时看见它），再按 grant 档决定要不要逐点授予。
 //
 // 等级（confidentiality / executionLevel）只用于：effective 合成、审计分级、
 // 安装时的提示强度与二次确认——**不再决定 deny/allow**，也不再区分"官方/第三方"。
@@ -12,6 +20,7 @@
 import {
   CONF_ORDER,
   EXEC_ORDER,
+  resolveGrant,
   type Confidentiality,
   type Decision,
   type ExecutionLevel,
@@ -68,18 +77,27 @@ export function checkPermission(
   if (!point) {
     return { decision: 'deny', code: 'UNKNOWN_POINT', params: { permission: requested } };
   }
+  // `grant` 在注册时已解析并存下（缺省 `self → auto` / `host → explicit`）；
+  // 这里再兜一次是给"直接构造的 PermissionPoint"（测试夹具）用，语义与 registry 一致。
+  const grant = resolveGrant(point.scope, point.grant);
 
-  // 2) 插件未声明 → 拒绝（无默认放行）
-  if (!matchDeclaration(requested, declared)) {
-    return { decision: 'deny', code: 'NOT_DECLARED', params: { permission: requested } };
+  // 2) `auto` 档**免声明**；其余档未声明 → 拒绝（无默认放行）
+  if (grant !== 'auto' && !matchDeclaration(requested, declared)) {
+    return {
+      decision: 'deny',
+      code: 'NOT_DECLARED',
+      params: { permission: requested, grant },
+    };
   }
 
-  // 3) host 作用域必须由管理员逐点授予（精确匹配；通配授予无效）
-  if (point.scope === 'host' && !grants.includes(requested)) {
+  // 3) **只有 `explicit` 档**必须由管理员逐点授予（精确匹配；通配授予无效）。
+  //    `install` 档读安装清单即生效——但审计要能区分"授予的"与"安装即生效的"，
+  //    所以 params 里带上 grant，落盘时据此记 installed-grant。
+  if (grant === 'explicit' && !grants.includes(requested)) {
     return {
       decision: 'deny',
       code: 'NOT_GRANTED',
-      params: { permission: requested, scope: point.scope },
+      params: { permission: requested, scope: point.scope, grant },
     };
   }
 
@@ -91,6 +109,7 @@ export function checkPermission(
     params: {
       permission: requested,
       scope: point.scope,
+      grant,
       confidentiality: level.confidentiality,
       executionLevel: level.executionLevel,
     },
