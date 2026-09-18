@@ -17,7 +17,7 @@
 //     随部署漂移（仿真基线要固定——同一份插件在开发机与生产机上不该走不同分支）。
 //
 // 内联约束：静态、无占位符；能力/事实只能运行时从 `globalThis` 取（这里取 `__spcEnv`）。
-import constantsTable from './node-constants.js';
+import { osConstants } from './node-constants.js';
 
 const FACTS = JSON.parse(globalThis.__spcEnv);
 if (!FACTS || typeof FACTS !== 'object') {
@@ -26,6 +26,9 @@ if (!FACTS || typeof FACTS !== 'object') {
   err.code = 'ERR_NOT_SUPPORTED_IN_SANDBOX';
   throw err;
 }
+
+/** `process.platform` → `uname -s` 的叫法（Node 的 `os.type()` 就是这么来的） */
+const PLATFORM_TYPE = { linux: 'Linux', win32: 'Windows_NT', darwin: 'Darwin', freebsd: 'FreeBSD' };
 
 /** Node 的 `process.arch` 名字 → `uname -m` 名字（只列有区别的；没有映射就用原名） */
 const MACHINE_ALIASES = { x64: 'x86_64', arm64: 'aarch64', ia32: 'i686' };
@@ -50,8 +53,14 @@ export function platform() {
 export function arch() {
   return FACTS.arch;
 }
+/**
+ * `os.type()`：**与 `platform` 同源**（`uname -s` 的叫法）。
+ * 真值：linux `Linux` / win32 `Windows_NT` / darwin `Darwin`（Node 是 `process.platform` 的映射）。
+ * P2-E 之前这里写死 `'Linux'`——模型 B 下它必须跟着平台走，否则会出现
+ * "`platform()` 说 win32、`type()` 说 Linux"这种自相矛盾。
+ */
 export function type() {
-  return 'Linux'; // 与 platform 同一取向：仿真基线是 Linux/POSIX
+  return PLATFORM_TYPE[FACTS.platform] ?? FACTS.platform;
 }
 export function release() {
   return FACTS.kernelRelease;
@@ -114,32 +123,22 @@ export const userInfo = /* @__PURE__ */ unsupported('userInfo', IDENTITY_WHY);
 export const getPriority = /* @__PURE__ */ unsupported('getPriority', 'process priority is a host capability');
 export const setPriority = /* @__PURE__ */ unsupported('setPriority', 'process priority is a host capability');
 
+// `EOL` / `devNull` 取环境事实（宿主侧按**仿真平台**给：linux `\n`+`/dev/null`、win32 `\r\n`+`\\.\nul`）
+// ——两者都属"行为性事实"，必须与 `path` 语义、常量表同一取向（P2-E / 模型 B：仿真平台跟随宿主）。
 export const EOL = FACTS.eol;
-export const devNull = '/dev/null';
+export const devNull = FACTS.devNull;
 
 /**
- * `os.constants`：直接复用 `node-constants.js` 的 Linux 真值表（按前缀分回四组）。
+ * `os.constants`：**按真值的分组直接取**（不再是"从前缀反推"）。
  *
- * 为什么要排除 `ENGINE_*`：那张表是**扁平合并**的（Node 的 `constants` 就是合并的），
- * 而 `ENGINE_METHOD_*` 也长得像 errno（`^E[A-Z0-9_]+$`）——不排除就会把 OpenSSL 的
- * 引擎位混进 errno 里。这是"前缀归类"必须写死例外的地方。
+ * 为什么改：旧实现用 `groupOf(/^E[A-Z0-9_]+$/)` 之类的前缀规则从扁平表里反推四组，
+ * 在 Linux 上恰好对得上，但**平台一换就错**——Windows 的 errno 里多出 54 个 `WSA*` 键，
+ * 而 `signals` 组里有 `SIGBREAK` 这种不在 `SIG*` 直觉里的成员；
+ * 两边的键集与分组是**编译期**由 `src/node_constants.cc` 的平台宏决定的。
+ * 所以真值 dump 里本来就是分组的（`os.constants.errno` / `signals` / `priority` / `dlopen`），
+ * 生成器把分组原样带出来了（`Linux_OS_GROUPS` / `WIN32_OS_GROUPS`）。
  */
-function groupOf(pattern, exclude) {
-  const out = {};
-  for (const key of Object.keys(constantsTable)) {
-    if (!pattern.test(key)) continue;
-    if (exclude && exclude.test(key)) continue;
-    out[key] = constantsTable[key];
-  }
-  return out;
-}
-
-export const constants = Object.freeze({
-  dlopen: groupOf(/^RTLD_/),
-  errno: groupOf(/^E[A-Z0-9_]+$/, /^ENGINE_/),
-  priority: groupOf(/^PRIORITY_/),
-  signals: groupOf(/^SIG/),
-});
+export const constants = osConstants;
 
 export default {
   platform,

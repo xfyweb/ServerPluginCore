@@ -48,8 +48,11 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     canonical: 'path/posix',
     stage: 'P2-A',
     needsHost: false,
-    shimFile: 'node-path.js', // 别名：POSIX 基线下 `path/posix` 就是 `path` 本身
-    note: '子路径入口；与 `path` 同一份实现（Node 里它就是 posix 实现那个对象）',
+    // ⚠️ **不是** alias 到 `node-path.js`：P2-E 之后 `node:path` 的导出跟随仿真平台
+    // （Windows 上给 `\`），而 `node:path/posix` 在 Node 里**永远**是 posix 语义。
+    // 共用一份实现就没法区分"谁在问"（ESM 模块不知道自己的 specifier）。
+    shimFile: 'node-path-posix.js',
+    note: '子路径入口；**语义固定 POSIX**（与 `path` 的默认导出不同：后者跟随仿真平台）',
   },
   {
     canonical: 'path/win32',

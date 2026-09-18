@@ -20,7 +20,7 @@ const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-osproc-'));
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 after(() => rmSync(AUDIT_DIR, { recursive: true, force: true }));
 
-const { buildEnvFacts } = await import('../../core/emulated-env.ts');
+const { buildEnvFacts, resolveEmulatedPlatform } = await import('../../core/emulated-env.ts');
 
 /** shim 的加载方式与既有对齐测试一致：逐字节拷到临时目录（ESM），再按 file: 导入 */
 const SHIM_DIR = mkdtempSync(join(tmpdir(), 'spc-shims-osproc-'));
@@ -42,8 +42,15 @@ after(() => rmSync(DATA_DIR, { recursive: true, force: true }));
  *
  * ⚠️ **不要补前导 `/`**：那会让宿主侧 `path.resolve('/C:/…')` 解析成 `<cwd>/C:/…` ⇒ `validatePath`
  * 判越界、真实依赖 EACCES（试过，`fast-glob` 的 scandir 立刻炸）。
+ *
+ * P2-E（模型 B）：形态**按仿真平台选**——linux 走 `/`、win32 保持宿主的 `\`
+ * （`path.win32.resolve` 两种分隔符都认、但输出是 `\`，所以"沙箱可见形态"必须与它同形）。
  */
-const SANDBOX_DIR = DATA_DIR.split('\\').join('/');
+const SANDBOX_PLATFORM = resolveEmulatedPlatform(process.platform);
+const SANDBOX_SEP = SANDBOX_PLATFORM === 'win32' ? '\\' : '/';
+const SANDBOX_DIR = SANDBOX_PLATFORM === 'win32'
+  ? DATA_DIR.split('/').join('\\')
+  : DATA_DIR.split('\\').join('/');
 
 /** shim 依赖引导层注入的两个全局：环境事实 + 卸载钩子（见 core/sandbox.ts 的 BOOTSTRAP） */
 function installSandboxGlobals(): void {
@@ -61,21 +68,23 @@ const processShim = await loadShim('node-process.js');
 const nodeOs = await import('node:os');
 const nodeProcess = await import('node:process');
 
-describe('仿真 node:os —— 仿真基线 vs 宿主真值', async () => {
-  it('行为性事实固定为 Linux/POSIX（不随宿主平台漂移）', () => {
-    // 这三条是"插件行为分支"的依据，必须与 path(posix)、constants(Linux) 一致：
-    // 宿主是 Windows 时它们**照样**报 Linux——这是有意的，不是 bug。
-    assert.equal(osShim.platform(), 'linux');
-    assert.equal(osShim.type(), 'Linux');
-    assert.equal(osShim.EOL, '\n');
-    assert.equal(osShim.devNull, '/dev/null');
-    assert.equal(osShim.endianness(), 'LE');
-    // 对照：宿主是什么就报什么（用来证明"上面那三条不是碰巧与宿主相同"）
-    assert.equal(typeof nodeOs.platform(), 'string');
+describe('仿真 node:os —— 仿真平台跟随宿主（P2-E / 模型 B）vs 宿主真值', async () => {
+  it('行为性事实与**宿主平台一致**（模型 B：不许半跟，六者同源）', () => {
+    // 模型 A（旧的"永远假装 Linux"）在 P2-E 被换成模型 B：**仿真平台跟随宿主**。
+    // 理由：核心在 Windows 上跑时，插件的 fs 动作真的落在 `C:\…` 上，
+    // "沙箱自称 Linux、脚下却是 Windows"这种半真半假最容易出诡异 bug（而且已经踩到了）。
+    // 这条用例现在的判据是"**与宿主一致**"，而不是"固定 linux"。
+    assert.equal(osShim.platform(), nodeOs.platform());
+    assert.equal(osShim.EOL, nodeOs.EOL);
+    assert.equal(osShim.devNull, nodeOs.devNull);
+    assert.equal(osShim.endianness(), nodeOs.endianness());
+    // 平台名到 `os.type()` 的映射（Linux / Windows_NT / Darwin）
+    const expectedType: Record<string, string> = { linux: 'Linux', win32: 'Windows_NT', darwin: 'Darwin' };
+    assert.equal(osShim.type(), expectedType[nodeOs.platform()] ?? nodeOs.platform());
   });
 
   it('路径类收敛到插件数据目录内（不是宿主 tmp——那个在 fs 作用域外，一用就 EACCES）', () => {
-    assert.equal(osShim.tmpdir(), SANDBOX_DIR + '/tmp');
+    assert.equal(osShim.tmpdir(), SANDBOX_DIR + SANDBOX_SEP + 'tmp');
     assert.equal(osShim.homedir(), SANDBOX_DIR);
     assert.notEqual(osShim.tmpdir(), nodeOs.tmpdir());
   });
@@ -133,36 +142,52 @@ describe('仿真 node:os —— 仿真基线 vs 宿主真值', async () => {
     assert.notEqual(osShim.cpus()[0], list[0]);
   });
 
-  it('os.constants 分四组，且与常量表的值逐项一致（前缀归类不串味）', () => {
-    const c = osShim.constants;
-    assert.deepEqual(Object.keys(c).sort(), ['dlopen', 'errno', 'priority', 'signals']);
-    assert.equal(c.errno.ENOENT, 2);
-    assert.equal(c.errno.EACCES, 13);
-    assert.equal(c.signals.SIGTERM, 15);
-    assert.equal(c.dlopen.RTLD_LAZY, 1);
-    assert.equal(c.priority.PRIORITY_NORMAL, 0);
-    // 关键：`ENGINE_METHOD_*` 长得像 errno，**不能**混进 errno 组（这是前缀归类的例外）
+  it('os.constants 分四组，且与**平台真值**逐项一致（分组按真值给，不靠前缀猜）', () => {
+    const c = osShim.constants as Record<string, Record<string, number>>;
+    // 分组形状：linux 有 dlopen 组，**win32 没有**（真值：`_audit/const-win.json` 的 os.dlopen 为空）
+    const expectedGroups = process.platform === 'win32'
+      ? ['dlopen', 'errno', 'priority', 'signals']
+      : ['dlopen', 'errno', 'priority', 'signals'];
+    assert.deepEqual(Object.keys(c).sort(), expectedGroups);
+    // 逐项对**宿主真值**（不是写死的 Linux 值）：v22.22.1 上 ENOENT 两边都是 2，但 EADDRINUSE 不是
+    assert.equal(c.errno.ENOENT, nodeOs.constants.errno.ENOENT);
+    assert.equal(c.errno.EACCES, nodeOs.constants.errno.EACCES);
+    assert.equal(c.errno.EADDRINUSE, nodeOs.constants.errno.EADDRINUSE); // win=100 / linux=98
+    assert.equal(c.signals.SIGTERM, nodeOs.constants.signals.SIGTERM);
+    assert.equal(c.priority.PRIORITY_NORMAL, nodeOs.constants.priority.PRIORITY_NORMAL);
+    // `RTLD_LAZY` 只在 POSIX 上有（Windows 的 dlopen 组是空的）——这条同时守住"平台形状不同"
+    if (process.platform === 'win32') {
+      assert.equal(Object.keys(c.dlopen).length, 0, 'win32 上 dlopen 组应当为空');
+      assert.equal(c.signals.SIGBREAK, nodeOs.constants.signals.SIGBREAK); // Windows 专有信号
+    } else {
+      assert.equal(c.dlopen.RTLD_LAZY, nodeOs.constants.dlopen.RTLD_LAZY);
+    }
+    // 关键：`ENGINE_METHOD_*` 长得像 errno，**不能**混进 errno 组
+    // （旧实现靠 `^E[A-Z0-9_]+$` 前缀反推分组，那是"Linux 上恰好对"；现在按真值分组，天然不会混）
     assert.equal('ENGINE_METHOD_RSA' in c.errno, false);
-    assert.equal(Object.keys(c.errno).every((k) => /^E[A-Z0-9_]+$/.test(k) && !k.startsWith('ENGINE_')), true);
-    assert.equal(Object.keys(c.signals).every((k) => k.startsWith('SIG')), true);
-    // 冻结：Node 侧也是只读的
     assert.equal(Object.isFrozen(c), true);
   });
 
-  it('release/version：宿主是 Linux 就报内核真值，否则报仿真常数（形状仍是字符串）', () => {
+  it('release/version：仿真平台与宿主一致就报内核真值，否则报该平台形态的常数', () => {
     assert.equal(typeof osShim.release(), 'string');
     assert.equal(typeof osShim.version(), 'string');
     if (process.platform === 'linux') {
       assert.equal(osShim.release(), nodeOs.release());
+      assert.equal(osShim.version(), nodeOs.version());
+    } else if (process.platform === 'win32') {
+      // Windows 上也给宿主真值（`10.0.26100` 这种内核 build 号 + Windows 版本名）
+      assert.equal(osShim.release(), nodeOs.release());
+      assert.equal(osShim.version(), nodeOs.version());
     } else {
-      assert.equal(osShim.release(), '6.12.0');
+      assert.equal(typeof osShim.release(), 'string');
     }
   });
 });
 
 describe('仿真 node:process —— 只读事实与明确的边界', async () => {
   it('platform/arch 与 os 同一口径（同一份事实，不该两处各说各话）', () => {
-    assert.equal(processShim.platform, 'linux');
+    // P2-E（模型 B）：不再是固定 'linux'，而是**跟随宿主**
+    assert.equal(processShim.platform, nodeOs.platform());
     assert.equal(processShim.arch, nodeOs.arch());
     assert.equal(processShim.platform, osShim.platform());
   });

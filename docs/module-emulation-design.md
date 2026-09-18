@@ -393,7 +393,6 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
   同步触发会让它们在 Node 上能跑、在沙箱里出错（属静默行为差异，见 build-layer-evidence §2.6 的同类问题）。
 
 ## 9. 不可仿真项与替代
-
 | 做不到 | 替代 |
 |---|---|
 | 原生模块（`.node`） | **构建期失败**（ADR-005 §7）：由驱动插件在核心侧提供 `@host/api` 端点 |
@@ -422,15 +421,53 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 5 | **`Transform` 的结束是"我们补的"**：队列排空 → `_flush` → `push(null)` → `'finish'` | 这是照 `node/lib/internal/streams/transform.js:126-152` 的 `final()` 做的（子类实现 `_final` 时 Node 不补，我们不支持那种写法）。少了它可读侧永远不发 `'end'`，`pipeline`/`for await` 会**挂住且无报错** |
 
 ### 9.2 沙箱补的 Node 全局（第三批新增）
-
 | 全局 | 实现 | 为什么 / 代价 |
 |---|---|---|
 | `__filename` / `__dirname` | `process.cwd() + '/' + argv[1]` 与 `process.cwd()`（引导层 define，writable/configurable） | esbuild 把 CJS 包搬进 ESM 时**自己**会留下对它们的引用（包源码里没有；实测 `write-file-atomic` 的临时名 = `hash(__filename, pid, threadId, n)`）。值是**沙箱形态**的稳定路径，不是可打开的真实入口 —— 单个 bundle 没有源文件路径可指，编造一个宿主路径会随部署漂移 |
 | `setImmediate` / `clearImmediate` | **微任务**（`queueMicrotask`）+ 一个带 `ref/unref/hasRef` 的对象；`clearImmediate` **真的会取消** | 语义上属于"下一 tick"那一档，但沙箱只有微任务。真实依赖在**模块顶层**就用它起步（`@nodelib/fs.walk/out/readers/async.js:26`）⇒ 不补 = 整个包装载失败。**不提供 `setTimeout`**：那才是真正的宏任务能力面（要权限/上限/审计）。差异：回调时机比 Node 早（微任务 vs check 阶段） |
 | `queueMicrotask`（第二批就有） | `Promise.resolve().then(fn)` | QuickJS 没有它；`process.nextTick` 与 events 的 rejection 路由都靠它 |
 
-## 10. 与构建层的联动（构建期即失败）
+### 9.3 Windows 支持：模型 B（仿真平台跟随宿主，P2-E）
 
+**一句话**：沙箱报的平台 = **核心运行所在的平台**，且**六者同时跟随、不许半跟**——
+`platform` / `path` 语义 / `EOL` / `devNull` / 常量表 / 沙箱可见路径形态。
+
+**为什么改**（原来的"永远假装 Linux"= 模型 A）：核心在 Windows 上跑时，插件的 fs 动作**真的**落在
+`C:\…` 上（大小写、分隔符、errno 全是 Windows 的），而沙箱自称 Linux —— 这种半真半假最难查，
+而且已经踩到了（`path.resolve` 不认盘符 ⇒ `fast-glob` 一个条目都匹配不到且不报错）。
+
+| 项 | 取值 |
+|---|---|
+| `platform` / `os.platform()` / `process.platform` | 跟随宿主（`SPC_EMULATED_PLATFORM=linux\|win32` 可覆盖，**只给测试与排障**——配置项会造出"配了 Linux、实际跑 Windows"的新坑） |
+| Node 版本基线 | **仍固定 v22.22.1**（Windows 侧也取 v22.22.1 的真值，不是宿主 v24）⇒ 差异只来自平台、不来自版本 |
+| `EOL` / `devNull` | linux `\n`+`/dev/null`；win32 `\r\n`+`\\.\nul` |
+| `constants` / `os.constants` | **两张真值表**，按 `__spcEnv.platform` 选。三处**结构性**差异（所以必须整表分，不是"几个值不同"）：① 键集：Windows 多 59 个（`WSA*` 54 + `SIGBREAK` 等）、Linux 多 51 个（`SIGUSR1/2`、`O_*`、`RTLD_*`、`S_IRGRP` 一族）；② 同名不同值 49 个（`EADDRINUSE` win=100/linux=98）；③ **形状**：Windows **没有** `os.constants.dlopen` 那一组 |
+| `path` | 跟随平台（`path/posix` 例外——见下）。`path.win32` 是**真实现**（照 `node/lib/path.js` 重写：UNC、`\\?\`、保留设备名、盘符相对、`.\` 反冒名补偿） |
+| 沙箱可见路径形态 | **按平台**：linux 归一成 `/`；win32 保持宿主的 `\`（`path.win32.resolve` 的输出一律是 `\`，形态必须与它同形，否则 `resolve(x) === x` 这种幂等假设不成立） |
+
+**三条容易踩的"半跟"陷阱**（都实测踩到过）：
+
+1. **具名导出 vs 默认导出**必须**都**跟随平台。`import { resolve } from 'path'` 与 `import path from 'path'`
+   走的是两条路（具名绑定 / 默认对象）。只让默认对象跟随，就会出现
+   "`path.resolve()` 是 win32、具名 `resolve()` 是 posix"——`mkdirp` 正好用**具名**导入的 `resolve`/`parse`
+   做 win32 非法字符检查，于是 `C:` 里的冒号被判非法 ⇒ `EINVAL Illegal characters in path`（冒烟靶子直接回退）。
+2. **子路径的语义是固定的**：`node:path/posix` 在 Node 里**永远**是 posix（与平台无关），
+   所以它不能再"与 `path` 共用一份实现"——ESM 模块不知道自己的 specifier，共用就没法区分"谁在问"。
+   现在 `path/posix` → `node-path-posix.js`（固定 posix）、`path/win32` → `node-path-win32.js`（固定 win32）、
+   `path` → `node-path.js`（跟随平台）。
+3. **`os.type()` 也要跟**：P2-E 之前它写死 `'Linux'`，模型 B 下会出现"`platform()` 说 win32、`type()` 说 Linux"。
+
+**判卷人（Windows 侧真值）**：官方 `node-v22.22.1-win-x64`（解在 `_tools/`，不进仓库）——
+常量/信号/errno 是 `src/node_constants.cc` 在**编译期**由平台宏定的，**本地 `node/` 源码（v27）只能告诉你有哪些键，
+给不出 Windows 的数值**。采真值的脚本：`_audit/dump-const-win.mjs` → `const-win.json`；
+`path.win32` 的差分：`_audit/path-win32-cases-win.mjs`（采）+ `_audit/path-win32-diff.mjs`（比）。
+
+**已知边界（差分白名单里明确记账的 3 条）**：Windows 的"每盘一个 cwd"（`process.env['=C:']`）**沙箱复现不了**——
+那些 `=X:` 变量被 Node 从 JS 可见的 `process.env` 里过滤掉了，只有 C 层 `uv_os_getenv` 读得到，
+而 `path.resolve` 正是在原生层读的。所以唯一分歧面是：**在 A 盘下解析 B 盘的"盘符相对"路径**
+（`cwd=D:\` 时 `resolve('C:a')`：Windows 给"该盘上次所在的目录"，我们给该盘根 `C:\a`）。
+
+## 10. 与构建层的联动（构建期即失败）
 1. **静态扫描 builtin 依赖**：构建层解析依赖图，收集所有 `node:*` / 裸内建模块引用，与本文件的登记表比对；
    - 未登记 → **构建失败**（而不是"构建通过、运行时报 module not allowed"）；
 2. **CJS 依赖的 `require('fs')`**：**已实测**——esbuild 在 `platform: node` 下会把它降级成"运行期兜底"**留在产物里**，且**构建不会失败**。因此构建层必须有两道闸：① resolve 插件对**未登记内建**直接报错、对**已登记内建内联仿真正文**（实测：标 external 对 CJS 形态无效，会退化成兜底调用）；② **产物断言**——判据是标记字符串 `"Dynamic require of "`（朴素正则 `__require(` 会误报辅助函数的定义行）。完整证据与方法见 **docs/build-layer-evidence.md**；

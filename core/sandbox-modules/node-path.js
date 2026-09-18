@@ -7,17 +7,18 @@
 //   · 代价：若将来部署到 Windows，`path.win32` 需要真实现（现在是明确抛错，不静默假装）。
 //
 // **一处与 Node 的差别（原来是"故意用虚拟根 /"，现已改为按沙箱 cwd 解析）**：
-// `resolve()` 的兜底基准 = **沙箱 cwd（= 插件数据目录，`__spcEnv.dataDir`）**，与 `process.cwd()`、
+// `posixResolve()` 的兜底基准 = **沙箱 cwd（= 插件数据目录，`__spcEnv.dataDir`）**，与 `process.cwd()`、
 // 以及 fs 层"相对路径按数据目录解析"三者同源。取值失败（宿主 realm 里跑单测、没有 `__spcEnv`）回退 `/`。
 //
 // 为什么改：虚拟根 `/` 会让 `path.resolve('out/a')` 得到 `/out/a`，再交给 fs 就是**作用域外** →
 // EACCES。真实依赖正是这么写的——`mkdirp/dist/mjs/path-arg.js:11` 就是 `path = resolve(path)`，
 // 于是 `mkdirp.sync('out/a/b/c')` 直接 EACCES（实测：`_audit/dep-smoke.mts`）。
 // 已知边界：Windows 开发机上数据目录是 `D:\…` 形态，这里统一换成 `/` 分隔（`D:/…`）让 POSIX 的
-// `dirname`/`join`/`..` 都能用；但 `isAbsolute('D:/…')` 仍按 POSIX 语义给 **false**（不认盘符）。
+// `dirname`/`join`/`..` 都能用；但 `posixIsAbsolute('D:/…')` 仍按 POSIX 语义给 **false**（不认盘符）。
 // Linux 上（部署目标）完全自洽。
 //
 // 内联约束：静态、无占位符，可被构建层直接打进插件产物。
+import * as win32Fns from './node-path-win32.js';
 
 const SLASH = 47; // '/'
 const DOT = 46; // '.'
@@ -25,22 +26,32 @@ const COLON = 58; // ':'（盘符分隔符，见 `isDriveAbsolute`）
 
 /**
  * 沙箱 cwd = 数据目录（与 `process.cwd()`、fs 的相对路径解析同一个出处）。
- * 只在第一次调用时解析；拿不到（没有引导层注入 / 宿主 realm 单测）就回退 `/`。
- * Windows 盘符路径把 `\` 换成 `/`：POSIX 的那套字符串算法只认 `/`。
+ *
+ * **每次都读**（不缓存）：`loadShimFresh` 类测试会换 `__spcEnv` 再重新 import，缓存住会让它读到旧值
+ * （实测：`resolve('a.txt')` 回 `/a.txt` 而不是数据目录下的路径）。
+ * 代价是一次 `JSON.parse` —— 相对路径解析不是热路径上的热环节，而"读错了 cwd"是最难查的一类错。
  */
-let sandboxCwd;
 function cwd() {
-  if (sandboxCwd === undefined) {
-    let dir = '/';
-    try {
-      const env = JSON.parse(globalThis.__spcEnv);
-      if (env && typeof env.dataDir === 'string' && env.dataDir.length > 0) dir = env.dataDir;
-    } catch {
-      dir = '/';
-    }
-    sandboxCwd = dir.indexOf('\\') === -1 ? dir : dir.split('\\').join('/');
+  let dir = '/';
+  try {
+    const env = JSON.parse(globalThis.__spcEnv);
+    if (env && typeof env.dataDir === 'string' && env.dataDir.length > 0) dir = env.dataDir;
+  } catch {
+    dir = '/';
   }
-  return sandboxCwd;
+  // 形态按 **posix** 归一（这个函数是 posix 原语的兜底基准，POSIX 算法只认 `/`）；
+  // win32 那边在 `node-path-win32.js` 里自己换成 `\`
+  return dir.indexOf('\\') === -1 ? dir : dir.split('\\').join('/');
+}
+
+/**
+ * win32 实现要的 cwd：与 posix 的 `cwd()` **同一来源**（`__spcEnv.dataDir`），只是形态换成 `\`。
+ *
+ * 为什么必须同源：两个实现都会用 cwd 兜底相对路径。若各自按不同来源解析，
+ * `path.resolve('a')` 与 `path.win32.resolve('a')` 在同一个沙箱里可能落在**不同的盘/目录**上。
+ */
+export function __cwd() {
+  return cwd();
 }
 
 function assertPath(value, name) {
@@ -69,7 +80,7 @@ function normalizeParts(path, allowAboveRoot) {
   return out.join('/');
 }
 
-export function normalize(path) {
+function posixNormalize(path) {
   assertPath(path, 'path');
   if (path.length === 0) return '.';
   const absolute = path.charCodeAt(0) === SLASH;
@@ -91,12 +102,12 @@ export function normalize(path) {
  * "`isAbsolute(cwd())` 为 false 而 `resolve()` 拿它当相对路径"这种自相矛盾（实测后果见 `resolve` 注释）。
  * Linux 部署（目标环境）上 cwd 是 `/…`，这条分支永远不触发 ⇒ 对齐测试不受影响。
  */
-export function isAbsolute(path) {
+function posixIsAbsolute(path) {
   assertPath(path, 'path');
   return path.length > 0 && (path.charCodeAt(0) === SLASH || isDriveAbsolute(path));
 }
 
-export function join(...args) {
+function posixJoin(...args) {
   if (args.length === 0) return '.';
   let joined;
   for (const arg of args) {
@@ -105,7 +116,7 @@ export function join(...args) {
     joined = joined === undefined ? arg : joined + '/' + arg;
   }
   if (joined === undefined) return '.';
-  return normalize(joined);
+  return posixNormalize(joined);
 }
 
 /**
@@ -113,8 +124,8 @@ export function join(...args) {
  *
  * ⚠️ 这条不是"为了兼容 Windows 顺手加的"，而是**自洽性要求**：`process.cwd()`（= 数据目录）在
  * Windows 宿主机上就是 `C:/Users/…` 这个形态，如果 `resolve` 不认它是绝对路径，就会把 cwd 再拼一次：
- * `resolve('C:/Users/x/tree')` → `C:/Users/x/C:/Users/x/tree`（**实测**，见 `_audit/diag-fastglob.mts`）。
- * 后果是真实依赖（`fast-glob` 拿 `path.resolve(task.base)` 当 glob base）算出错误的 base ⇒ 一个条目都匹配不到，
+ * `posixResolve('C:/Users/x/tree')` → `C:/Users/x/C:/Users/x/tree`（**实测**，见 `_audit/diag-fastglob.mts`）。
+ * 后果是真实依赖（`fast-glob` 拿 `path.posixResolve(task.base)` 当 glob base）算出错误的 base ⇒ 一个条目都匹配不到，
  * 而且**不报错、只给空结果**。
  *
  * 判定与 `node:path` 的 win32 版一致：`/^[A-Za-z]:/`（盘符后跟不跟 `/` 都算，`C:` 也算）。
@@ -132,7 +143,7 @@ function pathRoot(path) {
   return '';
 }
 
-export function resolve(...args) {
+function posixResolve(...args) {
   let resolved = '';
   let absoluteRoot = '';
   // 从最后一个参数往前拼，遇到绝对路径就停（Node 的语义）
@@ -157,7 +168,7 @@ export function resolve(...args) {
   return body.length > 0 ? body : '.';
 }
 
-export function dirname(path) {
+function posixDirname(path) {
   assertPath(path, 'path');
   if (path.length === 0) return '.';
   const hasRoot = path.charCodeAt(0) === SLASH;
@@ -174,12 +185,12 @@ export function dirname(path) {
     }
   }
   if (end === -1) return hasRoot ? '/' : '.';
-  // Node 的历史怪癖：`dirname('/foo')` 仍有 root 时返回 `//`
+  // Node 的历史怪癖：`posixDirname('/foo')` 仍有 root 时返回 `//`
   if (hasRoot && end === 1) return '//';
   return path.slice(0, end);
 }
 
-export function basename(path, ext) {
+function posixBasename(path, ext) {
   assertPath(path, 'path');
   if (ext !== undefined) assertPath(ext, 'ext');
   let start = 0;
@@ -232,7 +243,7 @@ export function basename(path, ext) {
   return path.slice(start, end);
 }
 
-export function extname(path) {
+function posixExtname(path) {
   assertPath(path, 'path');
   let startDot = -1;
   let startPart = 0;
@@ -273,7 +284,7 @@ export function extname(path) {
   return path.slice(startDot, end);
 }
 
-export function parse(path) {
+function posixParse(path) {
   assertPath(path, 'path');
   const result = { root: '', dir: '', base: '', ext: '', name: '' };
   if (path.length === 0) return result;
@@ -336,7 +347,7 @@ function formatExt(ext) {
   return ext ? (ext.charCodeAt(0) === DOT ? ext : '.' + ext) : '';
 }
 
-export function format(pathObject) {
+function posixFormat(pathObject) {
   if (pathObject === null || typeof pathObject !== 'object') {
     const err = new TypeError(
       'The "pathObject" argument must be of type object. Received ' +
@@ -355,16 +366,16 @@ export function format(pathObject) {
 /**
  * `relative` **继承了 `resolve` 的虚拟根兜底**——这是有意保留的差异，写在这里以免被当成 bug：
  * 两个参数里只要有一个是相对的，它就先按虚拟根 `/` 解析（沙箱里没有"当前工作目录"这个概念，
- * 见 `resolve` 的说明），于是 `relative('a', '/b')` 得到 `'../b'`；
+ * 见 `resolve` 的说明），于是 `posixRelative('a', '/b')` 得到 `'../b'`；
  * 而 Node 会按 `process.cwd()` 解析相对参数，结果是**随 cwd 变化**的。
  * 两个参数都是绝对路径时与 Node 逐字一致（不经过虚拟根）。
  */
-export function relative(from, to) {
+function posixRelative(from, to) {
   assertPath(from, 'from');
   assertPath(to, 'to');
   if (from === to) return '';
-  const f = resolve(from).split('/').filter(Boolean);
-  const t = resolve(to).split('/').filter(Boolean);
+  const f = posixResolve(from).split('/').filter(Boolean);
+  const t = posixResolve(to).split('/').filter(Boolean);
   let common = 0;
   while (common < f.length && common < t.length && f[common] === t[common]) common++;
   const parts = [];
@@ -373,51 +384,143 @@ export function relative(from, to) {
 }
 
 /** posix 下是恒等（命名空间前缀是 Windows 的概念） */
-export function toNamespacedPath(path) {
+function posixToNamespacedPath(path) {
   return path;
 }
 
 export const sep = '/';
 export const delimiter = ':';
 
-/** `path.win32`：**明确抛错**，不静默给出 posix 结果（见文件头） */
-function unsupportedWin32(name) {
-  const fn = function () {
-    const err = new Error('path.win32.' + name + ' is not supported in the sandbox (POSIX paths only)');
-    err.code = 'ERR_NOT_SUPPORTED_IN_SANDBOX';
-    throw err;
-  };
-  // 保留函数名：堆栈与日志里看不出 `win32.join` 会很难排障
-  Object.defineProperty(fn, 'name', { value: name, configurable: true });
-  return fn;
+/**
+ * `path.win32`：**真实现**（P2-E），惰性取用。
+ *
+ * 来历：P2-E 之前这里是一排"明确抛错"的占位（模型 A：沙箱永远假装 Linux）。
+ * 现在走**模型 B（仿真平台跟随宿主）**，所以 win32 必须有真语义——见 `node-path-win32.js`，
+ * 照 `node/lib/path.js` 的 win32 那半重写，由 `_audit/path-win32-diff.mjs` 与真 Windows 上的
+ * node v22.22.1 逐条差分。
+ *
+ * ⚠️ **必须惰性**：`node-path.js` ⇄ `node-path-win32.js` 是循环 import，本模块的顶层代码
+ * 在 win32 模块**求值完之前**就会跑（win32 那边要 `import { __cwd }`）。此刻直接读 `win32Fns.sep`
+ * 会命中 TDZ（实测：`Cannot access 'sep' before initialization`）。第一次访问时两者都已求值完。
+ */
+let win32Cache;
+function getWin32() {
+  if (win32Cache === undefined) {
+    win32Cache = {
+      resolve: win32Fns.resolve,
+      normalize: win32Fns.normalize,
+      isAbsolute: win32Fns.isAbsolute,
+      join: win32Fns.join,
+      relative: win32Fns.relative,
+      toNamespacedPath: win32Fns.toNamespacedPath,
+      dirname: win32Fns.dirname,
+      basename: win32Fns.basename,
+      extname: win32Fns.extname,
+      format: win32Fns.format,
+      parse: win32Fns.parse,
+      sep: win32Fns.sep,
+      delimiter: win32Fns.delimiter,
+      _makeLong: win32Fns.toNamespacedPath,
+    };
+  }
+  return win32Cache;
 }
 
-const WIN32_METHODS = [
-  'resolve', 'normalize', 'isAbsolute', 'join', 'relative', 'toNamespacedPath',
-  'dirname', 'basename', 'extname', 'format', 'parse',
-];
-const win32 = {};
-for (const m of WIN32_METHODS) win32[m] = /* @__PURE__ */ unsupportedWin32(m);
-win32.sep = '\\';
-win32.delimiter = ';';
-
 const posix = {
-  resolve: resolve,
-  normalize: normalize,
-  isAbsolute: isAbsolute,
-  join: join,
-  relative: relative,
-  toNamespacedPath: toNamespacedPath,
-  dirname: dirname,
-  basename: basename,
-  extname: extname,
-  format: format,
-  parse: parse,
+  resolve: posixResolve,
+  normalize: posixNormalize,
+  isAbsolute: posixIsAbsolute,
+  join: posixJoin,
+  relative: posixRelative,
+  toNamespacedPath: posixToNamespacedPath,
+  dirname: posixDirname,
+  basename: posixBasename,
+  extname: posixExtname,
+  format: posixFormat,
+  parse: posixParse,
   sep: sep,
   delimiter: delimiter,
-  win32: win32,
 };
 posix.posix = posix;
 
+/**
+ * 当前平台该用哪一套：**跟随仿真平台**（P2-E / 模型 B）。
+ *
+ * ⚠️ 这个判断必须与 `node-constants.js` 的 `currentPlatform()`、`emulated-env.ts` 的
+ * `resolveEmulatedPlatform()` **同一个判据**（都是读 `__spcEnv.platform`）——
+ * 三处只要有一处漂移，就会出现"`path.sep` 是 `\` 而 `constants` 是 Linux 表"这种半跟状态。
+ */
+function currentPlatform() {
+  try {
+    const p = JSON.parse(globalThis.__spcEnv).platform;
+    return p === 'win32' ? 'win32' : 'linux';
+  } catch {
+    return 'linux';
+  }
+}
+
+/**
+ * 当前平台的实现（每次读 `__spcEnv` 决定；不缓存——沙箱里 `__spcEnv` 是建沙箱时定死的）。
+ *
+ * 返回值是**真对象**（`posix` 或 win32 那个对象），不是 Proxy —— 少了一层间接，
+ * `path === path.posix`（Node 上成立）这类**身份**关系也就自然成立。
+ */
+function active() {
+  return currentPlatform() === 'win32' ? win32 : posix;
+}
+
+/** 两个对象互指（Node 的 `path.win32.win32 === path.win32`、`path.posix.posix === path.posix`） */
+const win32 = getWin32();
+win32.win32 = win32;
+win32.posix = posix;
+posix.win32 = win32;
+
+/**
+ * **具名导出必须跟随平台**（P2-E，本轮踩到的真缺陷）。
+ *
+ * 为什么：`import { resolve, parse } from 'path'` 走的是具名导出，而 `import path from 'path'` 走默认导出。
+ * 如果具名导出写死成 posix 那一批，那么在 win32 沙箱里就会出现
+ * "`path.resolve()` 是 win32 语义、但 `import { resolve } from 'path'` 是 posix 语义"这种**半跟**状态。
+ * 实测后果：`mkdirp` 的 `path-arg.js` 用**具名**导入的 `resolve`/`parse`，在 `process.platform === 'win32'`
+ * 时做"非法字符"检查——posix 的 `resolve` 给出 `C:/Users/…`、posix 的 `parse` 给出 `root: ''`，
+ * 于是 `C:` 里的冒号被判成非法字符 ⇒ `EINVAL Illegal characters in path`（冒烟靶子直接回退）。
+ *
+ * 形状：每个具名导出是一个**委托函数**，调用时按当前平台转发（不是每个平台一份绑定，
+ * 那样就没法在同一个沙箱里既服务 `path` 又服务 `path.win32`）。
+ */
+export function resolve(...args) {
+  return active().resolve(...args);
+}
+export function normalize(...args) {
+  return active().normalize(...args);
+}
+export function isAbsolute(...args) {
+  return active().isAbsolute(...args);
+}
+export function join(...args) {
+  return active().join(...args);
+}
+export function relative(...args) {
+  return active().relative(...args);
+}
+export function toNamespacedPath(path) {
+  return active().toNamespacedPath(path);
+}
+export function dirname(...args) {
+  return active().dirname(...args);
+}
+export function basename(...args) {
+  return active().basename(...args);
+}
+export function extname(...args) {
+  return active().extname(...args);
+}
+export function format(...args) {
+  return active().format(...args);
+}
+export function parse(...args) {
+  return active().parse(...args);
+}
+
 export { posix, win32 };
-export default posix;
+export default active();

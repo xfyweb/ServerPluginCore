@@ -145,16 +145,20 @@ export function init() {
   const [file, dir, argv, types] = logs;
   // 值 = 沙箱形态的路径（POSIX 形态、以数据目录为根）——**不是**宿主路径形态，也不是空串。
   // 这里用的是默认 `hostApi`（数据目录 = 进程 cwd），所以只断言形状与自洽性，不断言具体前缀。
-  // ⚠️ 不断言"以 `/` 开头"：Windows 宿主上数据目录是 `C:/…`，而**补前导 `/` 是错的**
-  // （宿主侧 `path.resolve('/C:/…')` → `<cwd>/C:/…` ⇒ validatePath 判越界，实测 fast-glob EACCES）。
+  // ⚠️ 不断言"以 `/` 开头"：路径形态**按仿真平台**取（P2-E：win32 宿主上 `__dirname` 是 `D:\…`）；
+  // 也**不能补前导 `/`**（宿主侧 `path.resolve('/C:/…')` → `<cwd>/C:/…` ⇒ validatePath 判越界）。
+  const sep = process.platform === 'win32' ? '\\' : '/';
   assert.equal(types, 'TYPES string/string');
-  assert.match(file, /^FILE .*\/plugin\.js$/);
+  assert.match(file, /^FILE .+plugin\.js$/);
   assert.match(dir, /^DIR .+/);
   assert.equal(argv, 'ARGV node|plugin.js');
   // `__filename` 必须是"目录 + argv[1]"这种自洽关系，否则拿它拼路径会对不上
-  assert.equal(file.slice(5), dir.slice(4) + '/plugin.js');
-  // 不能泄露宿主路径形态（反斜杠 = Windows 宿主泄露）
-  assert.equal(file.includes('\\'), false, `不该出现宿主路径形态：${file}`);
+  assert.equal(file.slice(5), dir.slice(4) + sep + 'plugin.js');
+  // 路径形态与**仿真平台**一致（P2-E）：win32 上就是 `D:\…`。
+  // 这条以前断言"不含反斜杠"（模型 A 时代：沙箱永远 POSIX，出现 `\` 就是宿主泄露）——
+  // 模型 B 之后反斜杠是**合法**的，所以改成"分隔符必须与平台一致"（混合形态才是 bug）。
+  assert.equal(file.includes(sep), true, `应当出现平台分隔符：${file}`);
+  assert.equal(file.includes(sep === '\\' ? '/' : '\\'), false, `不该出现另一种分隔符（混合形态）：${file}`);
   assert.equal(file.includes('file://'), false);
 });
 

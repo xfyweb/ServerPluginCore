@@ -1,20 +1,44 @@
-// node:constants 仿真——**Linux/POSIX 真值**（不是转录头文件，是宿主 Node 的运行值）
+// node:constants 仿真——**按平台两张真值表**（不是转录头文件，是宿主 Node 的运行值）
 //
 // Node 的 `constants` 已被官方标记为 deprecated，实际是 `os.constants.{dlopen,errno,priority,signals}`
 // + `fs.constants` + `crypto.constants` 的合并（见 `lib/constants.js`）。生态里仍有不少包在**加载期**
 // 就 `require('constants')` 取 `O_RDONLY` / `F_OK` / `COPYFILE_EXCL` 一类。
 //
-// **取值取向：Linux**——与 `node-path.js` 固定 posix 语义一致（本项目暂不支持 Windows 部署，见 ROADMAP）。
-// 值来自真机运行值，逐键可核：
-//   $ wsl -e node /mnt/d/git-repo/_audit/dump-const.mjs   # linux/x64, node v22.22.1
-//   → 再跑 _audit/gen-constants.mjs 生成本文件（生成脚本不进仓库：它依赖一次 Linux 执行）
-// 缺失键说明：`O_SYMLINK` 在 Linux 上**不存在**（它是 macOS/BSD 的键）——曾经"补"过一个
-// `O_SYMLINK = 0`，那是在 Linux 上凭空造键，已删除。`SIGBREAK`/`SIGINFO`/`SIGLOST`、`WSA*` errno
-// 同样不在表里（Windows/BSD 专有）。`defaultCipherList`/`defaultCoreCipherList` 是字符串，照实带出。
+// **取哪张表由 `globalThis.__spcEnv.platform` 决定**（P2-E / 模型 B：仿真平台跟随宿主）。
+// 两份都是 **node v22.22.1** 的运行值真值，逐键可核：
+//   · Linux：wsl -e node /mnt/d/git-repo/_audit/dump-const.mjs            （linux/x64）
+//   · Windows：_tools/node-v22.22.1-win-x64/node.exe _audit/dump-const-win.mjs（win32/x64）
+//   → 再跑 _audit/gen-constants2.mjs 生成本文件（生成脚本不进仓库：它依赖那两次执行）
+//
+// 三处**结构性**差异（不是"几个数值不同"，所以必须整表分）：
+//   1. 键集：Windows 有 59 个 Linux 没有的键（`WSA*` 54 + `SIGBREAK` 等），Linux 有 51 个 Windows 没有的
+//      （`SIGUSR1/2`、`O_DIRECT`/`O_NOFOLLOW` 一族、`RTLD_*`、`S_IRGRP` 一族）；
+//   2. 同名不同值 49 个（`EADDRINUSE` win=100 / linux=98、`EAGAIN` win=11 / linux=11 …）；
+//   3. **形状**：Windows **没有** `os.constants.dlopen` 这一组。
+//
+// 缺失键说明：`O_SYMLINK` 在 Linux 上不存在（macOS/BSD 专有）——曾经"补"过一个 `O_SYMLINK = 0`，
+// 那是凭空造键，已删除。`defaultCipherList`/`defaultCoreCipherList` 是字符串，照实带出。
 //
 // 内联约束：静态、无占位符。Node 侧是 frozen，这里同样冻结。
 
-const constants = Object.freeze({
+/** 平台事实（与常量同源：`__spcEnv.platform` 决定；`devNull`/`EOL`/分隔符由 node-os.js 与 node-path.js 消费） */
+export const PLATFORM_FACTS = Object.freeze({
+  linux: Object.freeze({ devNull: '/dev/null', eol: '\n', sep: '/', delimiter: ':' }),
+  win32: Object.freeze({ devNull: "\\\\.\\nul", eol: "\r\n", sep: "\\", delimiter: ";" }),
+});
+
+/** 当前平台（拿不到环境事实时回退 linux：与沙箱默认取向一致，fail-closed 到"受限的那一套"） */
+function currentPlatform() {
+  try {
+    const p = JSON.parse(globalThis.__spcEnv).platform;
+    return p === 'win32' ? 'win32' : 'linux';
+  } catch (e) {
+    return 'linux';
+  }
+}
+
+// Linux/POSIX（node v22.22.1 / linux / x64）：undefined 键
+const LINUX_TABLE = Object.freeze({
   // ── os.constants.dlopen（5 键）──
   RTLD_LAZY: 1,
   RTLD_NOW: 2,
@@ -258,242 +282,1161 @@ const constants = Object.freeze({
   defaultCipherList: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
 });
 
+const LINUX_TABLEOsGroups = Object.freeze({
+  dlopen: Object.freeze({
+    RTLD_LAZY: 1,
+    RTLD_NOW: 2,
+    RTLD_GLOBAL: 256,
+    RTLD_LOCAL: 0,
+    RTLD_DEEPBIND: 8,
+  }),
+  errno: Object.freeze({
+    E2BIG: 7,
+    EACCES: 13,
+    EADDRINUSE: 98,
+    EADDRNOTAVAIL: 99,
+    EAFNOSUPPORT: 97,
+    EAGAIN: 11,
+    EALREADY: 114,
+    EBADF: 9,
+    EBADMSG: 74,
+    EBUSY: 16,
+    ECANCELED: 125,
+    ECHILD: 10,
+    ECONNABORTED: 103,
+    ECONNREFUSED: 111,
+    ECONNRESET: 104,
+    EDEADLK: 35,
+    EDESTADDRREQ: 89,
+    EDOM: 33,
+    EDQUOT: 122,
+    EEXIST: 17,
+    EFAULT: 14,
+    EFBIG: 27,
+    EHOSTUNREACH: 113,
+    EIDRM: 43,
+    EILSEQ: 84,
+    EINPROGRESS: 115,
+    EINTR: 4,
+    EINVAL: 22,
+    EIO: 5,
+    EISCONN: 106,
+    EISDIR: 21,
+    ELOOP: 40,
+    EMFILE: 24,
+    EMLINK: 31,
+    EMSGSIZE: 90,
+    EMULTIHOP: 72,
+    ENAMETOOLONG: 36,
+    ENETDOWN: 100,
+    ENETRESET: 102,
+    ENETUNREACH: 101,
+    ENFILE: 23,
+    ENOBUFS: 105,
+    ENODATA: 61,
+    ENODEV: 19,
+    ENOENT: 2,
+    ENOEXEC: 8,
+    ENOLCK: 37,
+    ENOLINK: 67,
+    ENOMEM: 12,
+    ENOMSG: 42,
+    ENOPROTOOPT: 92,
+    ENOSPC: 28,
+    ENOSR: 63,
+    ENOSTR: 60,
+    ENOSYS: 38,
+    ENOTCONN: 107,
+    ENOTDIR: 20,
+    ENOTEMPTY: 39,
+    ENOTSOCK: 88,
+    ENOTSUP: 95,
+    ENOTTY: 25,
+    ENXIO: 6,
+    EOPNOTSUPP: 95,
+    EOVERFLOW: 75,
+    EPERM: 1,
+    EPIPE: 32,
+    EPROTO: 71,
+    EPROTONOSUPPORT: 93,
+    EPROTOTYPE: 91,
+    ERANGE: 34,
+    EROFS: 30,
+    ESPIPE: 29,
+    ESRCH: 3,
+    ESTALE: 116,
+    ETIME: 62,
+    ETIMEDOUT: 110,
+    ETXTBSY: 26,
+    EWOULDBLOCK: 11,
+    EXDEV: 18,
+  }),
+  priority: Object.freeze({
+    PRIORITY_LOW: 19,
+    PRIORITY_BELOW_NORMAL: 10,
+    PRIORITY_NORMAL: 0,
+    PRIORITY_ABOVE_NORMAL: -7,
+    PRIORITY_HIGH: -14,
+    PRIORITY_HIGHEST: -20,
+  }),
+  signals: Object.freeze({
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGQUIT: 3,
+    SIGILL: 4,
+    SIGTRAP: 5,
+    SIGABRT: 6,
+    SIGIOT: 6,
+    SIGBUS: 7,
+    SIGFPE: 8,
+    SIGKILL: 9,
+    SIGUSR1: 10,
+    SIGSEGV: 11,
+    SIGUSR2: 12,
+    SIGPIPE: 13,
+    SIGALRM: 14,
+    SIGTERM: 15,
+    SIGCHLD: 17,
+    SIGSTKFLT: 16,
+    SIGCONT: 18,
+    SIGSTOP: 19,
+    SIGTSTP: 20,
+    SIGTTIN: 21,
+    SIGTTOU: 22,
+    SIGURG: 23,
+    SIGXCPU: 24,
+    SIGXFSZ: 25,
+    SIGVTALRM: 26,
+    SIGPROF: 27,
+    SIGWINCH: 28,
+    SIGIO: 29,
+    SIGPOLL: 29,
+    SIGPWR: 30,
+    SIGSYS: 31,
+  }),
+});
+
+// Windows（node v22.22.1 / win32 / x64）：undefined 键
+const WIN32_TABLE = Object.freeze({
+  // ── os.constants.errno（134 键）──
+  E2BIG: 7,
+  EACCES: 13,
+  EADDRINUSE: 100,
+  EADDRNOTAVAIL: 101,
+  EAFNOSUPPORT: 102,
+  EAGAIN: 11,
+  EALREADY: 103,
+  EBADF: 9,
+  EBADMSG: 104,
+  EBUSY: 16,
+  ECANCELED: 105,
+  ECHILD: 10,
+  ECONNABORTED: 106,
+  ECONNREFUSED: 107,
+  ECONNRESET: 108,
+  EDEADLK: 36,
+  EDESTADDRREQ: 109,
+  EDOM: 33,
+  EEXIST: 17,
+  EFAULT: 14,
+  EFBIG: 27,
+  EHOSTUNREACH: 110,
+  EIDRM: 111,
+  EILSEQ: 42,
+  EINPROGRESS: 112,
+  EINTR: 4,
+  EINVAL: 22,
+  EIO: 5,
+  EISCONN: 113,
+  EISDIR: 21,
+  ELOOP: 114,
+  EMFILE: 24,
+  EMLINK: 31,
+  EMSGSIZE: 115,
+  ENAMETOOLONG: 38,
+  ENETDOWN: 116,
+  ENETRESET: 117,
+  ENETUNREACH: 118,
+  ENFILE: 23,
+  ENOBUFS: 119,
+  ENODATA: 120,
+  ENODEV: 19,
+  ENOENT: 2,
+  ENOEXEC: 8,
+  ENOLCK: 39,
+  ENOLINK: 121,
+  ENOMEM: 12,
+  ENOMSG: 122,
+  ENOPROTOOPT: 123,
+  ENOSPC: 28,
+  ENOSR: 124,
+  ENOSTR: 125,
+  ENOSYS: 40,
+  ENOTCONN: 126,
+  ENOTDIR: 20,
+  ENOTEMPTY: 41,
+  ENOTSOCK: 128,
+  ENOTSUP: 129,
+  ENOTTY: 25,
+  ENXIO: 6,
+  EOPNOTSUPP: 130,
+  EOVERFLOW: 132,
+  EPERM: 1,
+  EPIPE: 32,
+  EPROTO: 134,
+  EPROTONOSUPPORT: 135,
+  EPROTOTYPE: 136,
+  ERANGE: 34,
+  EROFS: 30,
+  ESPIPE: 29,
+  ESRCH: 3,
+  ETIME: 137,
+  ETIMEDOUT: 138,
+  ETXTBSY: 139,
+  EWOULDBLOCK: 140,
+  EXDEV: 18,
+  WSAEINTR: 10004,
+  WSAEBADF: 10009,
+  WSAEACCES: 10013,
+  WSAEFAULT: 10014,
+  WSAEINVAL: 10022,
+  WSAEMFILE: 10024,
+  WSAEWOULDBLOCK: 10035,
+  WSAEINPROGRESS: 10036,
+  WSAEALREADY: 10037,
+  WSAENOTSOCK: 10038,
+  WSAEDESTADDRREQ: 10039,
+  WSAEMSGSIZE: 10040,
+  WSAEPROTOTYPE: 10041,
+  WSAENOPROTOOPT: 10042,
+  WSAEPROTONOSUPPORT: 10043,
+  WSAESOCKTNOSUPPORT: 10044,
+  WSAEOPNOTSUPP: 10045,
+  WSAEPFNOSUPPORT: 10046,
+  WSAEAFNOSUPPORT: 10047,
+  WSAEADDRINUSE: 10048,
+  WSAEADDRNOTAVAIL: 10049,
+  WSAENETDOWN: 10050,
+  WSAENETUNREACH: 10051,
+  WSAENETRESET: 10052,
+  WSAECONNABORTED: 10053,
+  WSAECONNRESET: 10054,
+  WSAENOBUFS: 10055,
+  WSAEISCONN: 10056,
+  WSAENOTCONN: 10057,
+  WSAESHUTDOWN: 10058,
+  WSAETOOMANYREFS: 10059,
+  WSAETIMEDOUT: 10060,
+  WSAECONNREFUSED: 10061,
+  WSAELOOP: 10062,
+  WSAENAMETOOLONG: 10063,
+  WSAEHOSTDOWN: 10064,
+  WSAEHOSTUNREACH: 10065,
+  WSAENOTEMPTY: 10066,
+  WSAEPROCLIM: 10067,
+  WSAEUSERS: 10068,
+  WSAEDQUOT: 10069,
+  WSAESTALE: 10070,
+  WSAEREMOTE: 10071,
+  WSASYSNOTREADY: 10091,
+  WSAVERNOTSUPPORTED: 10092,
+  WSANOTINITIALISED: 10093,
+  WSAEDISCON: 10101,
+  WSAENOMORE: 10102,
+  WSAECANCELLED: 10103,
+  WSAEINVALIDPROCTABLE: 10104,
+  WSAEINVALIDPROVIDER: 10105,
+  WSAEPROVIDERFAILEDINIT: 10106,
+  WSASYSCALLFAILURE: 10107,
+  WSASERVICE_NOT_FOUND: 10108,
+  WSATYPE_NOT_FOUND: 10109,
+  WSA_E_NO_MORE: 10110,
+  WSA_E_CANCELLED: 10111,
+  WSAEREFUSED: 10112,
+  // ── os.constants.priority（6 键）──
+  PRIORITY_LOW: 19,
+  PRIORITY_BELOW_NORMAL: 10,
+  PRIORITY_NORMAL: 0,
+  PRIORITY_ABOVE_NORMAL: -7,
+  PRIORITY_HIGH: -14,
+  PRIORITY_HIGHEST: -20,
+  // ── os.constants.signals（11 键）──
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGILL: 4,
+  SIGABRT: 22,
+  SIGFPE: 8,
+  SIGKILL: 9,
+  SIGSEGV: 11,
+  SIGTERM: 15,
+  SIGBREAK: 21,
+  SIGWINCH: 28,
+  // ── fs.constants（36 键）──
+  UV_FS_SYMLINK_DIR: 1,
+  UV_FS_SYMLINK_JUNCTION: 2,
+  O_RDONLY: 0,
+  O_WRONLY: 1,
+  O_RDWR: 2,
+  UV_DIRENT_UNKNOWN: 0,
+  UV_DIRENT_FILE: 1,
+  UV_DIRENT_DIR: 2,
+  UV_DIRENT_LINK: 3,
+  UV_DIRENT_FIFO: 4,
+  UV_DIRENT_SOCKET: 5,
+  UV_DIRENT_CHAR: 6,
+  UV_DIRENT_BLOCK: 7,
+  S_IFMT: 61440,
+  S_IFREG: 32768,
+  S_IFDIR: 16384,
+  S_IFCHR: 8192,
+  S_IFIFO: 4096,
+  S_IFLNK: 40960,
+  O_CREAT: 256,
+  O_EXCL: 1024,
+  UV_FS_O_FILEMAP: 536870912,
+  O_TRUNC: 512,
+  O_APPEND: 8,
+  S_IRUSR: 256,
+  S_IWUSR: 128,
+  F_OK: 0,
+  R_OK: 4,
+  W_OK: 2,
+  X_OK: 1,
+  UV_FS_COPYFILE_EXCL: 1,
+  COPYFILE_EXCL: 1,
+  UV_FS_COPYFILE_FICLONE: 2,
+  COPYFILE_FICLONE: 2,
+  UV_FS_COPYFILE_FICLONE_FORCE: 4,
+  COPYFILE_FICLONE_FORCE: 4,
+  // ── crypto.constants（56 键）──
+  OPENSSL_VERSION_NUMBER: 810549328,
+  SSL_OP_ALL: 2147485776,
+  SSL_OP_ALLOW_NO_DHE_KEX: 1024,
+  SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144,
+  SSL_OP_CIPHER_SERVER_PREFERENCE: 4194304,
+  SSL_OP_CISCO_ANYCONNECT: 32768,
+  SSL_OP_COOKIE_EXCHANGE: 8192,
+  SSL_OP_CRYPTOPRO_TLSEXT_BUG: 2147483648,
+  SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS: 2048,
+  SSL_OP_LEGACY_SERVER_CONNECT: 4,
+  SSL_OP_NO_COMPRESSION: 131072,
+  SSL_OP_NO_ENCRYPT_THEN_MAC: 524288,
+  SSL_OP_NO_QUERY_MTU: 4096,
+  SSL_OP_NO_RENEGOTIATION: 1073741824,
+  SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION: 65536,
+  SSL_OP_NO_SSLv2: 0,
+  SSL_OP_NO_SSLv3: 33554432,
+  SSL_OP_NO_TICKET: 16384,
+  SSL_OP_NO_TLSv1: 67108864,
+  SSL_OP_NO_TLSv1_1: 268435456,
+  SSL_OP_NO_TLSv1_2: 134217728,
+  SSL_OP_NO_TLSv1_3: 536870912,
+  SSL_OP_PRIORITIZE_CHACHA: 2097152,
+  SSL_OP_TLS_ROLLBACK_BUG: 8388608,
+  ENGINE_METHOD_RSA: 1,
+  ENGINE_METHOD_DSA: 2,
+  ENGINE_METHOD_DH: 4,
+  ENGINE_METHOD_RAND: 8,
+  ENGINE_METHOD_EC: 2048,
+  ENGINE_METHOD_CIPHERS: 64,
+  ENGINE_METHOD_DIGESTS: 128,
+  ENGINE_METHOD_PKEY_METHS: 512,
+  ENGINE_METHOD_PKEY_ASN1_METHS: 1024,
+  ENGINE_METHOD_ALL: 65535,
+  ENGINE_METHOD_NONE: 0,
+  DH_CHECK_P_NOT_SAFE_PRIME: 2,
+  DH_CHECK_P_NOT_PRIME: 1,
+  DH_UNABLE_TO_CHECK_GENERATOR: 4,
+  DH_NOT_SUITABLE_GENERATOR: 8,
+  RSA_PKCS1_PADDING: 1,
+  RSA_NO_PADDING: 3,
+  RSA_PKCS1_OAEP_PADDING: 4,
+  RSA_X931_PADDING: 5,
+  RSA_PKCS1_PSS_PADDING: 6,
+  RSA_PSS_SALTLEN_DIGEST: -1,
+  RSA_PSS_SALTLEN_MAX_SIGN: -2,
+  RSA_PSS_SALTLEN_AUTO: -2,
+  defaultCoreCipherList: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
+  TLS1_VERSION: 769,
+  TLS1_1_VERSION: 770,
+  TLS1_2_VERSION: 771,
+  TLS1_3_VERSION: 772,
+  POINT_CONVERSION_COMPRESSED: 2,
+  POINT_CONVERSION_UNCOMPRESSED: 4,
+  POINT_CONVERSION_HYBRID: 6,
+  defaultCipherList: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
+});
+
+const WIN32_TABLEOsGroups = Object.freeze({
+  dlopen: Object.freeze({
+  }),
+  errno: Object.freeze({
+    E2BIG: 7,
+    EACCES: 13,
+    EADDRINUSE: 100,
+    EADDRNOTAVAIL: 101,
+    EAFNOSUPPORT: 102,
+    EAGAIN: 11,
+    EALREADY: 103,
+    EBADF: 9,
+    EBADMSG: 104,
+    EBUSY: 16,
+    ECANCELED: 105,
+    ECHILD: 10,
+    ECONNABORTED: 106,
+    ECONNREFUSED: 107,
+    ECONNRESET: 108,
+    EDEADLK: 36,
+    EDESTADDRREQ: 109,
+    EDOM: 33,
+    EEXIST: 17,
+    EFAULT: 14,
+    EFBIG: 27,
+    EHOSTUNREACH: 110,
+    EIDRM: 111,
+    EILSEQ: 42,
+    EINPROGRESS: 112,
+    EINTR: 4,
+    EINVAL: 22,
+    EIO: 5,
+    EISCONN: 113,
+    EISDIR: 21,
+    ELOOP: 114,
+    EMFILE: 24,
+    EMLINK: 31,
+    EMSGSIZE: 115,
+    ENAMETOOLONG: 38,
+    ENETDOWN: 116,
+    ENETRESET: 117,
+    ENETUNREACH: 118,
+    ENFILE: 23,
+    ENOBUFS: 119,
+    ENODATA: 120,
+    ENODEV: 19,
+    ENOENT: 2,
+    ENOEXEC: 8,
+    ENOLCK: 39,
+    ENOLINK: 121,
+    ENOMEM: 12,
+    ENOMSG: 122,
+    ENOPROTOOPT: 123,
+    ENOSPC: 28,
+    ENOSR: 124,
+    ENOSTR: 125,
+    ENOSYS: 40,
+    ENOTCONN: 126,
+    ENOTDIR: 20,
+    ENOTEMPTY: 41,
+    ENOTSOCK: 128,
+    ENOTSUP: 129,
+    ENOTTY: 25,
+    ENXIO: 6,
+    EOPNOTSUPP: 130,
+    EOVERFLOW: 132,
+    EPERM: 1,
+    EPIPE: 32,
+    EPROTO: 134,
+    EPROTONOSUPPORT: 135,
+    EPROTOTYPE: 136,
+    ERANGE: 34,
+    EROFS: 30,
+    ESPIPE: 29,
+    ESRCH: 3,
+    ETIME: 137,
+    ETIMEDOUT: 138,
+    ETXTBSY: 139,
+    EWOULDBLOCK: 140,
+    EXDEV: 18,
+    WSAEINTR: 10004,
+    WSAEBADF: 10009,
+    WSAEACCES: 10013,
+    WSAEFAULT: 10014,
+    WSAEINVAL: 10022,
+    WSAEMFILE: 10024,
+    WSAEWOULDBLOCK: 10035,
+    WSAEINPROGRESS: 10036,
+    WSAEALREADY: 10037,
+    WSAENOTSOCK: 10038,
+    WSAEDESTADDRREQ: 10039,
+    WSAEMSGSIZE: 10040,
+    WSAEPROTOTYPE: 10041,
+    WSAENOPROTOOPT: 10042,
+    WSAEPROTONOSUPPORT: 10043,
+    WSAESOCKTNOSUPPORT: 10044,
+    WSAEOPNOTSUPP: 10045,
+    WSAEPFNOSUPPORT: 10046,
+    WSAEAFNOSUPPORT: 10047,
+    WSAEADDRINUSE: 10048,
+    WSAEADDRNOTAVAIL: 10049,
+    WSAENETDOWN: 10050,
+    WSAENETUNREACH: 10051,
+    WSAENETRESET: 10052,
+    WSAECONNABORTED: 10053,
+    WSAECONNRESET: 10054,
+    WSAENOBUFS: 10055,
+    WSAEISCONN: 10056,
+    WSAENOTCONN: 10057,
+    WSAESHUTDOWN: 10058,
+    WSAETOOMANYREFS: 10059,
+    WSAETIMEDOUT: 10060,
+    WSAECONNREFUSED: 10061,
+    WSAELOOP: 10062,
+    WSAENAMETOOLONG: 10063,
+    WSAEHOSTDOWN: 10064,
+    WSAEHOSTUNREACH: 10065,
+    WSAENOTEMPTY: 10066,
+    WSAEPROCLIM: 10067,
+    WSAEUSERS: 10068,
+    WSAEDQUOT: 10069,
+    WSAESTALE: 10070,
+    WSAEREMOTE: 10071,
+    WSASYSNOTREADY: 10091,
+    WSAVERNOTSUPPORTED: 10092,
+    WSANOTINITIALISED: 10093,
+    WSAEDISCON: 10101,
+    WSAENOMORE: 10102,
+    WSAECANCELLED: 10103,
+    WSAEINVALIDPROCTABLE: 10104,
+    WSAEINVALIDPROVIDER: 10105,
+    WSAEPROVIDERFAILEDINIT: 10106,
+    WSASYSCALLFAILURE: 10107,
+    WSASERVICE_NOT_FOUND: 10108,
+    WSATYPE_NOT_FOUND: 10109,
+    WSA_E_NO_MORE: 10110,
+    WSA_E_CANCELLED: 10111,
+    WSAEREFUSED: 10112,
+  }),
+  priority: Object.freeze({
+    PRIORITY_LOW: 19,
+    PRIORITY_BELOW_NORMAL: 10,
+    PRIORITY_NORMAL: 0,
+    PRIORITY_ABOVE_NORMAL: -7,
+    PRIORITY_HIGH: -14,
+    PRIORITY_HIGHEST: -20,
+  }),
+  signals: Object.freeze({
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGQUIT: 3,
+    SIGILL: 4,
+    SIGABRT: 22,
+    SIGFPE: 8,
+    SIGKILL: 9,
+    SIGSEGV: 11,
+    SIGTERM: 15,
+    SIGBREAK: 21,
+    SIGWINCH: 28,
+  }),
+});
+
+const constants = currentPlatform() === 'win32' ? WIN32_TABLE : LINUX_TABLE;
+const osGroups = currentPlatform() === 'win32' ? WIN32_TABLEOsGroups : LINUX_TABLEOsGroups;
+
 export default constants;
 
-export const {
-  RTLD_LAZY,
-  RTLD_NOW,
-  RTLD_GLOBAL,
-  RTLD_LOCAL,
-  RTLD_DEEPBIND,
-  E2BIG,
-  EACCES,
-  EADDRINUSE,
-  EADDRNOTAVAIL,
-  EAFNOSUPPORT,
-  EAGAIN,
-  EALREADY,
-  EBADF,
-  EBADMSG,
-  EBUSY,
-  ECANCELED,
-  ECHILD,
-  ECONNABORTED,
-  ECONNREFUSED,
-  ECONNRESET,
-  EDEADLK,
-  EDESTADDRREQ,
-  EDOM,
-  EDQUOT,
-  EEXIST,
-  EFAULT,
-  EFBIG,
-  EHOSTUNREACH,
-  EIDRM,
-  EILSEQ,
-  EINPROGRESS,
-  EINTR,
-  EINVAL,
-  EIO,
-  EISCONN,
-  EISDIR,
-  ELOOP,
-  EMFILE,
-  EMLINK,
-  EMSGSIZE,
-  EMULTIHOP,
-  ENAMETOOLONG,
-  ENETDOWN,
-  ENETRESET,
-  ENETUNREACH,
-  ENFILE,
-  ENOBUFS,
-  ENODATA,
-  ENODEV,
-  ENOENT,
-  ENOEXEC,
-  ENOLCK,
-  ENOLINK,
-  ENOMEM,
-  ENOMSG,
-  ENOPROTOOPT,
-  ENOSPC,
-  ENOSR,
-  ENOSTR,
-  ENOSYS,
-  ENOTCONN,
-  ENOTDIR,
-  ENOTEMPTY,
-  ENOTSOCK,
-  ENOTSUP,
-  ENOTTY,
-  ENXIO,
-  EOPNOTSUPP,
-  EOVERFLOW,
-  EPERM,
-  EPIPE,
-  EPROTO,
-  EPROTONOSUPPORT,
-  EPROTOTYPE,
-  ERANGE,
-  EROFS,
-  ESPIPE,
-  ESRCH,
-  ESTALE,
-  ETIME,
-  ETIMEDOUT,
-  ETXTBSY,
-  EWOULDBLOCK,
-  EXDEV,
-  PRIORITY_LOW,
-  PRIORITY_BELOW_NORMAL,
-  PRIORITY_NORMAL,
-  PRIORITY_ABOVE_NORMAL,
-  PRIORITY_HIGH,
-  PRIORITY_HIGHEST,
-  SIGHUP,
-  SIGINT,
-  SIGQUIT,
-  SIGILL,
-  SIGTRAP,
-  SIGABRT,
-  SIGIOT,
-  SIGBUS,
-  SIGFPE,
-  SIGKILL,
-  SIGUSR1,
-  SIGSEGV,
-  SIGUSR2,
-  SIGPIPE,
-  SIGALRM,
-  SIGTERM,
-  SIGCHLD,
-  SIGSTKFLT,
-  SIGCONT,
-  SIGSTOP,
-  SIGTSTP,
-  SIGTTIN,
-  SIGTTOU,
-  SIGURG,
-  SIGXCPU,
-  SIGXFSZ,
-  SIGVTALRM,
-  SIGPROF,
-  SIGWINCH,
-  SIGIO,
-  SIGPOLL,
-  SIGPWR,
-  SIGSYS,
-  UV_FS_SYMLINK_DIR,
-  UV_FS_SYMLINK_JUNCTION,
-  O_RDONLY,
-  O_WRONLY,
-  O_RDWR,
-  UV_DIRENT_UNKNOWN,
-  UV_DIRENT_FILE,
-  UV_DIRENT_DIR,
-  UV_DIRENT_LINK,
-  UV_DIRENT_FIFO,
-  UV_DIRENT_SOCKET,
-  UV_DIRENT_CHAR,
-  UV_DIRENT_BLOCK,
-  S_IFMT,
-  S_IFREG,
-  S_IFDIR,
-  S_IFCHR,
-  S_IFBLK,
-  S_IFIFO,
-  S_IFLNK,
-  S_IFSOCK,
-  O_CREAT,
-  O_EXCL,
-  UV_FS_O_FILEMAP,
-  O_NOCTTY,
-  O_TRUNC,
-  O_APPEND,
-  O_DIRECTORY,
-  O_NOATIME,
-  O_NOFOLLOW,
-  O_SYNC,
-  O_DSYNC,
-  O_DIRECT,
-  O_NONBLOCK,
-  S_IRWXU,
-  S_IRUSR,
-  S_IWUSR,
-  S_IXUSR,
-  S_IRWXG,
-  S_IRGRP,
-  S_IWGRP,
-  S_IXGRP,
-  S_IRWXO,
-  S_IROTH,
-  S_IWOTH,
-  S_IXOTH,
-  F_OK,
-  R_OK,
-  W_OK,
-  X_OK,
-  UV_FS_COPYFILE_EXCL,
-  COPYFILE_EXCL,
-  UV_FS_COPYFILE_FICLONE,
-  COPYFILE_FICLONE,
-  UV_FS_COPYFILE_FICLONE_FORCE,
-  COPYFILE_FICLONE_FORCE,
-  OPENSSL_VERSION_NUMBER,
-  SSL_OP_ALL,
-  SSL_OP_ALLOW_NO_DHE_KEX,
-  SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION,
-  SSL_OP_CIPHER_SERVER_PREFERENCE,
-  SSL_OP_CISCO_ANYCONNECT,
-  SSL_OP_COOKIE_EXCHANGE,
-  SSL_OP_CRYPTOPRO_TLSEXT_BUG,
-  SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
-  SSL_OP_LEGACY_SERVER_CONNECT,
-  SSL_OP_NO_COMPRESSION,
-  SSL_OP_NO_ENCRYPT_THEN_MAC,
-  SSL_OP_NO_QUERY_MTU,
-  SSL_OP_NO_RENEGOTIATION,
-  SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION,
-  SSL_OP_NO_SSLv2,
-  SSL_OP_NO_SSLv3,
-  SSL_OP_NO_TICKET,
-  SSL_OP_NO_TLSv1,
-  SSL_OP_NO_TLSv1_1,
-  SSL_OP_NO_TLSv1_2,
-  SSL_OP_NO_TLSv1_3,
-  SSL_OP_PRIORITIZE_CHACHA,
-  SSL_OP_TLS_ROLLBACK_BUG,
-  ENGINE_METHOD_RSA,
-  ENGINE_METHOD_DSA,
-  ENGINE_METHOD_DH,
-  ENGINE_METHOD_RAND,
-  ENGINE_METHOD_EC,
-  ENGINE_METHOD_CIPHERS,
-  ENGINE_METHOD_DIGESTS,
-  ENGINE_METHOD_PKEY_METHS,
-  ENGINE_METHOD_PKEY_ASN1_METHS,
-  ENGINE_METHOD_ALL,
-  ENGINE_METHOD_NONE,
-  DH_CHECK_P_NOT_SAFE_PRIME,
-  DH_CHECK_P_NOT_PRIME,
-  DH_UNABLE_TO_CHECK_GENERATOR,
-  DH_NOT_SUITABLE_GENERATOR,
-  RSA_PKCS1_PADDING,
-  RSA_NO_PADDING,
-  RSA_PKCS1_OAEP_PADDING,
-  RSA_X931_PADDING,
-  RSA_PKCS1_PSS_PADDING,
-  RSA_PSS_SALTLEN_DIGEST,
-  RSA_PSS_SALTLEN_MAX_SIGN,
-  RSA_PSS_SALTLEN_AUTO,
-  defaultCoreCipherList,
-  TLS1_VERSION,
-  TLS1_1_VERSION,
-  TLS1_2_VERSION,
-  TLS1_3_VERSION,
-  POINT_CONVERSION_COMPRESSED,
-  POINT_CONVERSION_UNCOMPRESSED,
-  POINT_CONVERSION_HYBRID,
-  defaultCipherList,
-} = constants;
+/** `os.constants` 的四组：**按真值的分组给**（不从前缀反推——Windows 上 `WSA*` 与 `E*` 前缀归类会错位） */
+export const osConstants = osGroups;
+
+
+/** 两个平台键集的**并集**（保证任一侧的 `import { X }` 都能解析） */
+/**
+ * 每个键都建一个**模块级 const 绑定**，值取当前平台那张表。
+ *
+ * 为什么不是 `export const { A, B } = constants`：解构的键集必须在**源码里**写死，
+ * 而键集是平台相关的（Windows 243 / Linux 235）。只导出交集的话，
+ * `import { O_NOFOLLOW } from 'node:constants'` 在 Windows 上会变成"未导出"，
+ * 而它在 Node 上只是"值为 undefined"——那是**导入期就炸**的差异，比拿不到值严重。
+ * 所以按**并集**建绑定（294 个），值由运行期平台决定。
+ */
+const __C_COPYFILE_EXCL = constants["COPYFILE_EXCL"];
+const __C_COPYFILE_FICLONE = constants["COPYFILE_FICLONE"];
+const __C_COPYFILE_FICLONE_FORCE = constants["COPYFILE_FICLONE_FORCE"];
+const __C_DH_CHECK_P_NOT_PRIME = constants["DH_CHECK_P_NOT_PRIME"];
+const __C_DH_CHECK_P_NOT_SAFE_PRIME = constants["DH_CHECK_P_NOT_SAFE_PRIME"];
+const __C_DH_NOT_SUITABLE_GENERATOR = constants["DH_NOT_SUITABLE_GENERATOR"];
+const __C_DH_UNABLE_TO_CHECK_GENERATOR = constants["DH_UNABLE_TO_CHECK_GENERATOR"];
+const __C_E2BIG = constants["E2BIG"];
+const __C_EACCES = constants["EACCES"];
+const __C_EADDRINUSE = constants["EADDRINUSE"];
+const __C_EADDRNOTAVAIL = constants["EADDRNOTAVAIL"];
+const __C_EAFNOSUPPORT = constants["EAFNOSUPPORT"];
+const __C_EAGAIN = constants["EAGAIN"];
+const __C_EALREADY = constants["EALREADY"];
+const __C_EBADF = constants["EBADF"];
+const __C_EBADMSG = constants["EBADMSG"];
+const __C_EBUSY = constants["EBUSY"];
+const __C_ECANCELED = constants["ECANCELED"];
+const __C_ECHILD = constants["ECHILD"];
+const __C_ECONNABORTED = constants["ECONNABORTED"];
+const __C_ECONNREFUSED = constants["ECONNREFUSED"];
+const __C_ECONNRESET = constants["ECONNRESET"];
+const __C_EDEADLK = constants["EDEADLK"];
+const __C_EDESTADDRREQ = constants["EDESTADDRREQ"];
+const __C_EDOM = constants["EDOM"];
+const __C_EDQUOT = constants["EDQUOT"];
+const __C_EEXIST = constants["EEXIST"];
+const __C_EFAULT = constants["EFAULT"];
+const __C_EFBIG = constants["EFBIG"];
+const __C_EHOSTUNREACH = constants["EHOSTUNREACH"];
+const __C_EIDRM = constants["EIDRM"];
+const __C_EILSEQ = constants["EILSEQ"];
+const __C_EINPROGRESS = constants["EINPROGRESS"];
+const __C_EINTR = constants["EINTR"];
+const __C_EINVAL = constants["EINVAL"];
+const __C_EIO = constants["EIO"];
+const __C_EISCONN = constants["EISCONN"];
+const __C_EISDIR = constants["EISDIR"];
+const __C_ELOOP = constants["ELOOP"];
+const __C_EMFILE = constants["EMFILE"];
+const __C_EMLINK = constants["EMLINK"];
+const __C_EMSGSIZE = constants["EMSGSIZE"];
+const __C_EMULTIHOP = constants["EMULTIHOP"];
+const __C_ENAMETOOLONG = constants["ENAMETOOLONG"];
+const __C_ENETDOWN = constants["ENETDOWN"];
+const __C_ENETRESET = constants["ENETRESET"];
+const __C_ENETUNREACH = constants["ENETUNREACH"];
+const __C_ENFILE = constants["ENFILE"];
+const __C_ENGINE_METHOD_ALL = constants["ENGINE_METHOD_ALL"];
+const __C_ENGINE_METHOD_CIPHERS = constants["ENGINE_METHOD_CIPHERS"];
+const __C_ENGINE_METHOD_DH = constants["ENGINE_METHOD_DH"];
+const __C_ENGINE_METHOD_DIGESTS = constants["ENGINE_METHOD_DIGESTS"];
+const __C_ENGINE_METHOD_DSA = constants["ENGINE_METHOD_DSA"];
+const __C_ENGINE_METHOD_EC = constants["ENGINE_METHOD_EC"];
+const __C_ENGINE_METHOD_NONE = constants["ENGINE_METHOD_NONE"];
+const __C_ENGINE_METHOD_PKEY_ASN1_METHS = constants["ENGINE_METHOD_PKEY_ASN1_METHS"];
+const __C_ENGINE_METHOD_PKEY_METHS = constants["ENGINE_METHOD_PKEY_METHS"];
+const __C_ENGINE_METHOD_RAND = constants["ENGINE_METHOD_RAND"];
+const __C_ENGINE_METHOD_RSA = constants["ENGINE_METHOD_RSA"];
+const __C_ENOBUFS = constants["ENOBUFS"];
+const __C_ENODATA = constants["ENODATA"];
+const __C_ENODEV = constants["ENODEV"];
+const __C_ENOENT = constants["ENOENT"];
+const __C_ENOEXEC = constants["ENOEXEC"];
+const __C_ENOLCK = constants["ENOLCK"];
+const __C_ENOLINK = constants["ENOLINK"];
+const __C_ENOMEM = constants["ENOMEM"];
+const __C_ENOMSG = constants["ENOMSG"];
+const __C_ENOPROTOOPT = constants["ENOPROTOOPT"];
+const __C_ENOSPC = constants["ENOSPC"];
+const __C_ENOSR = constants["ENOSR"];
+const __C_ENOSTR = constants["ENOSTR"];
+const __C_ENOSYS = constants["ENOSYS"];
+const __C_ENOTCONN = constants["ENOTCONN"];
+const __C_ENOTDIR = constants["ENOTDIR"];
+const __C_ENOTEMPTY = constants["ENOTEMPTY"];
+const __C_ENOTSOCK = constants["ENOTSOCK"];
+const __C_ENOTSUP = constants["ENOTSUP"];
+const __C_ENOTTY = constants["ENOTTY"];
+const __C_ENXIO = constants["ENXIO"];
+const __C_EOPNOTSUPP = constants["EOPNOTSUPP"];
+const __C_EOVERFLOW = constants["EOVERFLOW"];
+const __C_EPERM = constants["EPERM"];
+const __C_EPIPE = constants["EPIPE"];
+const __C_EPROTO = constants["EPROTO"];
+const __C_EPROTONOSUPPORT = constants["EPROTONOSUPPORT"];
+const __C_EPROTOTYPE = constants["EPROTOTYPE"];
+const __C_ERANGE = constants["ERANGE"];
+const __C_EROFS = constants["EROFS"];
+const __C_ESPIPE = constants["ESPIPE"];
+const __C_ESRCH = constants["ESRCH"];
+const __C_ESTALE = constants["ESTALE"];
+const __C_ETIME = constants["ETIME"];
+const __C_ETIMEDOUT = constants["ETIMEDOUT"];
+const __C_ETXTBSY = constants["ETXTBSY"];
+const __C_EWOULDBLOCK = constants["EWOULDBLOCK"];
+const __C_EXDEV = constants["EXDEV"];
+const __C_F_OK = constants["F_OK"];
+const __C_OPENSSL_VERSION_NUMBER = constants["OPENSSL_VERSION_NUMBER"];
+const __C_O_APPEND = constants["O_APPEND"];
+const __C_O_CREAT = constants["O_CREAT"];
+const __C_O_DIRECT = constants["O_DIRECT"];
+const __C_O_DIRECTORY = constants["O_DIRECTORY"];
+const __C_O_DSYNC = constants["O_DSYNC"];
+const __C_O_EXCL = constants["O_EXCL"];
+const __C_O_NOATIME = constants["O_NOATIME"];
+const __C_O_NOCTTY = constants["O_NOCTTY"];
+const __C_O_NOFOLLOW = constants["O_NOFOLLOW"];
+const __C_O_NONBLOCK = constants["O_NONBLOCK"];
+const __C_O_RDONLY = constants["O_RDONLY"];
+const __C_O_RDWR = constants["O_RDWR"];
+const __C_O_SYNC = constants["O_SYNC"];
+const __C_O_TRUNC = constants["O_TRUNC"];
+const __C_O_WRONLY = constants["O_WRONLY"];
+const __C_POINT_CONVERSION_COMPRESSED = constants["POINT_CONVERSION_COMPRESSED"];
+const __C_POINT_CONVERSION_HYBRID = constants["POINT_CONVERSION_HYBRID"];
+const __C_POINT_CONVERSION_UNCOMPRESSED = constants["POINT_CONVERSION_UNCOMPRESSED"];
+const __C_PRIORITY_ABOVE_NORMAL = constants["PRIORITY_ABOVE_NORMAL"];
+const __C_PRIORITY_BELOW_NORMAL = constants["PRIORITY_BELOW_NORMAL"];
+const __C_PRIORITY_HIGH = constants["PRIORITY_HIGH"];
+const __C_PRIORITY_HIGHEST = constants["PRIORITY_HIGHEST"];
+const __C_PRIORITY_LOW = constants["PRIORITY_LOW"];
+const __C_PRIORITY_NORMAL = constants["PRIORITY_NORMAL"];
+const __C_RSA_NO_PADDING = constants["RSA_NO_PADDING"];
+const __C_RSA_PKCS1_OAEP_PADDING = constants["RSA_PKCS1_OAEP_PADDING"];
+const __C_RSA_PKCS1_PADDING = constants["RSA_PKCS1_PADDING"];
+const __C_RSA_PKCS1_PSS_PADDING = constants["RSA_PKCS1_PSS_PADDING"];
+const __C_RSA_PSS_SALTLEN_AUTO = constants["RSA_PSS_SALTLEN_AUTO"];
+const __C_RSA_PSS_SALTLEN_DIGEST = constants["RSA_PSS_SALTLEN_DIGEST"];
+const __C_RSA_PSS_SALTLEN_MAX_SIGN = constants["RSA_PSS_SALTLEN_MAX_SIGN"];
+const __C_RSA_X931_PADDING = constants["RSA_X931_PADDING"];
+const __C_RTLD_DEEPBIND = constants["RTLD_DEEPBIND"];
+const __C_RTLD_GLOBAL = constants["RTLD_GLOBAL"];
+const __C_RTLD_LAZY = constants["RTLD_LAZY"];
+const __C_RTLD_LOCAL = constants["RTLD_LOCAL"];
+const __C_RTLD_NOW = constants["RTLD_NOW"];
+const __C_R_OK = constants["R_OK"];
+const __C_SIGABRT = constants["SIGABRT"];
+const __C_SIGALRM = constants["SIGALRM"];
+const __C_SIGBREAK = constants["SIGBREAK"];
+const __C_SIGBUS = constants["SIGBUS"];
+const __C_SIGCHLD = constants["SIGCHLD"];
+const __C_SIGCONT = constants["SIGCONT"];
+const __C_SIGFPE = constants["SIGFPE"];
+const __C_SIGHUP = constants["SIGHUP"];
+const __C_SIGILL = constants["SIGILL"];
+const __C_SIGINT = constants["SIGINT"];
+const __C_SIGIO = constants["SIGIO"];
+const __C_SIGIOT = constants["SIGIOT"];
+const __C_SIGKILL = constants["SIGKILL"];
+const __C_SIGPIPE = constants["SIGPIPE"];
+const __C_SIGPOLL = constants["SIGPOLL"];
+const __C_SIGPROF = constants["SIGPROF"];
+const __C_SIGPWR = constants["SIGPWR"];
+const __C_SIGQUIT = constants["SIGQUIT"];
+const __C_SIGSEGV = constants["SIGSEGV"];
+const __C_SIGSTKFLT = constants["SIGSTKFLT"];
+const __C_SIGSTOP = constants["SIGSTOP"];
+const __C_SIGSYS = constants["SIGSYS"];
+const __C_SIGTERM = constants["SIGTERM"];
+const __C_SIGTRAP = constants["SIGTRAP"];
+const __C_SIGTSTP = constants["SIGTSTP"];
+const __C_SIGTTIN = constants["SIGTTIN"];
+const __C_SIGTTOU = constants["SIGTTOU"];
+const __C_SIGURG = constants["SIGURG"];
+const __C_SIGUSR1 = constants["SIGUSR1"];
+const __C_SIGUSR2 = constants["SIGUSR2"];
+const __C_SIGVTALRM = constants["SIGVTALRM"];
+const __C_SIGWINCH = constants["SIGWINCH"];
+const __C_SIGXCPU = constants["SIGXCPU"];
+const __C_SIGXFSZ = constants["SIGXFSZ"];
+const __C_SSL_OP_ALL = constants["SSL_OP_ALL"];
+const __C_SSL_OP_ALLOW_NO_DHE_KEX = constants["SSL_OP_ALLOW_NO_DHE_KEX"];
+const __C_SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION = constants["SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION"];
+const __C_SSL_OP_CIPHER_SERVER_PREFERENCE = constants["SSL_OP_CIPHER_SERVER_PREFERENCE"];
+const __C_SSL_OP_CISCO_ANYCONNECT = constants["SSL_OP_CISCO_ANYCONNECT"];
+const __C_SSL_OP_COOKIE_EXCHANGE = constants["SSL_OP_COOKIE_EXCHANGE"];
+const __C_SSL_OP_CRYPTOPRO_TLSEXT_BUG = constants["SSL_OP_CRYPTOPRO_TLSEXT_BUG"];
+const __C_SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS = constants["SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS"];
+const __C_SSL_OP_LEGACY_SERVER_CONNECT = constants["SSL_OP_LEGACY_SERVER_CONNECT"];
+const __C_SSL_OP_NO_COMPRESSION = constants["SSL_OP_NO_COMPRESSION"];
+const __C_SSL_OP_NO_ENCRYPT_THEN_MAC = constants["SSL_OP_NO_ENCRYPT_THEN_MAC"];
+const __C_SSL_OP_NO_QUERY_MTU = constants["SSL_OP_NO_QUERY_MTU"];
+const __C_SSL_OP_NO_RENEGOTIATION = constants["SSL_OP_NO_RENEGOTIATION"];
+const __C_SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION = constants["SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION"];
+const __C_SSL_OP_NO_SSLv2 = constants["SSL_OP_NO_SSLv2"];
+const __C_SSL_OP_NO_SSLv3 = constants["SSL_OP_NO_SSLv3"];
+const __C_SSL_OP_NO_TICKET = constants["SSL_OP_NO_TICKET"];
+const __C_SSL_OP_NO_TLSv1 = constants["SSL_OP_NO_TLSv1"];
+const __C_SSL_OP_NO_TLSv1_1 = constants["SSL_OP_NO_TLSv1_1"];
+const __C_SSL_OP_NO_TLSv1_2 = constants["SSL_OP_NO_TLSv1_2"];
+const __C_SSL_OP_NO_TLSv1_3 = constants["SSL_OP_NO_TLSv1_3"];
+const __C_SSL_OP_PRIORITIZE_CHACHA = constants["SSL_OP_PRIORITIZE_CHACHA"];
+const __C_SSL_OP_TLS_ROLLBACK_BUG = constants["SSL_OP_TLS_ROLLBACK_BUG"];
+const __C_S_IFBLK = constants["S_IFBLK"];
+const __C_S_IFCHR = constants["S_IFCHR"];
+const __C_S_IFDIR = constants["S_IFDIR"];
+const __C_S_IFIFO = constants["S_IFIFO"];
+const __C_S_IFLNK = constants["S_IFLNK"];
+const __C_S_IFMT = constants["S_IFMT"];
+const __C_S_IFREG = constants["S_IFREG"];
+const __C_S_IFSOCK = constants["S_IFSOCK"];
+const __C_S_IRGRP = constants["S_IRGRP"];
+const __C_S_IROTH = constants["S_IROTH"];
+const __C_S_IRUSR = constants["S_IRUSR"];
+const __C_S_IRWXG = constants["S_IRWXG"];
+const __C_S_IRWXO = constants["S_IRWXO"];
+const __C_S_IRWXU = constants["S_IRWXU"];
+const __C_S_IWGRP = constants["S_IWGRP"];
+const __C_S_IWOTH = constants["S_IWOTH"];
+const __C_S_IWUSR = constants["S_IWUSR"];
+const __C_S_IXGRP = constants["S_IXGRP"];
+const __C_S_IXOTH = constants["S_IXOTH"];
+const __C_S_IXUSR = constants["S_IXUSR"];
+const __C_TLS1_1_VERSION = constants["TLS1_1_VERSION"];
+const __C_TLS1_2_VERSION = constants["TLS1_2_VERSION"];
+const __C_TLS1_3_VERSION = constants["TLS1_3_VERSION"];
+const __C_TLS1_VERSION = constants["TLS1_VERSION"];
+const __C_UV_DIRENT_BLOCK = constants["UV_DIRENT_BLOCK"];
+const __C_UV_DIRENT_CHAR = constants["UV_DIRENT_CHAR"];
+const __C_UV_DIRENT_DIR = constants["UV_DIRENT_DIR"];
+const __C_UV_DIRENT_FIFO = constants["UV_DIRENT_FIFO"];
+const __C_UV_DIRENT_FILE = constants["UV_DIRENT_FILE"];
+const __C_UV_DIRENT_LINK = constants["UV_DIRENT_LINK"];
+const __C_UV_DIRENT_SOCKET = constants["UV_DIRENT_SOCKET"];
+const __C_UV_DIRENT_UNKNOWN = constants["UV_DIRENT_UNKNOWN"];
+const __C_UV_FS_COPYFILE_EXCL = constants["UV_FS_COPYFILE_EXCL"];
+const __C_UV_FS_COPYFILE_FICLONE = constants["UV_FS_COPYFILE_FICLONE"];
+const __C_UV_FS_COPYFILE_FICLONE_FORCE = constants["UV_FS_COPYFILE_FICLONE_FORCE"];
+const __C_UV_FS_O_FILEMAP = constants["UV_FS_O_FILEMAP"];
+const __C_UV_FS_SYMLINK_DIR = constants["UV_FS_SYMLINK_DIR"];
+const __C_UV_FS_SYMLINK_JUNCTION = constants["UV_FS_SYMLINK_JUNCTION"];
+const __C_WSAEACCES = constants["WSAEACCES"];
+const __C_WSAEADDRINUSE = constants["WSAEADDRINUSE"];
+const __C_WSAEADDRNOTAVAIL = constants["WSAEADDRNOTAVAIL"];
+const __C_WSAEAFNOSUPPORT = constants["WSAEAFNOSUPPORT"];
+const __C_WSAEALREADY = constants["WSAEALREADY"];
+const __C_WSAEBADF = constants["WSAEBADF"];
+const __C_WSAECANCELLED = constants["WSAECANCELLED"];
+const __C_WSAECONNABORTED = constants["WSAECONNABORTED"];
+const __C_WSAECONNREFUSED = constants["WSAECONNREFUSED"];
+const __C_WSAECONNRESET = constants["WSAECONNRESET"];
+const __C_WSAEDESTADDRREQ = constants["WSAEDESTADDRREQ"];
+const __C_WSAEDISCON = constants["WSAEDISCON"];
+const __C_WSAEDQUOT = constants["WSAEDQUOT"];
+const __C_WSAEFAULT = constants["WSAEFAULT"];
+const __C_WSAEHOSTDOWN = constants["WSAEHOSTDOWN"];
+const __C_WSAEHOSTUNREACH = constants["WSAEHOSTUNREACH"];
+const __C_WSAEINPROGRESS = constants["WSAEINPROGRESS"];
+const __C_WSAEINTR = constants["WSAEINTR"];
+const __C_WSAEINVAL = constants["WSAEINVAL"];
+const __C_WSAEINVALIDPROCTABLE = constants["WSAEINVALIDPROCTABLE"];
+const __C_WSAEINVALIDPROVIDER = constants["WSAEINVALIDPROVIDER"];
+const __C_WSAEISCONN = constants["WSAEISCONN"];
+const __C_WSAELOOP = constants["WSAELOOP"];
+const __C_WSAEMFILE = constants["WSAEMFILE"];
+const __C_WSAEMSGSIZE = constants["WSAEMSGSIZE"];
+const __C_WSAENAMETOOLONG = constants["WSAENAMETOOLONG"];
+const __C_WSAENETDOWN = constants["WSAENETDOWN"];
+const __C_WSAENETRESET = constants["WSAENETRESET"];
+const __C_WSAENETUNREACH = constants["WSAENETUNREACH"];
+const __C_WSAENOBUFS = constants["WSAENOBUFS"];
+const __C_WSAENOMORE = constants["WSAENOMORE"];
+const __C_WSAENOPROTOOPT = constants["WSAENOPROTOOPT"];
+const __C_WSAENOTCONN = constants["WSAENOTCONN"];
+const __C_WSAENOTEMPTY = constants["WSAENOTEMPTY"];
+const __C_WSAENOTSOCK = constants["WSAENOTSOCK"];
+const __C_WSAEOPNOTSUPP = constants["WSAEOPNOTSUPP"];
+const __C_WSAEPFNOSUPPORT = constants["WSAEPFNOSUPPORT"];
+const __C_WSAEPROCLIM = constants["WSAEPROCLIM"];
+const __C_WSAEPROTONOSUPPORT = constants["WSAEPROTONOSUPPORT"];
+const __C_WSAEPROTOTYPE = constants["WSAEPROTOTYPE"];
+const __C_WSAEPROVIDERFAILEDINIT = constants["WSAEPROVIDERFAILEDINIT"];
+const __C_WSAEREFUSED = constants["WSAEREFUSED"];
+const __C_WSAEREMOTE = constants["WSAEREMOTE"];
+const __C_WSAESHUTDOWN = constants["WSAESHUTDOWN"];
+const __C_WSAESOCKTNOSUPPORT = constants["WSAESOCKTNOSUPPORT"];
+const __C_WSAESTALE = constants["WSAESTALE"];
+const __C_WSAETIMEDOUT = constants["WSAETIMEDOUT"];
+const __C_WSAETOOMANYREFS = constants["WSAETOOMANYREFS"];
+const __C_WSAEUSERS = constants["WSAEUSERS"];
+const __C_WSAEWOULDBLOCK = constants["WSAEWOULDBLOCK"];
+const __C_WSANOTINITIALISED = constants["WSANOTINITIALISED"];
+const __C_WSASERVICE_NOT_FOUND = constants["WSASERVICE_NOT_FOUND"];
+const __C_WSASYSCALLFAILURE = constants["WSASYSCALLFAILURE"];
+const __C_WSASYSNOTREADY = constants["WSASYSNOTREADY"];
+const __C_WSATYPE_NOT_FOUND = constants["WSATYPE_NOT_FOUND"];
+const __C_WSAVERNOTSUPPORTED = constants["WSAVERNOTSUPPORTED"];
+const __C_WSA_E_CANCELLED = constants["WSA_E_CANCELLED"];
+const __C_WSA_E_NO_MORE = constants["WSA_E_NO_MORE"];
+const __C_W_OK = constants["W_OK"];
+const __C_X_OK = constants["X_OK"];
+const __C_defaultCipherList = constants["defaultCipherList"];
+const __C_defaultCoreCipherList = constants["defaultCoreCipherList"];
+
+export {
+  __C_COPYFILE_EXCL as COPYFILE_EXCL,
+  __C_COPYFILE_FICLONE as COPYFILE_FICLONE,
+  __C_COPYFILE_FICLONE_FORCE as COPYFILE_FICLONE_FORCE,
+  __C_DH_CHECK_P_NOT_PRIME as DH_CHECK_P_NOT_PRIME,
+  __C_DH_CHECK_P_NOT_SAFE_PRIME as DH_CHECK_P_NOT_SAFE_PRIME,
+  __C_DH_NOT_SUITABLE_GENERATOR as DH_NOT_SUITABLE_GENERATOR,
+  __C_DH_UNABLE_TO_CHECK_GENERATOR as DH_UNABLE_TO_CHECK_GENERATOR,
+  __C_E2BIG as E2BIG,
+  __C_EACCES as EACCES,
+  __C_EADDRINUSE as EADDRINUSE,
+  __C_EADDRNOTAVAIL as EADDRNOTAVAIL,
+  __C_EAFNOSUPPORT as EAFNOSUPPORT,
+  __C_EAGAIN as EAGAIN,
+  __C_EALREADY as EALREADY,
+  __C_EBADF as EBADF,
+  __C_EBADMSG as EBADMSG,
+  __C_EBUSY as EBUSY,
+  __C_ECANCELED as ECANCELED,
+  __C_ECHILD as ECHILD,
+  __C_ECONNABORTED as ECONNABORTED,
+  __C_ECONNREFUSED as ECONNREFUSED,
+  __C_ECONNRESET as ECONNRESET,
+  __C_EDEADLK as EDEADLK,
+  __C_EDESTADDRREQ as EDESTADDRREQ,
+  __C_EDOM as EDOM,
+  __C_EDQUOT as EDQUOT,
+  __C_EEXIST as EEXIST,
+  __C_EFAULT as EFAULT,
+  __C_EFBIG as EFBIG,
+  __C_EHOSTUNREACH as EHOSTUNREACH,
+  __C_EIDRM as EIDRM,
+  __C_EILSEQ as EILSEQ,
+  __C_EINPROGRESS as EINPROGRESS,
+  __C_EINTR as EINTR,
+  __C_EINVAL as EINVAL,
+  __C_EIO as EIO,
+  __C_EISCONN as EISCONN,
+  __C_EISDIR as EISDIR,
+  __C_ELOOP as ELOOP,
+  __C_EMFILE as EMFILE,
+  __C_EMLINK as EMLINK,
+  __C_EMSGSIZE as EMSGSIZE,
+  __C_EMULTIHOP as EMULTIHOP,
+  __C_ENAMETOOLONG as ENAMETOOLONG,
+  __C_ENETDOWN as ENETDOWN,
+  __C_ENETRESET as ENETRESET,
+  __C_ENETUNREACH as ENETUNREACH,
+  __C_ENFILE as ENFILE,
+  __C_ENGINE_METHOD_ALL as ENGINE_METHOD_ALL,
+  __C_ENGINE_METHOD_CIPHERS as ENGINE_METHOD_CIPHERS,
+  __C_ENGINE_METHOD_DH as ENGINE_METHOD_DH,
+  __C_ENGINE_METHOD_DIGESTS as ENGINE_METHOD_DIGESTS,
+  __C_ENGINE_METHOD_DSA as ENGINE_METHOD_DSA,
+  __C_ENGINE_METHOD_EC as ENGINE_METHOD_EC,
+  __C_ENGINE_METHOD_NONE as ENGINE_METHOD_NONE,
+  __C_ENGINE_METHOD_PKEY_ASN1_METHS as ENGINE_METHOD_PKEY_ASN1_METHS,
+  __C_ENGINE_METHOD_PKEY_METHS as ENGINE_METHOD_PKEY_METHS,
+  __C_ENGINE_METHOD_RAND as ENGINE_METHOD_RAND,
+  __C_ENGINE_METHOD_RSA as ENGINE_METHOD_RSA,
+  __C_ENOBUFS as ENOBUFS,
+  __C_ENODATA as ENODATA,
+  __C_ENODEV as ENODEV,
+  __C_ENOENT as ENOENT,
+  __C_ENOEXEC as ENOEXEC,
+  __C_ENOLCK as ENOLCK,
+  __C_ENOLINK as ENOLINK,
+  __C_ENOMEM as ENOMEM,
+  __C_ENOMSG as ENOMSG,
+  __C_ENOPROTOOPT as ENOPROTOOPT,
+  __C_ENOSPC as ENOSPC,
+  __C_ENOSR as ENOSR,
+  __C_ENOSTR as ENOSTR,
+  __C_ENOSYS as ENOSYS,
+  __C_ENOTCONN as ENOTCONN,
+  __C_ENOTDIR as ENOTDIR,
+  __C_ENOTEMPTY as ENOTEMPTY,
+  __C_ENOTSOCK as ENOTSOCK,
+  __C_ENOTSUP as ENOTSUP,
+  __C_ENOTTY as ENOTTY,
+  __C_ENXIO as ENXIO,
+  __C_EOPNOTSUPP as EOPNOTSUPP,
+  __C_EOVERFLOW as EOVERFLOW,
+  __C_EPERM as EPERM,
+  __C_EPIPE as EPIPE,
+  __C_EPROTO as EPROTO,
+  __C_EPROTONOSUPPORT as EPROTONOSUPPORT,
+  __C_EPROTOTYPE as EPROTOTYPE,
+  __C_ERANGE as ERANGE,
+  __C_EROFS as EROFS,
+  __C_ESPIPE as ESPIPE,
+  __C_ESRCH as ESRCH,
+  __C_ESTALE as ESTALE,
+  __C_ETIME as ETIME,
+  __C_ETIMEDOUT as ETIMEDOUT,
+  __C_ETXTBSY as ETXTBSY,
+  __C_EWOULDBLOCK as EWOULDBLOCK,
+  __C_EXDEV as EXDEV,
+  __C_F_OK as F_OK,
+  __C_OPENSSL_VERSION_NUMBER as OPENSSL_VERSION_NUMBER,
+  __C_O_APPEND as O_APPEND,
+  __C_O_CREAT as O_CREAT,
+  __C_O_DIRECT as O_DIRECT,
+  __C_O_DIRECTORY as O_DIRECTORY,
+  __C_O_DSYNC as O_DSYNC,
+  __C_O_EXCL as O_EXCL,
+  __C_O_NOATIME as O_NOATIME,
+  __C_O_NOCTTY as O_NOCTTY,
+  __C_O_NOFOLLOW as O_NOFOLLOW,
+  __C_O_NONBLOCK as O_NONBLOCK,
+  __C_O_RDONLY as O_RDONLY,
+  __C_O_RDWR as O_RDWR,
+  __C_O_SYNC as O_SYNC,
+  __C_O_TRUNC as O_TRUNC,
+  __C_O_WRONLY as O_WRONLY,
+  __C_POINT_CONVERSION_COMPRESSED as POINT_CONVERSION_COMPRESSED,
+  __C_POINT_CONVERSION_HYBRID as POINT_CONVERSION_HYBRID,
+  __C_POINT_CONVERSION_UNCOMPRESSED as POINT_CONVERSION_UNCOMPRESSED,
+  __C_PRIORITY_ABOVE_NORMAL as PRIORITY_ABOVE_NORMAL,
+  __C_PRIORITY_BELOW_NORMAL as PRIORITY_BELOW_NORMAL,
+  __C_PRIORITY_HIGH as PRIORITY_HIGH,
+  __C_PRIORITY_HIGHEST as PRIORITY_HIGHEST,
+  __C_PRIORITY_LOW as PRIORITY_LOW,
+  __C_PRIORITY_NORMAL as PRIORITY_NORMAL,
+  __C_RSA_NO_PADDING as RSA_NO_PADDING,
+  __C_RSA_PKCS1_OAEP_PADDING as RSA_PKCS1_OAEP_PADDING,
+  __C_RSA_PKCS1_PADDING as RSA_PKCS1_PADDING,
+  __C_RSA_PKCS1_PSS_PADDING as RSA_PKCS1_PSS_PADDING,
+  __C_RSA_PSS_SALTLEN_AUTO as RSA_PSS_SALTLEN_AUTO,
+  __C_RSA_PSS_SALTLEN_DIGEST as RSA_PSS_SALTLEN_DIGEST,
+  __C_RSA_PSS_SALTLEN_MAX_SIGN as RSA_PSS_SALTLEN_MAX_SIGN,
+  __C_RSA_X931_PADDING as RSA_X931_PADDING,
+  __C_RTLD_DEEPBIND as RTLD_DEEPBIND,
+  __C_RTLD_GLOBAL as RTLD_GLOBAL,
+  __C_RTLD_LAZY as RTLD_LAZY,
+  __C_RTLD_LOCAL as RTLD_LOCAL,
+  __C_RTLD_NOW as RTLD_NOW,
+  __C_R_OK as R_OK,
+  __C_SIGABRT as SIGABRT,
+  __C_SIGALRM as SIGALRM,
+  __C_SIGBREAK as SIGBREAK,
+  __C_SIGBUS as SIGBUS,
+  __C_SIGCHLD as SIGCHLD,
+  __C_SIGCONT as SIGCONT,
+  __C_SIGFPE as SIGFPE,
+  __C_SIGHUP as SIGHUP,
+  __C_SIGILL as SIGILL,
+  __C_SIGINT as SIGINT,
+  __C_SIGIO as SIGIO,
+  __C_SIGIOT as SIGIOT,
+  __C_SIGKILL as SIGKILL,
+  __C_SIGPIPE as SIGPIPE,
+  __C_SIGPOLL as SIGPOLL,
+  __C_SIGPROF as SIGPROF,
+  __C_SIGPWR as SIGPWR,
+  __C_SIGQUIT as SIGQUIT,
+  __C_SIGSEGV as SIGSEGV,
+  __C_SIGSTKFLT as SIGSTKFLT,
+  __C_SIGSTOP as SIGSTOP,
+  __C_SIGSYS as SIGSYS,
+  __C_SIGTERM as SIGTERM,
+  __C_SIGTRAP as SIGTRAP,
+  __C_SIGTSTP as SIGTSTP,
+  __C_SIGTTIN as SIGTTIN,
+  __C_SIGTTOU as SIGTTOU,
+  __C_SIGURG as SIGURG,
+  __C_SIGUSR1 as SIGUSR1,
+  __C_SIGUSR2 as SIGUSR2,
+  __C_SIGVTALRM as SIGVTALRM,
+  __C_SIGWINCH as SIGWINCH,
+  __C_SIGXCPU as SIGXCPU,
+  __C_SIGXFSZ as SIGXFSZ,
+  __C_SSL_OP_ALL as SSL_OP_ALL,
+  __C_SSL_OP_ALLOW_NO_DHE_KEX as SSL_OP_ALLOW_NO_DHE_KEX,
+  __C_SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION as SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION,
+  __C_SSL_OP_CIPHER_SERVER_PREFERENCE as SSL_OP_CIPHER_SERVER_PREFERENCE,
+  __C_SSL_OP_CISCO_ANYCONNECT as SSL_OP_CISCO_ANYCONNECT,
+  __C_SSL_OP_COOKIE_EXCHANGE as SSL_OP_COOKIE_EXCHANGE,
+  __C_SSL_OP_CRYPTOPRO_TLSEXT_BUG as SSL_OP_CRYPTOPRO_TLSEXT_BUG,
+  __C_SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS as SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
+  __C_SSL_OP_LEGACY_SERVER_CONNECT as SSL_OP_LEGACY_SERVER_CONNECT,
+  __C_SSL_OP_NO_COMPRESSION as SSL_OP_NO_COMPRESSION,
+  __C_SSL_OP_NO_ENCRYPT_THEN_MAC as SSL_OP_NO_ENCRYPT_THEN_MAC,
+  __C_SSL_OP_NO_QUERY_MTU as SSL_OP_NO_QUERY_MTU,
+  __C_SSL_OP_NO_RENEGOTIATION as SSL_OP_NO_RENEGOTIATION,
+  __C_SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION as SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION,
+  __C_SSL_OP_NO_SSLv2 as SSL_OP_NO_SSLv2,
+  __C_SSL_OP_NO_SSLv3 as SSL_OP_NO_SSLv3,
+  __C_SSL_OP_NO_TICKET as SSL_OP_NO_TICKET,
+  __C_SSL_OP_NO_TLSv1 as SSL_OP_NO_TLSv1,
+  __C_SSL_OP_NO_TLSv1_1 as SSL_OP_NO_TLSv1_1,
+  __C_SSL_OP_NO_TLSv1_2 as SSL_OP_NO_TLSv1_2,
+  __C_SSL_OP_NO_TLSv1_3 as SSL_OP_NO_TLSv1_3,
+  __C_SSL_OP_PRIORITIZE_CHACHA as SSL_OP_PRIORITIZE_CHACHA,
+  __C_SSL_OP_TLS_ROLLBACK_BUG as SSL_OP_TLS_ROLLBACK_BUG,
+  __C_S_IFBLK as S_IFBLK,
+  __C_S_IFCHR as S_IFCHR,
+  __C_S_IFDIR as S_IFDIR,
+  __C_S_IFIFO as S_IFIFO,
+  __C_S_IFLNK as S_IFLNK,
+  __C_S_IFMT as S_IFMT,
+  __C_S_IFREG as S_IFREG,
+  __C_S_IFSOCK as S_IFSOCK,
+  __C_S_IRGRP as S_IRGRP,
+  __C_S_IROTH as S_IROTH,
+  __C_S_IRUSR as S_IRUSR,
+  __C_S_IRWXG as S_IRWXG,
+  __C_S_IRWXO as S_IRWXO,
+  __C_S_IRWXU as S_IRWXU,
+  __C_S_IWGRP as S_IWGRP,
+  __C_S_IWOTH as S_IWOTH,
+  __C_S_IWUSR as S_IWUSR,
+  __C_S_IXGRP as S_IXGRP,
+  __C_S_IXOTH as S_IXOTH,
+  __C_S_IXUSR as S_IXUSR,
+  __C_TLS1_1_VERSION as TLS1_1_VERSION,
+  __C_TLS1_2_VERSION as TLS1_2_VERSION,
+  __C_TLS1_3_VERSION as TLS1_3_VERSION,
+  __C_TLS1_VERSION as TLS1_VERSION,
+  __C_UV_DIRENT_BLOCK as UV_DIRENT_BLOCK,
+  __C_UV_DIRENT_CHAR as UV_DIRENT_CHAR,
+  __C_UV_DIRENT_DIR as UV_DIRENT_DIR,
+  __C_UV_DIRENT_FIFO as UV_DIRENT_FIFO,
+  __C_UV_DIRENT_FILE as UV_DIRENT_FILE,
+  __C_UV_DIRENT_LINK as UV_DIRENT_LINK,
+  __C_UV_DIRENT_SOCKET as UV_DIRENT_SOCKET,
+  __C_UV_DIRENT_UNKNOWN as UV_DIRENT_UNKNOWN,
+  __C_UV_FS_COPYFILE_EXCL as UV_FS_COPYFILE_EXCL,
+  __C_UV_FS_COPYFILE_FICLONE as UV_FS_COPYFILE_FICLONE,
+  __C_UV_FS_COPYFILE_FICLONE_FORCE as UV_FS_COPYFILE_FICLONE_FORCE,
+  __C_UV_FS_O_FILEMAP as UV_FS_O_FILEMAP,
+  __C_UV_FS_SYMLINK_DIR as UV_FS_SYMLINK_DIR,
+  __C_UV_FS_SYMLINK_JUNCTION as UV_FS_SYMLINK_JUNCTION,
+  __C_WSAEACCES as WSAEACCES,
+  __C_WSAEADDRINUSE as WSAEADDRINUSE,
+  __C_WSAEADDRNOTAVAIL as WSAEADDRNOTAVAIL,
+  __C_WSAEAFNOSUPPORT as WSAEAFNOSUPPORT,
+  __C_WSAEALREADY as WSAEALREADY,
+  __C_WSAEBADF as WSAEBADF,
+  __C_WSAECANCELLED as WSAECANCELLED,
+  __C_WSAECONNABORTED as WSAECONNABORTED,
+  __C_WSAECONNREFUSED as WSAECONNREFUSED,
+  __C_WSAECONNRESET as WSAECONNRESET,
+  __C_WSAEDESTADDRREQ as WSAEDESTADDRREQ,
+  __C_WSAEDISCON as WSAEDISCON,
+  __C_WSAEDQUOT as WSAEDQUOT,
+  __C_WSAEFAULT as WSAEFAULT,
+  __C_WSAEHOSTDOWN as WSAEHOSTDOWN,
+  __C_WSAEHOSTUNREACH as WSAEHOSTUNREACH,
+  __C_WSAEINPROGRESS as WSAEINPROGRESS,
+  __C_WSAEINTR as WSAEINTR,
+  __C_WSAEINVAL as WSAEINVAL,
+  __C_WSAEINVALIDPROCTABLE as WSAEINVALIDPROCTABLE,
+  __C_WSAEINVALIDPROVIDER as WSAEINVALIDPROVIDER,
+  __C_WSAEISCONN as WSAEISCONN,
+  __C_WSAELOOP as WSAELOOP,
+  __C_WSAEMFILE as WSAEMFILE,
+  __C_WSAEMSGSIZE as WSAEMSGSIZE,
+  __C_WSAENAMETOOLONG as WSAENAMETOOLONG,
+  __C_WSAENETDOWN as WSAENETDOWN,
+  __C_WSAENETRESET as WSAENETRESET,
+  __C_WSAENETUNREACH as WSAENETUNREACH,
+  __C_WSAENOBUFS as WSAENOBUFS,
+  __C_WSAENOMORE as WSAENOMORE,
+  __C_WSAENOPROTOOPT as WSAENOPROTOOPT,
+  __C_WSAENOTCONN as WSAENOTCONN,
+  __C_WSAENOTEMPTY as WSAENOTEMPTY,
+  __C_WSAENOTSOCK as WSAENOTSOCK,
+  __C_WSAEOPNOTSUPP as WSAEOPNOTSUPP,
+  __C_WSAEPFNOSUPPORT as WSAEPFNOSUPPORT,
+  __C_WSAEPROCLIM as WSAEPROCLIM,
+  __C_WSAEPROTONOSUPPORT as WSAEPROTONOSUPPORT,
+  __C_WSAEPROTOTYPE as WSAEPROTOTYPE,
+  __C_WSAEPROVIDERFAILEDINIT as WSAEPROVIDERFAILEDINIT,
+  __C_WSAEREFUSED as WSAEREFUSED,
+  __C_WSAEREMOTE as WSAEREMOTE,
+  __C_WSAESHUTDOWN as WSAESHUTDOWN,
+  __C_WSAESOCKTNOSUPPORT as WSAESOCKTNOSUPPORT,
+  __C_WSAESTALE as WSAESTALE,
+  __C_WSAETIMEDOUT as WSAETIMEDOUT,
+  __C_WSAETOOMANYREFS as WSAETOOMANYREFS,
+  __C_WSAEUSERS as WSAEUSERS,
+  __C_WSAEWOULDBLOCK as WSAEWOULDBLOCK,
+  __C_WSANOTINITIALISED as WSANOTINITIALISED,
+  __C_WSASERVICE_NOT_FOUND as WSASERVICE_NOT_FOUND,
+  __C_WSASYSCALLFAILURE as WSASYSCALLFAILURE,
+  __C_WSASYSNOTREADY as WSASYSNOTREADY,
+  __C_WSATYPE_NOT_FOUND as WSATYPE_NOT_FOUND,
+  __C_WSAVERNOTSUPPORTED as WSAVERNOTSUPPORTED,
+  __C_WSA_E_CANCELLED as WSA_E_CANCELLED,
+  __C_WSA_E_NO_MORE as WSA_E_NO_MORE,
+  __C_W_OK as W_OK,
+  __C_X_OK as X_OK,
+  __C_defaultCipherList as defaultCipherList,
+  __C_defaultCoreCipherList as defaultCoreCipherList,
+};

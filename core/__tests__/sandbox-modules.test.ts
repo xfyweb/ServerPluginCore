@@ -240,15 +240,37 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
   });
 
   it('常量与 win32 的处置', () => {
+    // 默认导出 = **跟随仿真平台**那一套（P2-E / 模型 B）。这个测试文件没注入 `__spcEnv`，
+    // 所以回退到 linux/posix（与 `node-constants.js` 的回退同源）。
     assert.equal(shim.sep, '/');
     assert.equal(shim.delimiter, ':');
-    // posix 自指（与 Node 一致：path.posix.posix === path.posix）；default 与 posix 同体
+    // posix 自指（与 Node 一致：`path.posix.posix === path.posix`）；default 与 posix 同体
     assert.equal(shim.posix.posix, shim.posix);
     assert.equal(shim.default, shim.posix);
     assert.equal(shim.default.sep, node.sep);
-    // win32 明确抛错，不静默给出 posix 结果
-    assert.throws(() => shim.win32.join('a', 'b'), /not supported in the sandbox/);
-    assert.equal((shim.win32.join as any).name, 'join');
+    // `path.win32` 是**真实现**（不再是"明确抛错"的占位）：两条自指关系与 Node 一致
+    assert.equal(shim.win32.win32, shim.win32);
+    assert.equal(shim.win32.posix, shim.posix);
+    assert.equal(shim.win32.sep, '\\');
+    assert.equal(shim.win32.join('a', 'b'), 'a\\b');
+    // win32 与 posix 是**两套**语义，别把默认导出当成 win32
+    assert.equal(shim.posix.join('a', 'b'), 'a/b');
+  });
+
+  it('`path.win32` 的真语义有一条**本地判卷人**：与真 Windows node 的差分脚本', () => {
+    // 这里只钉几个"最容易被顺手改坏"的点；完整差分（366 组）在
+    // `_audit/path-win32-diff.mjs`（判卷人 = `_tools/node-v22.22.1-win-x64/node.exe`）
+    assert.equal(shim.win32.resolve('C:/x/../y'), 'C:\\y');
+    assert.equal(shim.win32.normalize('C:/a//b/./c/'), 'C:\\a\\b\\c\\');
+    assert.equal(shim.win32.isAbsolute('C:a'), false); // 盘符**相对**路径不是绝对
+    assert.equal(shim.win32.isAbsolute('C:/a'), true);
+    assert.equal(shim.win32.dirname('C:\\a\\b'), 'C:\\a');
+    assert.equal(shim.win32.relative('C:\\a\\b', 'C:\\a\\b\\c'), 'c');
+    assert.deepEqual(shim.win32.parse('C:\\a\\b.txt'), {
+      root: 'C:\\', dir: 'C:\\a', base: 'b.txt', ext: '.txt', name: 'b',
+    });
+    // 保留设备名（`CON` 这类）在 join 里有"跳过 normalize"的特判
+    assert.equal(shim.win32.join('CON', 'x'), 'CON\\x');
   });
 
   it('类型校验与 Node 同形（ERR_INVALID_ARG_TYPE）', () => {
@@ -809,9 +831,12 @@ describe('仿真模块登记表', async () => {
     for (const spec of ['node:assert/strict', 'assert/strict', 'node:path/posix', 'path/posix', 'node:path/win32', 'path/win32']) {
       assert.equal(reg.isRegistered(spec), true, `${spec} 应当已登记`);
     }
-    // 别名条目：path/posix 复用 path 的实现（POSIX 基线下本来就是同一个对象）
-    assert.equal(reg.shimFileName('path/posix'), 'node-path.js');
+    // 文件名约定：**`path/posix` 不再是 `path` 的别名**（P2-E）——它必须固定 POSIX 语义，
+    // 而 `node:path` 的导出跟随仿真平台（Windows 上给 `\`）。ESM 模块不知道自己被哪个 specifier
+    // 引入，所以共用一份实现就没法区分"谁在问"。
+    assert.equal(reg.shimFileName('path/posix'), 'node-path-posix.js');
     assert.equal(reg.shimFileName('path/win32'), 'node-path-win32.js');
+    assert.equal(reg.shimFileName('path'), 'node-path.js');
     assert.equal(reg.shimFileName('assert/strict'), 'node-assert-strict.js');
   });
 });
@@ -855,7 +880,7 @@ describe('仿真 node:assert/strict —— 与 node:assert/strict 对齐', async
   });
 });
 
-describe('仿真 node:path/win32 —— 入口存在但方法明确抛错', async () => {
+describe('仿真 node:path/win32 —— 真实现（P2-E）', async () => {
   const shim = await loadShim('node-path-win32.js');
   const nodeWin32: any = (await import('node:path')).win32;
 
@@ -864,25 +889,50 @@ describe('仿真 node:path/win32 —— 入口存在但方法明确抛错', asyn
     assert.equal(shim.delimiter, nodeWin32.delimiter);
   });
 
-  it('每个方法都抛 ERR_NOT_SUPPORTED_IN_SANDBOX（不静默给 posix 结果）', async () => {
-    const methods = ['resolve', 'normalize', 'isAbsolute', 'join', 'relative', 'dirname', 'basename', 'extname', 'format', 'parse'];
-    for (const m of methods) {
-      // format 收的是对象（Node 对字符串会抛 ERR_INVALID_ARG_TYPE），其余收字符串
-      const args: unknown[] = m === 'format' ? [{ dir: '/a', base: 'b' }] : ['/a', 'b'];
+  it('方法**真的能用**，并且与 Node 的 win32 在可移植用例上逐条一致', async () => {
+    // ⚠️ 这条用例以前断言的是"每个方法都抛 ERR_NOT_SUPPORTED_IN_SANDBOX"（模型 A 的占位）。
+    // P2-E 换成模型 B 之后 win32 必须有真语义，所以改成**与宿主 Node 的 win32 比**。
+    // 注意：`node:path.win32` 在**任何**平台上都可用（它是纯算法），所以这里在 Linux CI 上也有判卷人。
+    // cwd 相关的用例不在这里比（我们与宿主的 cwd 不同），那部分交给 `_audit/path-win32-diff.mjs`。
+    const portable: Array<[string, unknown[]]> = [
+      ['normalize', ['C:/a//b/./c/']],
+      ['normalize', ['C:\\a\\..\\..\\b']],
+      ['normalize', ['\\\\server\\share\\a\\..']],
+      ['normalize', ['CON']],
+      ['normalize', ['a:C:']],
+      ['isAbsolute', ['C:/a']],
+      ['isAbsolute', ['C:a']],
+      ['isAbsolute', ['\\\\server\\share']],
+      ['join', ['a/b', 'c\\d']],
+      ['join', ['//server', 'share']],
+      ['join', ['CON', 'x']],
+      ['relative', ['C:\\a\\b', 'C:\\a\\b\\c']],
+      ['relative', ['C:\\a', 'C:\\a\\b\\c']],
+      ['relative', ['C:\\a\\b\\c', 'C:\\a']],
+      ['relative', ['C:\\A\\B', 'c:\\a\\b\\c']],
+      ['dirname', ['C:\\a\\b.txt']],
+      ['dirname', ['\\\\server\\share\\a\\b']],
+      ['basename', ['C:\\a\\b.txt', '.txt']],
+      ['basename', ['C:\\a\\b\\']],
+      ['extname', ['C:\\a\\b.tar.gz']],
+      ['extname', ['C:.txt']],
+      ['parse', ['C:\\a\\b.txt']],
+      ['parse', ['\\\\server\\share\\a\\b.txt']],
+      ['format', [{ dir: 'C:\\a', name: 'b', ext: 'txt' }]],
+    ];
+    for (const [m, args] of portable) {
       assert.equal(typeof shim[m], 'function', `${m} 应当是函数`);
-      assert.throws(
-        () => shim[m](...args),
-        (e: any) => e.code === 'ERR_NOT_SUPPORTED_IN_SANDBOX',
-        `${m} 应当明确抛错`,
+      assert.deepEqual(
+        (shim[m] as any)(...args),
+        nodeWin32[m](...args),
+        `win32.${m}(${args.map((a) => JSON.stringify(a)).join(', ')}) 与 Node 不一致`,
       );
-      // Node 的实现是能用的——差异是**有意的**（沙箱只有 POSIX），这里把差异钉住
-      assert.doesNotThrow(() => nodeWin32[m](...args), `Node 的 ${m} 不该抛`);
     }
     // 命名导出与默认导出是同一个对象上的同一批函数
     assert.equal(shim.join, shim.default.join);
-    // 与 `path.win32` 是**同一个对象**（不是两份实现）：drift 会在这里立刻暴露
-    const pathShim = await loadShim('node-path.js');
-    assert.equal(shim.default, pathShim.win32);
+    // ⚠️ 这里**不**断言 `shim.default === pathShim.win32`：测试是"逐文件考到临时目录再 import"，
+    // `node-path-win32.js` 与 `node-path.js` 各自的 `getWin32()` 会各自建一个对象（同一实现、两个壳）。
+    // 真沙箱里 `node:path` 与 `node:path/win32` 都解析到 `node-path.js` 同一模块实例 ⇒ 那里是同一个对象。
   });
 });
 
@@ -1311,7 +1361,14 @@ console.log('EVT ' + seen);
 console.log('TTY ' + tty.isatty(1));
 console.log('CONST ' + constants.F_OK);
 `);
-    assert.match(out, /PATH \/a\/c/);
+    // 具名导出的 `join` **跟随仿真平台**（P2-E）：win32 上 `join('/a','b','..','c')` = `\a\c`
+    // （前导分隔符是根）。这条以前写死 POSIX 形态，模型 B 之后必须按平台断言。
+    const sandboxSep = process.platform === 'win32' ? '\\' : '/';
+    assert.equal(
+      out.split('\n')[0],
+      'PATH ' + sandboxSep + 'a' + sandboxSep + 'c',
+      `实际输出：${JSON.stringify(out)}`,
+    );
     assert.match(out, /BASE y\.txt/);
     assert.match(out, /EVT ok/);
     assert.match(out, /TTY false/);
@@ -1325,15 +1382,16 @@ import { join as posixJoin } from 'node:path/posix';
 import win32 from 'node:path/win32';
 import strict from 'node:assert/strict';
 console.log('POSIX ' + posixJoin('/a', 'b'));
-let code = 'NO-THROW';
-try { win32.join('/a', 'b'); } catch (e) { code = e.code; }
-console.log('WIN32 ' + code + ' ' + win32.sep);
+// P2-E：win32 是**真实现**（模型 B）——不再抛错，而是给出 win32 语义的结果
+console.log('WIN32 ' + win32.join('/a', 'b') + ' ' + win32.sep);
 try { strict.equal(1, '1'); console.log('STRICT weak'); } catch (e) { console.log('STRICT ' + e.name); }
 strict.equal(1, 1);
 console.log('STRICT-OK');
 `);
     assert.match(out, /POSIX \/a\/b/);
-    assert.match(out, /WIN32 ERR_NOT_SUPPORTED_IN_SANDBOX \\/);
+    // win32 语义：`join('/a','b')` 的前导分隔符是**根**，于是结果是 `\a\b`
+    // （与 `node:path.win32.join('/a','b') === '\\a\\b'` 一致）
+    assert.match(out, /WIN32 \\a\\b \\/);
     // 关键：strict 的 equal 必须是严格版（宽松版会走到 'STRICT weak'）
     assert.match(out, /STRICT AssertionError/);
     assert.match(out, /STRICT-OK/);
@@ -1382,8 +1440,9 @@ console.log('GLOBAL ' + (global === globalThis) + '/' + (typeof URL) + '/' + (ty
     assert.equal(lines[0], 'ASSERT AssertionError:ERR_ASSERTION');
     // 零环境权力：`require` 必须 undefined；process/Buffer 是**仿真件**（不是宿主对象），桥在
     assert.equal(lines[1], 'ENV object,undefined,function,object');
-    // 仿真值：platform 固定 linux（宿主是 win32 也不变）、env 是冻结空对象、版本是固定基线
-    assert.equal(lines[2], 'PROC linux/0/v22.22.1');
+    // 仿真值：platform **跟随宿主**（P2-E / 模型 B：win32 宿主上就是 win32）、
+    // env 是冻结空对象、版本是固定基线
+    assert.equal(lines[2], 'PROC ' + process.platform + '/0/v22.22.1');
     // 退出权不给插件（`process.exit` 明确抛错）
     assert.equal(lines[3], 'EXIT ERR_NOT_SUPPORTED_IN_SANDBOX');
     assert.equal(lines[4], 'BUF 2/yes');
@@ -1406,8 +1465,9 @@ console.log('TMPINSIDE ' + (os.tmpdir().startsWith(os.homedir()) ? 'yes' : 'no')
 console.log('CPUS ' + os.cpus().length + '/' + os.cpus()[0].model + '/' + os.cpus()[0].speed);
 `);
     const [osLine, procLine, tmpLine, cpus] = out.split('\n');
-    assert.match(osLine, /^OS linux\/1\/\d+$/); // platform 固定 linux；EOL 是 '\n'（长度 1）
-    assert.match(procLine, /^PROC linux\/v22\.22\.1\/\d+$/); // 版本是固定仿真值
+    // platform 与 EOL **跟随宿主**（P2-E / 模型 B）：linux 上 `\n`（长度 1）、win32 上 `\r\n`（长度 2）
+    assert.equal(osLine, 'OS ' + process.platform + '/' + nodeOs.EOL.length + '/28');
+    assert.equal(procLine, 'PROC ' + process.platform + '/v22.22.1/28'); // 版本是固定仿真值
     assert.equal(tmpLine, 'TMPINSIDE yes'); // tmpdir 必须落在数据目录内（fs 作用域里）
     assert.equal(cpus, 'CPUS ' + nodeOs.availableParallelism() + '//0'); // 条数=容量类真值；身份字段空
   });
@@ -1427,6 +1487,52 @@ describe('仿真 node:constants', async () => {
     const real = await import('node:constants');
     for (const k of ['F_OK', 'R_OK', 'W_OK', 'X_OK', 'O_RDONLY', 'O_WRONLY', 'O_RDWR', 'O_CREAT', 'O_TRUNC', 'O_APPEND', 'COPYFILE_EXCL']) {
       assert.equal((shim as any)[k], (real as any)[k], `${k} 与 Node 不一致`);
+    }
+  });
+
+  it('**两张平台表都在，且按 `__spcEnv.platform` 选**（P2-E 模型 B，离线可跑）', async () => {
+    // 判据取 Windows v22.22.1 的真值（`_audit/const-win.json`）——**不依赖判卷人在场**：
+    // 那几个值是编译期定的，写死在用例里正好当"表没被改坏"的守门人。
+    const prev = (globalThis as any).__spcEnv;
+    try {
+      // ⚠️ `loadShimFresh` 只是"换个 URL 重新 import"，**不注入全局**——`__spcEnv` 得自己设。
+      // 扁平表的具名导出是 `win.WSAEACCES`；分组在 `win.osConstants.errno` 上（Node 同形）。
+      (globalThis as any).__spcEnv = JSON.stringify({ platform: 'win32', dataDir: '/d' });
+      const win = await loadShimFresh('node-constants.js');
+      assert.ok(win.osConstants && win.osConstants.errno, 'win32 表应当有 errno 分组');
+      (globalThis as any).__spcEnv = JSON.stringify({ platform: 'linux', dataDir: '/d' });
+      const lin = await loadShimFresh('node-constants.js');
+      assert.ok(lin.osConstants && lin.osConstants.errno, 'linux 表应当有 errno 分组');
+
+      // ① 键集不同（这是"必须整表分"而不是"几个值不同"的硬证据）
+      assert.equal(win.WSAEACCES, 10013, 'win32 errno 有 54 个 WSA* 键');
+      assert.equal(lin.WSAEACCES, undefined, 'linux 没有 WSA*');
+      assert.equal(lin.O_NOFOLLOW, 131072, 'linux 有 O_* 一族');
+      assert.equal(win.O_NOFOLLOW, undefined, 'win32 没有 O_NOFOLLOW');
+      assert.equal(win.SIGBREAK, 21, 'win32 有 SIGBREAK');
+      assert.equal(lin.SIGUSR1, 10, 'linux 有 SIGUSR1');
+
+      // ② 同名键的值不同（49 个）
+      assert.equal(win.EADDRINUSE, 100);
+      assert.equal(lin.EADDRINUSE, 98);
+      assert.equal(win.EAGAIN, 11, 'EAGAIN 两边都是 11（不是所有键都不同）');
+      assert.equal(lin.EAGAIN, 11);
+
+      // ③ **形状**不同：win32 没有 `os.constants.dlopen` 这一组
+      assert.equal(Object.keys(win.osConstants.dlopen).length, 0);
+      assert.equal(Object.keys(lin.osConstants.dlopen).length, 5);
+      assert.equal(win.osConstants.errno.ENOENT, 2);
+      assert.equal(lin.osConstants.errno.ENOENT, 2);
+
+      // ④ 平台事实（`EOL`/`devNull`/分隔符）也跟着平台
+      assert.equal(win.PLATFORM_FACTS.win32.eol, '\r\n');
+      assert.equal(win.PLATFORM_FACTS.win32.devNull, '\\\\.\\nul');
+      assert.equal(win.PLATFORM_FACTS.win32.sep, '\\');
+      assert.equal(win.PLATFORM_FACTS.linux.eol, '\n');
+      assert.equal(win.PLATFORM_FACTS.linux.devNull, '/dev/null');
+    } finally {
+      if (prev === undefined) delete (globalThis as any).__spcEnv;
+      else (globalThis as any).__spcEnv = prev;
     }
   });
 });

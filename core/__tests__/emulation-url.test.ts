@@ -1076,10 +1076,20 @@ console.log('CWD ' + process.cwd());
     const [relLine, cwdLine] = out.split('\n');
     const cwd = cwdLine.slice('CWD '.length);
     const rel = relLine.slice('REL '.length);
-    // 沙箱里看到的路径一律 **POSIX 形态**（`\` → `/`），见 core/emulated-env.ts 的说明
-    assert.equal(cwd, SMOKE_DIR.split('\\').join('/'));
-    // cwd 是数据目录 → 相对路径解析成它下面的路径（Windows 开发机上路径分隔符会被转义，故只比后缀）
+    // 沙箱里看到的路径**按仿真平台**取形态（P2-E / 模型 B）：linux `/`、win32 `\`
+    // （见 core/emulated-env.ts 的说明——不能再写死 POSIX 形态）
+    const sep = process.platform === 'win32' ? '\\' : '/';
+    assert.equal(cwd, process.platform === 'win32' ? SMOKE_DIR : SMOKE_DIR.split('\\').join('/'));
+    // cwd 是数据目录 → 相对路径解析成它下面的路径。
+    // ⚠️ 只比**后缀**：`file:` URL 里分隔符恒为 `/`，而路径形态随平台
+    // （win32 上 href 是 `file:///D:/…/rel/x.txt`），写死 `/rel/x.txt` 在 Windows 上会红。
     assert.ok(rel.startsWith('file:///'), `相对路径也必须得到合法的 file: URL，实际 ${rel}`);
-    assert.ok(decodeURIComponent(rel).endsWith('/rel/x.txt'), `实际 ${rel}`);
+    assert.ok(
+      decodeURIComponent(rel).endsWith('/rel/x.txt') || decodeURIComponent(rel).endsWith('\\rel\\x.txt'),
+      `相对路径应当落在数据目录下的 rel/x.txt，实际 ${rel}`,
+    );
+    // 必须是**绝对** file URL：路径部分要含数据目录（形态随平台，所以按 sep 归一后比）
+    const relPath = decodeURIComponent(rel.slice('file://'.length)).split('/').join(sep === '\\' ? '\\' : '/');
+    assert.ok(relPath.includes(cwd), `file URL 的路径应当包含 cwd：${relPath} vs ${cwd}`);
   });
 });

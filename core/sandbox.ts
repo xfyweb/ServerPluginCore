@@ -221,8 +221,11 @@ globalThis.crypto = nodeCrypto.webcrypto;
 // 值 = 插件入口在**沙箱形态**下的路径（与 \`process.argv[1]\`、\`process.cwd()\` 同源）。
 // 只用于"派生一个稳定的字符串"，不是在指一个真文件——单个 bundle 根本没有源文件路径可指，
 // 所以给一个**稳定且显然是沙箱内**的值，而不是编造一个宿主机路径（那会随部署漂移）。
+// ⚠️ 分隔符随仿真平台（P2-E）：win32 上必须是 \`D:\\…\\plugin.js\` 而不是混合形态——混合形态会让
+// \`path.dirname(__filename)\` 之类的推理出错，依赖拿它跟别处拼出来的路径做字符串比较也会失败。
+const __spcSep = process.platform === 'win32' ? '\\\\' : '/';
 Object.defineProperty(globalThis, '__filename', {
-  value: process.cwd() + '/' + process.argv[1], writable: true, configurable: true, enumerable: false,
+  value: process.cwd() + __spcSep + process.argv[1], writable: true, configurable: true, enumerable: false,
 });
 Object.defineProperty(globalThis, '__dirname', {
   value: process.cwd(), writable: true, configurable: true, enumerable: false,
