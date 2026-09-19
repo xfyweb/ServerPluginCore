@@ -19,7 +19,7 @@
 //
 // **已知边界**：失败消息的**文案**与 Node 不完全一致（Node 的 diff 排版不追求复刻），
 // 但 `code`/`operator`/`actual`/`expected` 对齐——靠 message 文本分支的代码很少，
-// 靠这些字段分支的才是常态。深比较仍未覆盖：`URL`/`KeyObject`/`CryptoKey` 的专门比较、
+// 靠这些字段分支的才是常态。深比较仍未覆盖：`KeyObject`/`CryptoKey` 的专门比较、
 // Node 25+ 的 partial 模式（`partialDeepStrictEqual`）、`Proxy`，以及**伪造了 @@toStringTag
 // 的假对象**（沙箱里没有这些内建；判到就按真身分派，不做内部槽校验）。
 //
@@ -109,6 +109,22 @@ for (const name of [
 
 function tagOf(v) {
   return Object.prototype.toString.call(v);
+}
+
+/**
+ * `URL` 的识别（Node 用 `internal/url.isURL`）。
+ *
+ * 为什么要它：Node 对 URL 是**整体比较 `href`**（`comparisons.js:409-412`），
+ * 而不是当普通对象逐键比。少了这条，`deepStrictEqual(new URL('https://a/'), new URL('https://b/'))`
+ * 会**通过**（两个 URL 的自有键都是空的 symbol 属性）——那是**静默的判等错误**，
+ * 比"少支持一个类型"危险得多。差分电池 `_audit/deep-cmp-battery.mjs` 的 A6 组一直在报这条。
+ *
+ * 判据用 `@@toStringTag`（`URL.prototype[Symbol.toStringTag] === 'URL'`，跨 realm 稳定），
+ * 不依赖 `instanceof`——后者的 realm 语义在宿主 realm 与沙箱 realm 之间会变。
+ */
+function isUrl(v) {
+  return v !== null && typeof v === 'object' && v[Symbol.toStringTag] === 'URL' &&
+    typeof v.href === 'string';
 }
 
 function hasOwn(o, key) {
@@ -234,6 +250,12 @@ function objectComparisonStart(a, b, mode, memo) {
     // 字节比完还要比**附加属性**（Node:350-356）——老实现从这里 return true，
     // 于是 `x.foo = 1` 的 TypedArray 与干净的 TypedArray 被判等。
     return keyCheck(a, b, mode, memo, kNoIterator);
+  }
+
+  if (isUrl(a)) {
+    // Node comparisons.js:409-412：**只比 href**（不比附加属性、也不进 keyCheck）
+    if (!isUrl(b) || a.href !== b.href) return false;
+    return true;
   }
 
   if (tagA === '[object Date]') {

@@ -129,6 +129,22 @@ async function rejects(fn: () => unknown, code: string): Promise<void> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 轮询到某个条件成立（带截止时间）。
+ *
+ * 为什么不用固定 `sleep(500)`：退避重试是**墙钟**驱动的，而机器速度会变——
+ * 实测换到 4 核 i3 之后，原来那句 `sleep(500)` 不够长，状态停在 `loading`，
+ * 于是用例红在"等得不够久"而不是"逻辑不对"（这类红灯最难判：看着像功能坏）。
+ * 轮询把"等多久"从**猜**变成**等到达**；超时仍然失败，不掩盖真问题。
+ */
+async function waitFor(cond: () => boolean, timeoutMs = 10_000, what = '条件'): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`waitFor 超时：${what} 在 ${timeoutMs}ms 内未成立`);
+    await sleep(10);
+  }
+}
+
 before(() => {
   mkdirSync(join(TMP, 'plugins'), { recursive: true });
   // 审计目录必须存在：audit() 写盘失败会退化成内存缓冲（审计链路"看起来正常但读不到"）
@@ -663,7 +679,22 @@ test('failedRestart=auto：连续失败到上限后停在 failed，审计记 lif
       } catch {
         /* 预期：首次装载失败 */
       }
-      await sleep(500); // 等线性退避重试跑完（20ms、40ms）
+      // 等**终态**，不是"等到看见 failed"。
+      //
+      // ⚠️ 这里踩过一个坑（换到慢机器后才稳定复现）：`failed` 在重试链**中间也会短暂出现**
+      // —— 每次重试失败到下一次定时器触发之间就是 `failed`（`loadAndStart` 失败即落 failed，
+      // 下一次重试开始时才变 `loading`）。所以"等 `state === 'failed'`"会**在中间态提前返回**，
+      // 断言就红在"次数=1"；而慢机器只是让这个窗口更容易被轮询撞上。
+      // 正确判据：**放弃**那一次 —— manager 的行为是 `attempts > maxRestartAttempts` 才放弃
+      // （见 `scheduleRestartIfConfigured`），所以终态是 `failed` 且 `restartAttempts === max+1`。
+      await waitFor(
+        () => {
+          const v = manager.status(id('restart-auto'));
+          return v.state === 'failed' && v.restartAttempts >= 3;
+        },
+        15_000,
+        'restart-auto 走到放弃（failed 且 attempts>=3）',
+      );
     },
   );
   const view = manager.status(id('restart-auto'));

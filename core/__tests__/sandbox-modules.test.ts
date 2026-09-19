@@ -1694,6 +1694,14 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
     }],
     ['主干 Uint8Array vs Int8Array', (a) => a.deepStrictEqual(new Uint8Array([1, 2]), new Int8Array([1, 2]))],
     ['主干 Set 顺序无关', (a) => a.deepStrictEqual(new Set([1, 2]), new Set([2, 1]))],
+    // URL：Node 是**整体比 `href`**（`comparisons.js:409-412`），不是当普通对象逐键比。
+    // 少了这条分支，`deepStrictEqual(两个不同 URL)` 会**通过**（URL 的自有键本来就没有字符串键）
+    // —— 那是**静默判等**，比"少支持一个类型"危险。这条以前只在仓库外的差分电池里可见
+    // （`_audit/deep-cmp-battery.mjs` 的 A6 组一直报它），现在钉进测试。
+    ['主干 URL 同 href 相等', (a) => a.deepStrictEqual(new URL('https://a.example/x'), new URL('https://a.example/x'))],
+    ['主干 URL 不同 href 不等', (a) => a.deepStrictEqual(new URL('https://a.example/'), new URL('https://b.example/'))],
+    ['主干 URL vs 同形状普通对象', (a) => a.deepStrictEqual(new URL('https://a.example/'), { href: 'https://a.example/' })],
+    ['主干 URL vs 字符串', (a) => a.deepStrictEqual(new URL('https://a.example/'), 'https://a.example/')],
     ['主干 symbol 值不同', (a) => a.deepStrictEqual({ s: Symbol('a') }, { s: Symbol('a') })],
     ['主干 symbol 键在严格模式参与比较', (a) => {
       const s = Symbol('s');
