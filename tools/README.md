@@ -206,8 +206,10 @@ node node_modules/tsx/dist/cli.mjs tools/smoke/dep-smoke.mts all
 ### `tools/check-line-refs.mjs` —— 注释里引的行号，还是当初那一行吗？
 
 **为什么有它**：注释引"源码路径:行号"是为了标明**结论的出处**，而行号是**提交相对**的 ——
-源码一升级就静默烂掉，而且没有任何东西会报错。实测过一次：`quickjs.c` 的两个副本
-（我们发行的 vendored 那份 vs 上游独立克隆）**同一断言行号相差 428 行**，照错的那份去核对会找不到东西。
+源码一升级就静默烂掉，而且没有任何东西会报错。实测过两次：① `quickjs.c` 的两个副本
+（我们发行的 vendored 那份 vs 上游独立克隆）**同一断言行号相差 428 行**；
+② **自引**（引本仓库自己的源码）原有的 6 处行号，**5 处已经指错** ——
+把那些行删掉的，正是引用它们的那次迁移。
 
 ```bash
 node tools/check-line-refs.mjs            # 体检（与快照比）
@@ -223,16 +225,23 @@ node tools/check-line-refs.mjs --json
 判据是「引用处 + 目标文件」上的**签名列表**（每处引用 = `行号:该行内容哈希`）——
 改行号、或目标行内容变了，都会报"变了"，并给出前后对比。缺失的源码树会**跳过并说明**。
 
-**三类基准**（详见仓库根 `AGENTS.md` §3.1）：
+**四类目标**（判据是"它有没有一个**冻结的帧**"，详见仓库根 `AGENTS.md` §3.1）：
 
-| 引用的源码 | 默认去哪找 | 覆盖用 |
-|---|---|---|
-| `vendor/quickjs/*.c` | `<仓库>/../quickjs-emscripten-spc/vendor/quickjs` | `SPC_VENDOR_ROOT` |
-| Node 源码 `lib/*.js` | `<仓库>/../node` | `SPC_NODE_ROOT` |
-| 第三方包 | 仓库自己的 `node_modules` + `../_deps-survey/node_modules` | — |
+| 引用的源码 | 帧 | 默认去哪找 | 覆盖用 |
+|---|---|---|---|
+| `vendor/quickjs/*.c` | fork 提交 + `VERSION` | `<仓库>/../quickjs-emscripten-spc/vendor/quickjs` | `SPC_VENDOR_ROOT` |
+| Node 源码 `lib/*.js` | Node 提交 | `<仓库>/../node` | `SPC_NODE_ROOT` |
+| 第三方包 | `pnpm-lock.yaml` | 仓库自己的 `node_modules` + `../_deps-survey/node_modules` | — |
+| ⛔ **我们自己会改的码** | **没有** | 仓库自己 / 工作区 | — |
+
+前两类可查、可比；缺源码树就跳过。**第四类不进行号体检，而是直接判失败** ——
+它**没有冻结的修订可比**（每次提交都在动），所以根本不该写行号：写成
+`` `core/sandbox.ts` 的 `host.*` 桥 ``、`` `Manifest.id` `` 这样的符号名即可。
+体检会把那一行**现在的内容**打出来当证据（"你引的东西早就不在那儿了"）。
 
 > ⚠️ 它**不是回归门禁**（别加进 `pnpm test`）：报"变了"意味着**结论的保质期到了**，
 > 应当去看一眼那一行、决定是"源码升了该重核"还是"引用该更新"，然后 `--update`。
+> **但 ⛔ 那一栏是硬错误**：它不需要人判断，改写成符号名就完了。
 
 ## 写新工具的约定
 

@@ -342,7 +342,7 @@ const MAX_CRYPTO_BYTES = 8 * 1024 * 1024;
  *
  * 为什么必须带：这些错误是**契约的一部分**，依赖按 `name`/`message`/`code` 分支——
  * `dotenv` 的加密 .env 路径写着 `error instanceof RangeError`、`error.message === 'Invalid key length'`、
- * `'Unsupported state or unable to authenticate data'`（`_deps-survey/node_modules/dotenv/lib/main.js:350-360`）；
+ * `'Unsupported state or unable to authenticate data'`（`dotenv/lib/main.js:350-360`，版本 17.4.2）；
  * `zlib` 的错误带 `code: 'Z_DATA_ERROR'` 与 `errno: -3`（adm-zip 一类按 code 分支）。
  * 桥的错误信封只有 `{code, params}`，所以把这些字段塞进 params（设计 §7 新增的一条约定）。
  * 我们自己的 `SpcError`（INVALID_ARGS / OUTPUT_TOO_LARGE）原样透出，不套娃。

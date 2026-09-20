@@ -49,7 +49,8 @@ function exactBytes(result: unknown): ArrayBuffer {
 }
 
 /**
- * 宿主调用协议（core/sandbox.ts:405-509 的沙箱侧等价物）。
+ * 宿主调用协议（`core/sandbox.ts` 里 `host.*` 桥的**沙箱侧等价物**——那桥是沙箱内唯一的能力来源，
+ * 二进制只收 `ArrayBuffer`、失败按 `HOST_ERROR_KEY` 回信封）。
  *
  * 两条**必须**照着做、否则测不出真问题的地方：
  *   · 二进制参数只能是 `ArrayBuffer`——传视图给桥会以 "Couldn't allocate memory to get ArrayBuffer"

@@ -8,7 +8,7 @@
 //
 // 特别钉住一条：**crypto 错误的 name/message 是契约**——`dotenv` 的加密 .env 路径就按
 // `error instanceof RangeError`、`message === 'Invalid key length'`、`'Unsupported state or unable to
-// authenticate data'` 分支（见 `_deps-survey/node_modules/dotenv/lib/main.js:350-360`）。
+// authenticate data'` 分支（见 `dotenv/lib/main.js:350-360`，版本 17.4.2）。
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';

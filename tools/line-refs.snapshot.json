@@ -1,5 +1,5 @@
 {
- "at": "2026-09-20T05:45:13.930Z",
+ "at": "2026-09-20T05:58:54.236Z",
  "baselines": {
   "vendor": {
    "forkCommit": "7b7af98",
@@ -33,6 +33,17 @@
      "ref": "mkdirp/dist/mjs/path-arg.js:11",
      "num": 11,
      "sha": "55fac4cd3743",
+     "gone": false
+    }
+   ]
+  },
+  "core\\hostApi.ts|dotenv/lib/main.js": {
+   "file": "_deps-survey/node_modules/dotenv/lib/main.js",
+   "refs": [
+    {
+     "ref": "dotenv/lib/main.js:350-360",
+     "num": 350,
+     "sha": "7a9b78c9d211",
      "gone": false
     }
    ]
@@ -763,6 +774,17 @@
      "ref": "@nodelib/fs.walk/out/readers/async.js:26",
      "num": 26,
      "sha": "6d20e72a9aa6",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-crypto.test.ts|dotenv/lib/main.js": {
+   "file": "_deps-survey/node_modules/dotenv/lib/main.js",
+   "refs": [
+    {
+     "ref": "dotenv/lib/main.js:350-360",
+     "num": 350,
+     "sha": "7a9b78c9d211",
      "gone": false
     }
    ]

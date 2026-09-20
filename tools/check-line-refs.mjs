@@ -13,8 +13,19 @@
 //   node tools/check-line-refs.mjs --update   # 核对无误后，把当前状态记成新快照
 //   node tools/check-line-refs.mjs --json
 //
-// 三类基准（见仓库根 AGENTS.md §3.1）：vendor/quickjs（我们发行的引擎）、node/lib（Node 源码）、
-// 第三方包（锁在 pnpm-lock.yaml）。缺哪个源码树就跳过并说明——别人克隆仓库时本来就没有。
+// 三类**冻结的帧**（见仓库根 AGENTS.md §3.1）：vendor/quickjs（我们发行的引擎，帧 = fork 提交）、
+// node/lib（Node 源码，帧 = Node 提交）、第三方包（帧 = pnpm-lock.yaml）。
+// 缺哪个源码树就跳过并说明——别人克隆仓库时本来就没有。
+//
+// ⚠️ **第四类：我们自己会改的代码（本仓库源码、工作区里的 survey 目录……）不写行号。**
+// 行号是**坐标**，坐标只相对一个**冻结的帧**才有意义：
+//   · 上游那三份有版本/哈希当帧 ⇒ 行号可查、可守；
+//   · 我们自己这份**每次提交都在动** ⇒ 记哈希则注释要么永远落后（"等下个发版再更新"）、
+//     要么每次提交都要改注释；而读者读的是**工作区**，不是那个哈希指向的树 ⇒ 哈希对他零信息。
+// 所以这类引用**不进行号体检，而是直接报错**，要求改成符号名（`core/main.ts` 的 `resolveTier()`）。
+// 这不是洁癖：本仓库原有的 4 处自引行号**已经全部烂了**——最典型的是
+// `core/main.ts:36`（曾指"由 id 前缀推导信任档"），而**删掉那一行的正是引用它的那次迁移**，
+// 于是它现在指着 CLI 横幅 `console.log('[spc] state=...')`，且没有任何东西会响。
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -60,10 +71,17 @@ const ROOTS = {
   node: process.env.SPC_NODE_ROOT ?? path.resolve(REPO_ROOT, '..', 'node'),
   pkgs: [path.join(REPO_ROOT, 'node_modules'), path.resolve(REPO_ROOT, '..', '_deps-survey', 'node_modules')],
 };
+const WORKSPACE_ROOT = path.dirname(REPO_ROOT);   // 开发工作区根（仓库外那一圈）：自引判定要连它一起看
+// 冻结的帧所在的位置：落在这里面的文件**不算"我们自己的码"**——
+// 否则 `../node/lib/fs.js:12` 这种"用相对路径写的 Node 引用"会被误判成自引（它引的是冻结的 Node，不是我们的源码）。
+const FROZEN_DIRS = [ROOTS.vendor, ROOTS.node, ...ROOTS.pkgs];
+const under = (f, root) => { const r = path.resolve(root); return f === r || f.startsWith(r + path.sep); };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.spc', 'tools']);
 const TEXT_EXT = /\.(md|ts|mts|mjs|js|cjs)$/;
-const REF_RE = /`?([A-Za-z0-9_@][A-Za-z0-9_./@-]*\.(?:js|c|h|mjs|cjs|ts))[:：](\d+)(?:-(\d+))?`?/g;
+// `.json` 也收：`sdk/schema/manifest.schema.json:31` 这种自引行号一样会烂，而且它烂了没人看得见。
+// 实测放宽到 json 只多出 2 处（都是自引），零噪声 ⇒ 值得。
+const REF_RE = /`?([A-Za-z0-9_@][A-Za-z0-9_./@-]*\.(?:js|c|h|mjs|cjs|ts|json))[:：](\d+)(?:-(\d+))?`?/g;
 const QUOTED_ABORT = /Aborted\(|Assertion failed|RuntimeError:/;   // 运行时消息的引文，行号是原文，不判
 
 function walk(dir, out = []) {
@@ -93,11 +111,23 @@ function findByBasename(baseDir, name, budget = { n: 6000 }) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+// 解析顺序 = **帧的优先级**：先认"这条引用主张的到底是哪一份源码"。
+// `vendor/` 必须先判：它是发行引擎，虽然不在本仓库里，但**仓库里将来也可能有同名目录**。
+// 自引（本仓库/工作区）**必须早于 node 与第三方包**：目标就在读者手边那份工作区里，
+// 别的解释都是舍近求远（当前顶层目录与 Node 的 `lib/src/…` 前缀不冲突，但一旦冲突，读者引的一定是
+// 他自己仓库里那份）。落在冻结根下面的文件（`../node/lib/fs.js`）**排除**在自引之外。
 function resolveTarget(refPath) {
   const p = refPath.replace(/^\.\//, '');
   if (p.startsWith('vendor/quickjs/')) {
     const f = path.join(ROOTS.vendor, p.slice('vendor/quickjs/'.length));
     return fs.existsSync(f) ? { file: f, kind: 'vendor' } : { missing: 'vendor', root: ROOTS.vendor };
+  }
+  for (const [root, kind] of [[REPO_ROOT, 'self'], [WORKSPACE_ROOT, 'local']]) {
+    const f = path.resolve(root, p);
+    if (!under(f, root)) continue;                                    // 别让 `../..` 逃出去
+    if (FROZEN_DIRS.some((r) => under(f, r))) continue;               // 冻结帧的源码，不算"我们的码"
+    if (!fs.existsSync(f) || !fs.statSync(f).isFile()) continue;
+    return { file: f, kind, unfrozen: true };
   }
   if (/^(node\/)?(lib|src|internal|deps)\//.test(p) || /^[a-z][a-z0-9_-]*\.(js|c|h)$/.test(p)) {
     const rel = p.replace(/^node\//, '');
@@ -115,7 +145,13 @@ function resolveTarget(refPath) {
       if (byName) return { file: byName, kind: 'pkg' };
     }
   }
-  return { missing: 'pkg', root: ROOTS.pkgs.join(' | ') };
+  // 落空：分两种，**不要混为一谈**——
+  //   · 源码树压根不在这台机器上 ⇒ 跳过（别人克隆仓库时本来就没有，见文件头）；
+  //   · 树在、里面没这个文件 ⇒ **可疑**（多半是引用写错了）。报出来，但不判失败：
+  //     它也可能是"引了树之外的某份文件"，工具没资格替人下这个结论。
+  const available = { vendor: fs.existsSync(ROOTS.vendor), node: fs.existsSync(ROOTS.node), pkg: ROOTS.pkgs.some((b) => fs.existsSync(b)) };
+  for (const k of ['vendor', 'node', 'pkg']) if (!available[k]) return { missing: k, root: k === 'vendor' ? ROOTS.vendor : k === 'node' ? ROOTS.node : ROOTS.pkgs.join(' | ') };
+  return { notFound: true };
 }
 
 // ── 扫描 ───────────────────────────────────────────────────────────────────
@@ -133,6 +169,15 @@ for (const f of walk(REPO_ROOT)) {
       const t = resolveTarget(m[1]);
       const rec = { site: path.relative(REPO_ROOT, f) + ':' + (i + 1), citingFile: path.relative(REPO_ROOT, f), ref: m[0].replace(/`/g, ''), refPath: m[1], num: Number(m[2]) };
       if (t.missing) { rows.push({ ...rec, skipped: '缺 ' + t.missing + ' 源码根' }); continue; }
+      if (t.notFound) { rows.push({ ...rec, notFound: true }); continue; }
+      // **不冻结的帧**（我们自己在改的码）：不进快照、也没什么"变没变"可比 —— 直接当违规报。
+      // 这里只把"那一行现在是什么"读出来当证据（例如 `core/main.ts:36` 现在是 CLI 横幅），
+      // 让人一眼看出"它早就不是当初指的东西了"，照此改写成符号名。
+      if (t.unfrozen) {
+        const now = readLines(t.file)[rec.num - 1];
+        rows.push({ ...rec, unfrozen: true, kind: t.kind, file: path.relative(REPO_ROOT, t.file).replace(/\\/g, '/'), now: now === undefined ? null : now.trim() });
+        continue;
+      }
       const target = readLines(t.file);
       const text = target[rec.num - 1];
       if (text === undefined) { rows.push({ ...rec, gone: true, kind: t.kind }); continue; }
@@ -151,7 +196,8 @@ const baseChanged = snap.baselines && fmtBaselines(snap.baselines) !== fmtBaseli
 // 值里是**列表**：同一文件可以引同一目标的多处（例：`（...:1741`/`:1221-1230`），单值会覆盖掉其中一条（踩过）。
 const entries = {};
 for (const r of rows) {
-  if (r.skipped) continue;
+  // 只把**冻结帧**上的引用记进快照：自引比不了"变没变"（它本来就在动），找不到目标的也没得比。
+  if (r.skipped || r.unfrozen || r.notFound) continue;
   const k = r.citingFile + '|' + r.refPath;
   (entries[k] ??= { file: r.file, refs: [] }).refs.push({ ref: r.ref, num: r.num, sha: r.sha ?? null, gone: !!r.gone });
 }
@@ -186,15 +232,17 @@ for (const [k, v] of Object.entries(entries)) {
   if (a !== b) changed.push([k, { file: v.file, was: a, now: b }]);
 }
 const removed = Object.keys(snap.entries).filter((k) => !entries[k]);
-const totalRefs = rows.filter((r) => !r.skipped).length;
-const skipped = rows.filter((r) => r.skipped).length;
+const skippedRows = rows.filter((r) => r.skipped).length;          // 缺源码树：这台机器上就没有，跳过
+const unfrozen = rows.filter((r) => r.unfrozen);                   // 自引：不冻结的帧 ⇒ 必改
+const notFound = rows.filter((r) => r.notFound);                   // 树在、文件不在 ⇒ 可疑
+const totalRefs = rows.length - skippedRows - unfrozen.length - notFound.length;
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ totalRefs, skipped, changed, gone, added, removed }, null, 2));
-  process.exit(changed.length + gone.length > 0 ? 1 : 0);
+  console.log(JSON.stringify({ totalRefs, skipped: skippedRows, unfrozen: unfrozen.length, notFound: notFound.length, changed, gone, added, removed }, null, 2));
+  process.exit(changed.length + gone.length + unfrozen.length > 0 ? 1 : 0);
 }
 
-console.log('=== 行号引用体检：共 ' + rows.length + ' 处（其中 ' + totalRefs + ' 处有目标，' + skipped + ' 处跳过：缺源码树）===');
+console.log('=== 行号引用体检：共 ' + rows.length + ' 处（' + totalRefs + ' 处在冻结帧上有目标，' + skippedRows + ' 处跳过：缺源码树）===');
 if (baseChanged) {
   console.log('');
   console.log('  ⚠️⚠️ **基准修订和快照里记的不一样** —— 下面的"变了"很可能只是**源码树换了修订**，');
@@ -209,6 +257,8 @@ console.log('  ⚠️ 变了        ' + changed.length);
 console.log('  ❌ 目标行没了  ' + gone.length);
 console.log('  ➕ 新增引用处  ' + added.length + '（没进快照；核对无误后跑 --update）');
 if (removed.length) console.log('  ➖ 引用处已删  ' + removed.length);
+console.log('  ⛔ 不冻结的帧  ' + unfrozen.length + ' 处自引行号（' + (unfrozen.length ? '**必改**：改成符号名，见 AGENTS.md §3.1' : '好，一处都没有') + '）');
+if (notFound.length) console.log('  ❓ 目标找不到  ' + notFound.length + ' 处（源码树在、文件不在 ⇒ 多半是引用写错了）');
 
 if (changed.length) {
   console.log('\n=== 变了（**不一定是错**：源码升级了、或引用该更新了——去看一眼）===');
@@ -223,4 +273,18 @@ if (gone.length) {
   console.log('\n=== 目标文件没有那一行了（引用确实烂了）===');
   for (const [k, v] of gone.slice(0, 20)) console.log('  ' + k + '   ' + v.file + ':' + v.num);
 }
-process.exit(changed.length + gone.length > 0 ? 1 : 0);
+if (unfrozen.length) {
+  console.log('\n=== ⛔ 不冻结的帧：**我们自己在改的码**不该写行号 —— 改成符号名 ===');
+  console.log('    （写成 `core/main.ts` 的 `resolveTier()`／`HostApi` 的 `host.*` 桥／`Manifest.id` 这样，');
+  console.log('      符号在一个工作区里是可 grep 的，行号不是。理由见本文件头与 AGENTS.md §3.1。）');
+  for (const r of unfrozen.slice(0, 20)) {
+    console.log('  ' + r.site + '  →  ' + r.ref);
+    console.log('      ' + r.file + ':' + r.num + ' 现在是： ' + (r.now === null ? '（**没有这一行**）' : r.now.slice(0, 96)));
+  }
+  if (unfrozen.length > 20) console.log('  …还有 ' + (unfrozen.length - 20) + ' 处');
+}
+if (notFound.length) {
+  console.log('\n=== ❓ 目标找不到（源码树在，但里面没这个文件）===');
+  for (const r of notFound.slice(0, 20)) console.log('  ' + r.site + '  →  ' + r.ref);
+}
+process.exit(changed.length + gone.length + unfrozen.length > 0 ? 1 : 0);
