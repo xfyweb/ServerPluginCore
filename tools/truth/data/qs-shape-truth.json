@@ -1,0 +1,89 @@
+{
+  "namedExports": [
+    "decode",
+    "default",
+    "encode",
+    "escape",
+    "parse",
+    "stringify",
+    "unescape",
+    "unescapeBuffer"
+  ],
+  "cjsKeys": [
+    "decode",
+    "encode",
+    "escape",
+    "parse",
+    "stringify",
+    "unescape",
+    "unescapeBuffer"
+  ],
+  "sameEncode": true,
+  "sameDecode": true,
+  "escapeEdge": "!'()*~%20-._",
+  "escapeNumber": "42",
+  "escapeObject": "a%20b",
+  "parseBadUtf8": {
+    "a": "�"
+  },
+  "parseProto": true,
+  "parseEmpty": {},
+  "parseEmptyProto": true,
+  "parseTrailing": {
+    "a": "1"
+  },
+  "parseNoEq": {
+    "a": "",
+    "b": "2"
+  },
+  "parseEmptyKey": {
+    "": "b"
+  },
+  "parsePlus": {
+    "a b": "c d"
+  },
+  "parseDup": {
+    "a": [
+      "1",
+      "2",
+      "3"
+    ]
+  },
+  "parseMaxKeys": {
+    "a": "1",
+    "b": "2"
+  },
+  "parseMaxKeysNeg": {
+    "a": "1",
+    "b": "2",
+    "c": "3"
+  },
+  "parseMaxKeysZero": {
+    "a": "1",
+    "b": "2"
+  },
+  "parseAltSep": {
+    "a": "1",
+    "b": "2"
+  },
+  "parseCustomDecode": {
+    "a": "%41"
+  },
+  "parseNonString": {},
+  "unescapeBufferType": "function",
+  "unescapeBufferBad": "�",
+  "unescapeBufferPlus": "a b",
+  "unescapeBufferNoPlus": "a+b",
+  "unescapeBufferLone": "%zz%4",
+  "unescapeLone": "%zz%4",
+  "unescapeBad": "�",
+  "stringifyBasic": "a=1&b=x%20y&c=1&c=2&d=&e=&f=true&g=1e%2B21",
+  "stringifyEmptyArr": "",
+  "stringifyNonObject": "",
+  "stringifyNull": "",
+  "stringifyAltSep": "a:1;b:2",
+  "stringifyCustom": "a=x%20y",
+  "stringifyCustomEmpty": "Xa=X",
+  "stringifyNumberKey": "1=a",
+  "desc": "getter/plain"
+}

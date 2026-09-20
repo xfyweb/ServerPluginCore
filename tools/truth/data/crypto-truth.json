@@ -1,0 +1,702 @@
+{
+ "meta": {
+  "node": "v22.22.1",
+  "platform": "linux"
+ },
+ "exportKeys": [
+  "Certificate",
+  "Cipher",
+  "Cipheriv",
+  "Decipher",
+  "Decipheriv",
+  "DiffieHellman",
+  "DiffieHellmanGroup",
+  "ECDH",
+  "Hash",
+  "Hmac",
+  "KeyObject",
+  "Sign",
+  "Verify",
+  "X509Certificate",
+  "checkPrime",
+  "checkPrimeSync",
+  "constants",
+  "createCipheriv",
+  "createDecipheriv",
+  "createDiffieHellman",
+  "createDiffieHellmanGroup",
+  "createECDH",
+  "createHash",
+  "createHmac",
+  "createPrivateKey",
+  "createPublicKey",
+  "createSecretKey",
+  "createSign",
+  "createVerify",
+  "default",
+  "diffieHellman",
+  "generateKey",
+  "generateKeyPair",
+  "generateKeyPairSync",
+  "generateKeySync",
+  "generatePrime",
+  "generatePrimeSync",
+  "getCipherInfo",
+  "getCiphers",
+  "getCurves",
+  "getDiffieHellman",
+  "getFips",
+  "getHashes",
+  "getRandomValues",
+  "hash",
+  "hkdf",
+  "hkdfSync",
+  "pbkdf2",
+  "pbkdf2Sync",
+  "privateDecrypt",
+  "privateEncrypt",
+  "publicDecrypt",
+  "publicEncrypt",
+  "randomBytes",
+  "randomFill",
+  "randomFillSync",
+  "randomInt",
+  "randomUUID",
+  "scrypt",
+  "scryptSync",
+  "secureHeapUsed",
+  "setEngine",
+  "setFips",
+  "sign",
+  "subtle",
+  "timingSafeEqual",
+  "verify",
+  "webcrypto"
+ ],
+ "constants": {
+  "OPENSSL_VERSION_NUMBER": 810549328,
+  "SSL_OP_ALL": 2147485776,
+  "SSL_OP_ALLOW_NO_DHE_KEX": 1024,
+  "SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION": 262144,
+  "SSL_OP_CIPHER_SERVER_PREFERENCE": 4194304,
+  "SSL_OP_CISCO_ANYCONNECT": 32768,
+  "SSL_OP_COOKIE_EXCHANGE": 8192,
+  "SSL_OP_CRYPTOPRO_TLSEXT_BUG": 2147483648,
+  "SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS": 2048,
+  "SSL_OP_LEGACY_SERVER_CONNECT": 4,
+  "SSL_OP_NO_COMPRESSION": 131072,
+  "SSL_OP_NO_ENCRYPT_THEN_MAC": 524288,
+  "SSL_OP_NO_QUERY_MTU": 4096,
+  "SSL_OP_NO_RENEGOTIATION": 1073741824,
+  "SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION": 65536,
+  "SSL_OP_NO_SSLv2": 0,
+  "SSL_OP_NO_SSLv3": 33554432,
+  "SSL_OP_NO_TICKET": 16384,
+  "SSL_OP_NO_TLSv1": 67108864,
+  "SSL_OP_NO_TLSv1_1": 268435456,
+  "SSL_OP_NO_TLSv1_2": 134217728,
+  "SSL_OP_NO_TLSv1_3": 536870912,
+  "SSL_OP_PRIORITIZE_CHACHA": 2097152,
+  "SSL_OP_TLS_ROLLBACK_BUG": 8388608,
+  "ENGINE_METHOD_RSA": 1,
+  "ENGINE_METHOD_DSA": 2,
+  "ENGINE_METHOD_DH": 4,
+  "ENGINE_METHOD_RAND": 8,
+  "ENGINE_METHOD_EC": 2048,
+  "ENGINE_METHOD_CIPHERS": 64,
+  "ENGINE_METHOD_DIGESTS": 128,
+  "ENGINE_METHOD_PKEY_METHS": 512,
+  "ENGINE_METHOD_PKEY_ASN1_METHS": 1024,
+  "ENGINE_METHOD_ALL": 65535,
+  "ENGINE_METHOD_NONE": 0,
+  "DH_CHECK_P_NOT_SAFE_PRIME": 2,
+  "DH_CHECK_P_NOT_PRIME": 1,
+  "DH_UNABLE_TO_CHECK_GENERATOR": 4,
+  "DH_NOT_SUITABLE_GENERATOR": 8,
+  "RSA_PKCS1_PADDING": 1,
+  "RSA_NO_PADDING": 3,
+  "RSA_PKCS1_OAEP_PADDING": 4,
+  "RSA_X931_PADDING": 5,
+  "RSA_PKCS1_PSS_PADDING": 6,
+  "RSA_PSS_SALTLEN_DIGEST": -1,
+  "RSA_PSS_SALTLEN_MAX_SIGN": -2,
+  "RSA_PSS_SALTLEN_AUTO": -2,
+  "defaultCoreCipherList": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
+  "TLS1_VERSION": 769,
+  "TLS1_1_VERSION": 770,
+  "TLS1_2_VERSION": 771,
+  "TLS1_3_VERSION": 772,
+  "POINT_CONVERSION_COMPRESSED": 2,
+  "POINT_CONVERSION_UNCOMPRESSED": 4,
+  "POINT_CONVERSION_HYBRID": 6,
+  "defaultCipherList": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA"
+ },
+ "getHashes": [
+  "RSA-MD5",
+  "RSA-RIPEMD160",
+  "RSA-SHA1",
+  "RSA-SHA1-2",
+  "RSA-SHA224",
+  "RSA-SHA256",
+  "RSA-SHA3-224",
+  "RSA-SHA3-256",
+  "RSA-SHA3-384",
+  "RSA-SHA3-512",
+  "RSA-SHA384",
+  "RSA-SHA512",
+  "RSA-SHA512/224",
+  "RSA-SHA512/256",
+  "RSA-SM3",
+  "blake2b512",
+  "blake2s256",
+  "id-rsassa-pkcs1-v1_5-with-sha3-224",
+  "id-rsassa-pkcs1-v1_5-with-sha3-256",
+  "id-rsassa-pkcs1-v1_5-with-sha3-384",
+  "id-rsassa-pkcs1-v1_5-with-sha3-512",
+  "md5",
+  "md5-sha1",
+  "md5WithRSAEncryption",
+  "ripemd",
+  "ripemd160",
+  "ripemd160WithRSA",
+  "rmd160",
+  "sha1",
+  "sha1WithRSAEncryption",
+  "sha224",
+  "sha224WithRSAEncryption",
+  "sha256",
+  "sha256WithRSAEncryption",
+  "sha3-224",
+  "sha3-256",
+  "sha3-384",
+  "sha3-512",
+  "sha384",
+  "sha384WithRSAEncryption",
+  "sha512",
+  "sha512-224",
+  "sha512-224WithRSAEncryption",
+  "sha512-256",
+  "sha512-256WithRSAEncryption",
+  "sha512WithRSAEncryption",
+  "shake128",
+  "shake256",
+  "sm3",
+  "sm3WithRSAEncryption",
+  "ssl3-md5",
+  "ssl3-sha1"
+ ],
+ "getCiphers": [
+  "aes-128-cbc",
+  "aes-128-cbc-hmac-sha1",
+  "aes-128-cbc-hmac-sha256",
+  "aes-128-ccm",
+  "aes-128-cfb",
+  "aes-128-cfb1",
+  "aes-128-cfb8",
+  "aes-128-ctr",
+  "aes-128-ecb",
+  "aes-128-gcm",
+  "aes-128-ocb",
+  "aes-128-ofb",
+  "aes-128-xts",
+  "aes-192-cbc",
+  "aes-192-ccm",
+  "aes-192-cfb",
+  "aes-192-cfb1",
+  "aes-192-cfb8",
+  "aes-192-ctr",
+  "aes-192-ecb",
+  "aes-192-gcm",
+  "aes-192-ocb",
+  "aes-192-ofb",
+  "aes-256-cbc",
+  "aes-256-cbc-hmac-sha1",
+  "aes-256-cbc-hmac-sha256",
+  "aes-256-ccm",
+  "aes-256-cfb",
+  "aes-256-cfb1",
+  "aes-256-cfb8",
+  "aes-256-ctr",
+  "aes-256-ecb",
+  "aes-256-gcm",
+  "aes-256-ocb",
+  "aes-256-ofb",
+  "aes-256-xts",
+  "aes128",
+  "aes128-wrap",
+  "aes128-wrap-pad",
+  "aes192",
+  "aes192-wrap",
+  "aes192-wrap-pad",
+  "aes256",
+  "aes256-wrap",
+  "aes256-wrap-pad",
+  "aria-128-cbc",
+  "aria-128-ccm",
+  "aria-128-cfb",
+  "aria-128-cfb1",
+  "aria-128-cfb8",
+  "aria-128-ctr",
+  "aria-128-ecb",
+  "aria-128-gcm",
+  "aria-128-ofb",
+  "aria-192-cbc",
+  "aria-192-ccm",
+  "aria-192-cfb",
+  "aria-192-cfb1",
+  "aria-192-cfb8",
+  "aria-192-ctr",
+  "aria-192-ecb",
+  "aria-192-gcm",
+  "aria-192-ofb",
+  "aria-256-cbc",
+  "aria-256-ccm",
+  "aria-256-cfb",
+  "aria-256-cfb1",
+  "aria-256-cfb8",
+  "aria-256-ctr",
+  "aria-256-ecb",
+  "aria-256-gcm",
+  "aria-256-ofb",
+  "aria128",
+  "aria192",
+  "aria256",
+  "camellia-128-cbc",
+  "camellia-128-cfb",
+  "camellia-128-cfb1",
+  "camellia-128-cfb8",
+  "camellia-128-ctr",
+  "camellia-128-ecb",
+  "camellia-128-ofb",
+  "camellia-192-cbc",
+  "camellia-192-cfb",
+  "camellia-192-cfb1",
+  "camellia-192-cfb8",
+  "camellia-192-ctr",
+  "camellia-192-ecb",
+  "camellia-192-ofb",
+  "camellia-256-cbc",
+  "camellia-256-cfb",
+  "camellia-256-cfb1",
+  "camellia-256-cfb8",
+  "camellia-256-ctr",
+  "camellia-256-ecb",
+  "camellia-256-ofb",
+  "camellia128",
+  "camellia192",
+  "camellia256",
+  "chacha20",
+  "chacha20-poly1305",
+  "des-ede",
+  "des-ede-cbc",
+  "des-ede-cfb",
+  "des-ede-ecb",
+  "des-ede-ofb",
+  "des-ede3",
+  "des-ede3-cbc",
+  "des-ede3-cfb",
+  "des-ede3-cfb1",
+  "des-ede3-cfb8",
+  "des-ede3-ecb",
+  "des-ede3-ofb",
+  "des3",
+  "des3-wrap",
+  "id-aes128-CCM",
+  "id-aes128-GCM",
+  "id-aes128-wrap",
+  "id-aes128-wrap-pad",
+  "id-aes192-CCM",
+  "id-aes192-GCM",
+  "id-aes192-wrap",
+  "id-aes192-wrap-pad",
+  "id-aes256-CCM",
+  "id-aes256-GCM",
+  "id-aes256-wrap",
+  "id-aes256-wrap-pad",
+  "id-smime-alg-CMS3DESwrap",
+  "sm4",
+  "sm4-cbc",
+  "sm4-cfb",
+  "sm4-ctr",
+  "sm4-ecb",
+  "sm4-ofb"
+ ],
+ "digests": {
+  "md5": {
+   "empty": {
+    "ok": true,
+    "value": "d41d8cd98f00b204e9800998ecf8427e"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "900150983cd24fb0d6963f7d28e17f72"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "kAFQmDzST7DWlj99KOF/cg=="
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "900150983cd24fb0d6963f7d28e17f72"
+   },
+   "split": {
+    "ok": true,
+    "value": "900150983cd24fb0d6963f7d28e17f72"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "35f09659cf21e9b3c5763c10ac260bae"
+   }
+  },
+  "sha1": {
+   "empty": {
+    "ok": true,
+    "value": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "a9993e364706816aba3e25717850c26c9cd0d89d"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "qZk+NkcGgWq6PiVxeFDCbJzQ2J0="
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "a9993e364706816aba3e25717850c26c9cd0d89d"
+   },
+   "split": {
+    "ok": true,
+    "value": "a9993e364706816aba3e25717850c26c9cd0d89d"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "3a823ad2a346c17d515b447416018e97868c5e8e"
+   }
+  },
+  "sha256": {
+   "empty": {
+    "ok": true,
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+   },
+   "split": {
+    "ok": true,
+    "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "dc482a49a0890d6125d379ad541042707fcafb22bf5e84b643f199023d47224f"
+   }
+  },
+  "sha384": {
+   "empty": {
+    "ok": true,
+    "value": "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "ywB1P0WjXou1oD1pmsZQBycsMqsO3tFjGotgWkP/W+2AhgcroefMI1i67KE0yCWn"
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+   },
+   "split": {
+    "ok": true,
+    "value": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "59d8e2d0f6d9358155c4cd476f241d553d67f572a1bd9f966480992aadb16a0500aa49ba5acdc68f590758844e501f2e"
+   }
+  },
+  "sha512": {
+   "empty": {
+    "ok": true,
+    "value": "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "3a81oZNherrMQXNJriBBMRLm+k6JqX6iCp7u5ktV05ohkpkqJ0/BqDa6PCOj/uu9RU1EI2Q86A4qmslPpUyknw=="
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+   },
+   "split": {
+    "ok": true,
+    "value": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "5ba4a432aebe09cff46c5b72ab5373565979666da4b7d22cd49e4da07910e529e2b0e7be3c0fa6d37a60c8d4f52f95ff318fb06b8f3c5b73022c7098738ace9f"
+   }
+  },
+  "sha3-256": {
+   "empty": {
+    "ok": true,
+    "value": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "Ophdp0/iJbIEXBcta9OQvYVfCG4+nVJbRr/iRRFDFTI="
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"
+   },
+   "split": {
+    "ok": true,
+    "value": "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "cb577a1749455a24956a8cf1f1766811f215aed2f56a8293514bac6ebe6c55f0"
+   }
+  },
+  "blake2b512": {
+   "empty": {
+    "ok": true,
+    "value": "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce"
+   },
+   "abc_hex": {
+    "ok": true,
+    "value": "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"
+   },
+   "abc_base64": {
+    "ok": true,
+    "value": "uoClP5gcTQ1qJ5e2nxL26UwhLxRoWsS3SxK7b9v/otF9h8U5Kqt5LcJS1d5FM8yVGNOKqNvxklq5I4bt1ACZIw=="
+   },
+   "abc_buffer": {
+    "ok": true,
+    "bytes": "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"
+   },
+   "split": {
+    "ok": true,
+    "value": "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"
+   },
+   "utf8": {
+    "ok": true,
+    "value": "fbba619ce64e856aa6d67be6b85179b4cd77b7b05822cf786d47b21eb3d91a21476f4c2e2dee964eb604e0ed8febd5bef10a0a024be3e785bec2e5b53f44eff6"
+   }
+  }
+ },
+ "hmac": {
+  "sha256": {
+   "hex": {
+    "ok": true,
+    "value": "9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab"
+   },
+   "keyBuffer": {
+    "ok": true,
+    "value": "200fd2f9dada90b91212225a6b5e5975512edffd02503bb98ea612ca904daa24"
+   },
+   "empty": {
+    "ok": true,
+    "value": "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"
+   }
+  },
+  "sha512": {
+   "hex": {
+    "ok": true,
+    "value": "3926a207c8c42b0c41792cbd3e1a1aaaf5f7a25704f62dfc939c4987dd7ce060009c5bb1c2447355b3216f10b537e9afa7b64a4e5391b0d631172d07939e087a"
+   },
+   "keyBuffer": {
+    "ok": true,
+    "value": "dac7a6f32dbca4304525c40b33d71adf2b8cca63cb7e1a53e8d3e35c7177865bc3d7ed7a6ed7630a703e735e223e4117e568cb061100c29713165fd823cde177"
+   },
+   "empty": {
+    "ok": true,
+    "value": "b936cee86c9f87aa5d3c6f2e84cb5a4239a5fe50480a6ec66b70ab5b1f4ac6730c6c515421b327ec1d69402e53dfb49ad7381eb067b338fd7b0cb22247225d47"
+   }
+  }
+ },
+ "copyBehavior": {
+  "ok": true,
+  "keys": [
+   "0",
+   "1"
+  ],
+  "type": "Array"
+ },
+ "timingSafeEqual": {
+  "equal": {
+   "ok": true,
+   "value": true
+  },
+  "diff": {
+   "ok": true,
+   "value": false
+  },
+  "lengthMismatch": {
+   "ok": false,
+   "name": "RangeError",
+   "code": "ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH",
+   "message": "Input buffers must have the same byte length"
+  },
+  "strings": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."
+  }
+ },
+ "random": {
+  "bytes16": {
+   "ok": true,
+   "bytes": "c504cad344df991cdd3dc9529ff76a73"
+  },
+  "bytes0": {
+   "ok": true,
+   "bytes": ""
+  },
+  "negative": {
+   "ok": false,
+   "name": "RangeError",
+   "code": "ERR_OUT_OF_RANGE",
+   "message": "The value of \"size\" is out of range. It must be >= 0 && <= 2147483647. Received -1"
+  },
+  "huge": {
+   "ok": false,
+   "name": "RangeError",
+   "code": "ERR_OUT_OF_RANGE",
+   "message": "The value of \"size\" is out of range. It must be >= 0 && <= 2147483647. Received 2147483648"
+  },
+  "float": {
+   "ok": true,
+   "bytes": "04"
+  },
+  "uuid": {
+   "ok": true,
+   "value": "7caac9e7-b306-460e-b299-178901185d78"
+  },
+  "uuidShape": {
+   "ok": true,
+   "value": true
+  },
+  "randomFillBytes": {
+   "ok": true,
+   "value": 4
+  },
+  "getRandomValues8": {
+   "ok": true,
+   "value": 8
+  },
+  "getRandomValuesBig": {
+   "ok": false,
+   "name": "QuotaExceededError",
+   "code": 22,
+   "message": "The requested length exceeds 65,536 bytes"
+  },
+  "getRandomValuesFloat": {
+   "ok": false,
+   "name": "TypeMismatchError",
+   "code": 17,
+   "message": "The data argument must be an integer-type TypedArray"
+  },
+  "getRandomValuesDataView": {
+   "ok": false,
+   "name": "TypeMismatchError",
+   "code": 17,
+   "message": "The data argument must be an integer-type TypedArray"
+  },
+  "webcryptoRandomValues": {
+   "ok": true,
+   "value": 4
+  }
+ },
+ "errors": {
+  "badAlg": {
+   "ok": false,
+   "name": "Error",
+   "message": "Digest method not supported"
+  },
+  "badAlgHmac": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_CRYPTO_INVALID_DIGEST",
+   "message": "Invalid digest: nope"
+  },
+  "digestTwice": {
+   "ok": false,
+   "name": "Error",
+   "code": "ERR_CRYPTO_HASH_FINALIZED",
+   "message": "Digest already called"
+  },
+  "updateAfterDigest": {
+   "ok": false,
+   "name": "Error",
+   "code": "ERR_CRYPTO_HASH_FINALIZED",
+   "message": "Digest already called"
+  },
+  "digestBadEncoding": {
+   "ok": true,
+   "bytes": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+  },
+  "updateBadEncoding": {
+   "ok": true,
+   "keys": [
+    "_options"
+   ],
+   "type": "Hash"
+  },
+  "updateWrongType": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received type number (42)"
+  },
+  "createHashNoArg": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"algorithm\" argument must be of type string. Received undefined"
+  },
+  "hmacNoKey": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"key\" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, or CryptoKey. Received undefined"
+  },
+  "randomBytesNoArg": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"size\" argument must be of type number. Received undefined"
+  },
+  "timingSafeEqualWrongType": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."
+  }
+ },
+ "hmacStreaming": {
+  "ok": true,
+  "value": "dHW7EZ/pt0zAr1AUpJ2AqyO9Gsgph+dpbNwkIohlRDY="
+ }
+}

@@ -1,0 +1,993 @@
+{
+ "at": "2026-09-20T05:45:13.930Z",
+ "baselines": {
+  "vendor": {
+   "forkCommit": "7b7af98",
+   "forkBranch": "spc",
+   "engineVersion": "2025-09-13"
+  },
+  "node": {
+   "commit": "edc61b14de8"
+  },
+  "pkgs": {
+   "lockSha": "c129ccfd25e3"
+  }
+ },
+ "note": "行号引用快照：正确性靠人核一次，此后由 check-line-refs.mjs 守住\"别再悄悄变\"。baselines 记的是**这份快照是对着哪个修订建的**——换修订后必须重新核一遍再 --update。",
+ "entries": {
+  "AGENTS.md|vendor/quickjs/quickjs.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/quickjs.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/quickjs.c:2036",
+     "num": 2036,
+     "sha": "0cd89642d446",
+     "gone": false
+    }
+   ]
+  },
+  "core\\fs\\safe-path.ts|mkdirp/dist/mjs/path-arg.js": {
+   "file": "_deps-survey/node_modules/mkdirp/dist/mjs/path-arg.js",
+   "refs": [
+    {
+     "ref": "mkdirp/dist/mjs/path-arg.js:11",
+     "num": 11,
+     "sha": "55fac4cd3743",
+     "gone": false
+    }
+   ]
+  },
+  "core\\plugin\\limits.ts|vendor/quickjs/quickjs.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/quickjs.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/quickjs.c:445",
+     "num": 445,
+     "sha": "c2e1c3508187",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:18430-18523",
+     "num": 18430,
+     "sha": "2886099c5da5",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:17393",
+     "num": 17393,
+     "sha": "315d1f433545",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:7442-7446",
+     "num": 7442,
+     "sha": "e4aa1a643f7b",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:20086",
+     "num": 20086,
+     "sha": "8b343fdc2e32",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:6944",
+     "num": 6944,
+     "sha": "4ca40953dba3",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:1875",
+     "num": 1875,
+     "sha": "cdeb39a01fe2",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:1741",
+     "num": 1741,
+     "sha": "aba4d47416df",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:7373-7376",
+     "num": 7373,
+     "sha": "e904c5083fd1",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-assert.js|comparisons.js": {
+   "file": "node/lib/internal/util/comparisons.js",
+   "refs": [
+    {
+     "ref": "comparisons.js:282",
+     "num": 282,
+     "sha": "c588d897f79c",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:506",
+     "num": 506,
+     "sha": "753d5c03e609",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:459",
+     "num": 459,
+     "sha": "6e6fcc11a360",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:137-139",
+     "num": 137,
+     "sha": "4495ad6c6969",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:142-145",
+     "num": 142,
+     "sha": "ed82210fcf14",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:62-93",
+     "num": 62,
+     "sha": "947de83983b5",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:409-412",
+     "num": 409,
+     "sha": "b617687ac3f6",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:506-520",
+     "num": 506,
+     "sha": "753d5c03e609",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:270",
+     "num": 270,
+     "sha": "c9559bfe79a7",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:274",
+     "num": 274,
+     "sha": "4f901776fcb8",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:205",
+     "num": 205,
+     "sha": "995301bbccf7",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:205",
+     "num": 205,
+     "sha": "995301bbccf7",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:231",
+     "num": 231,
+     "sha": "0b69c60cb002",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:281",
+     "num": 281,
+     "sha": "e7850e2c6554",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:409-412",
+     "num": 409,
+     "sha": "b617687ac3f6",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:483",
+     "num": 483,
+     "sha": "43ee30948232",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:757",
+     "num": 757,
+     "sha": "97bd04ed214c",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:896",
+     "num": 896,
+     "sha": "b2ad5e8c2563",
+     "gone": false
+    },
+    {
+     "ref": "comparisons.js:237",
+     "num": 237,
+     "sha": "f2283a2cd17e",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-buffer.js|node/lib/internal/util.js": {
+   "file": "node/lib/internal/util.js",
+   "refs": [
+    {
+     "ref": "node/lib/internal/util.js:258",
+     "num": 258,
+     "sha": "a9f28a7bda1b",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/internal/util.js:258",
+     "num": 258,
+     "sha": "a9f28a7bda1b",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-buffer.js|node/lib/buffer.js": {
+   "file": "node/lib/buffer.js",
+   "refs": [
+    {
+     "ref": "node/lib/buffer.js:186",
+     "num": 186,
+     "sha": "649cf8583388",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/buffer.js:1319",
+     "num": 1319,
+     "sha": "bd52c7e3a3fd",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/buffer.js:1194",
+     "num": 1194,
+     "sha": "a7ae0efe0371",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/buffer.js:242",
+     "num": 242,
+     "sha": "1c28ccd45f98",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/buffer.js:1319",
+     "num": 1319,
+     "sha": "bd52c7e3a3fd",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/buffer.js:348",
+     "num": 348,
+     "sha": "cfd5e8488454",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/buffer.js:930",
+     "num": 930,
+     "sha": "4ef485a22486",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-buffer.js|node/lib/internal/errors.js": {
+   "file": "node/lib/internal/errors.js",
+   "refs": [
+    {
+     "ref": "node/lib/internal/errors.js:1009",
+     "num": 1009,
+     "sha": "599a1800ca8b",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/internal/errors.js:1456",
+     "num": 1456,
+     "sha": "e402c0b1cc67",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-buffer.js|buffer.js": {
+   "file": "node/lib/buffer.js",
+   "refs": [
+    {
+     "ref": "buffer.js:857",
+     "num": 857,
+     "sha": "ee9df138ea90",
+     "gone": false
+    },
+    {
+     "ref": "buffer.js:1145-1148",
+     "num": 1145,
+     "sha": "aca184094ede",
+     "gone": false
+    },
+    {
+     "ref": "buffer.js:971",
+     "num": 971,
+     "sha": "b35461121ea0",
+     "gone": false
+    },
+    {
+     "ref": "buffer.js:1270",
+     "num": 1270,
+     "sha": "ab7a98019df5",
+     "gone": false
+    },
+    {
+     "ref": "buffer.js:595",
+     "num": 595,
+     "sha": "0e958029f411",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-buffer.js|node/lib/internal/buffer.js": {
+   "file": "node/lib/internal/buffer.js",
+   "refs": [
+    {
+     "ref": "node/lib/internal/buffer.js:364-391",
+     "num": 364,
+     "sha": "a6aa3605e23b",
+     "gone": false
+    },
+    {
+     "ref": "node/lib/internal/buffer.js:612",
+     "num": 612,
+     "sha": "655d79014d42",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-events.js|events.js": {
+   "file": "node/lib/events.js",
+   "refs": [
+    {
+     "ref": "events.js:559",
+     "num": 559,
+     "sha": "0ec0e99dd374",
+     "gone": false
+    },
+    {
+     "ref": "events.js:494",
+     "num": 494,
+     "sha": "6a6a01c78f2a",
+     "gone": false
+    },
+    {
+     "ref": "events.js:356",
+     "num": 356,
+     "sha": "8c204bf657f3",
+     "gone": false
+    },
+    {
+     "ref": "events.js:1085",
+     "num": 1085,
+     "sha": "67c50cdf7799",
+     "gone": false
+    },
+    {
+     "ref": "events.js:334",
+     "num": 334,
+     "sha": "9f6fbe800a82",
+     "gone": false
+    },
+    {
+     "ref": "events.js:256",
+     "num": 256,
+     "sha": "3504c91a2851",
+     "gone": false
+    },
+    {
+     "ref": "events.js:545",
+     "num": 545,
+     "sha": "561331688ccf",
+     "gone": false
+    },
+    {
+     "ref": "events.js:679",
+     "num": 679,
+     "sha": "3e44e7183c83",
+     "gone": false
+    },
+    {
+     "ref": "events.js:356",
+     "num": 356,
+     "sha": "8c204bf657f3",
+     "gone": false
+    },
+    {
+     "ref": "events.js:1085",
+     "num": 1085,
+     "sha": "67c50cdf7799",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-os.js|fast-glob/out/settings.js": {
+   "file": "_deps-survey/node_modules/fast-glob/out/settings.js",
+   "refs": [
+    {
+     "ref": "fast-glob/out/settings.js:10",
+     "num": 10,
+     "sha": "48654aa9a1be",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-path.js|mkdirp/dist/mjs/path-arg.js": {
+   "file": "_deps-survey/node_modules/mkdirp/dist/mjs/path-arg.js",
+   "refs": [
+    {
+     "ref": "mkdirp/dist/mjs/path-arg.js:11",
+     "num": 11,
+     "sha": "55fac4cd3743",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-querystring.js|internal/querystring.js": {
+   "file": "node/lib/internal/querystring.js",
+   "refs": [
+    {
+     "ref": "internal/querystring.js:45",
+     "num": 45,
+     "sha": "6a7538dda400",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-querystring.js|querystring.js": {
+   "file": "node/lib/querystring.js",
+   "refs": [
+    {
+     "ref": "querystring.js:163",
+     "num": 163,
+     "sha": "1b36a7c3321d",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:84",
+     "num": 84,
+     "sha": "b35e604ec057",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:131",
+     "num": 131,
+     "sha": "42599bf808c1",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:227",
+     "num": 227,
+     "sha": "ab1cd230faee",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:178",
+     "num": 178,
+     "sha": "2746aa25c2e7",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:195",
+     "num": 195,
+     "sha": "553a8c8a8f0a",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:317",
+     "num": 317,
+     "sha": "67b76de107b6",
+     "gone": false
+    },
+    {
+     "ref": "querystring.js:478",
+     "num": 478,
+     "sha": "f968be263a17",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-stream.js|graceful-fs/legacy-streams.js": {
+   "file": "_deps-survey/node_modules/graceful-fs/legacy-streams.js",
+   "refs": [
+    {
+     "ref": "graceful-fs/legacy-streams.js:14",
+     "num": 14,
+     "sha": "81cb14fa4c4f",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-stream.js|fast-glob/out/providers/stream.js": {
+   "file": "_deps-survey/node_modules/fast-glob/out/providers/stream.js",
+   "refs": [
+    {
+     "ref": "fast-glob/out/providers/stream.js:15",
+     "num": 15,
+     "sha": "c9fedf8c012d",
+     "gone": false
+    },
+    {
+     "ref": "fast-glob/out/providers/stream.js:21",
+     "num": 21,
+     "sha": "b690588da3bd",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-stream.js|fast-glob/out/readers/stream.js": {
+   "file": "_deps-survey/node_modules/fast-glob/out/readers/stream.js",
+   "refs": [
+    {
+     "ref": "fast-glob/out/readers/stream.js:18-34",
+     "num": 18,
+     "sha": "9229c668bd7e",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-stream.js|@nodelib/fs.walk/out/providers/stream.js": {
+   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/providers/stream.js",
+   "refs": [
+    {
+     "ref": "@nodelib/fs.walk/out/providers/stream.js:10-18",
+     "num": 10,
+     "sha": "f7da6e6eeae8",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-stream.js|csv-parse/lib/index.js": {
+   "file": "_deps-survey/node_modules/csv-parse/lib/index.js",
+   "refs": [
+    {
+     "ref": "csv-parse/lib/index.js:14-76",
+     "num": 14,
+     "sha": "920a1a546886",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-stream.js|node/lib/internal/streams/transform.js": {
+   "file": "node/lib/internal/streams/transform.js",
+   "refs": [
+    {
+     "ref": "node/lib/internal/streams/transform.js:126-152",
+     "num": 126,
+     "sha": "80dddfe14900",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-string_decoder.js|node/src/string_decoder.h": {
+   "file": "node/src/string_decoder.h",
+   "refs": [
+    {
+     "ref": "node/src/string_decoder.h:34",
+     "num": 34,
+     "sha": "5e8fe50857db",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-string_decoder.js|util.js": {
+   "file": "node/lib/util.js",
+   "refs": [
+    {
+     "ref": "util.js:258",
+     "num": 258,
+     "sha": "e3b0c44298fc",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-url.js|url.js": {
+   "file": "node/lib/url.js",
+   "refs": [
+    {
+     "ref": "url.js:519-521",
+     "num": 519,
+     "sha": "a329c09d6845",
+     "gone": false
+    },
+    {
+     "ref": "url.js:161-175",
+     "num": 161,
+     "sha": "53c4631d1d24",
+     "gone": false
+    },
+    {
+     "ref": "url.js:180",
+     "num": 180,
+     "sha": "2719a2316957",
+     "gone": false
+    },
+    {
+     "ref": "url.js:519-521",
+     "num": 519,
+     "sha": "a329c09d6845",
+     "gone": false
+    },
+    {
+     "ref": "url.js:531-545",
+     "num": 531,
+     "sha": "67d1851ce371",
+     "gone": false
+    },
+    {
+     "ref": "url.js:617-632",
+     "num": 617,
+     "sha": "6d14f8f590f1",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-url.js|internal/url.js": {
+   "file": "node/lib/internal/url.js",
+   "refs": [
+    {
+     "ref": "internal/url.js:1419",
+     "num": 1419,
+     "sha": "0e9e54811f19",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:385-477",
+     "num": 385,
+     "sha": "e379ef1f4f28",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:698-743",
+     "num": 698,
+     "sha": "b8e5c0994c04",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:889",
+     "num": 889,
+     "sha": "b8f0100391f6",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:1207",
+     "num": 1207,
+     "sha": "d075292b6329",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:113",
+     "num": 113,
+     "sha": "d90de3b46d13",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:118",
+     "num": 118,
+     "sha": "ebc61326bcf3",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:123",
+     "num": 123,
+     "sha": "32d6e0380343",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:1494-1719",
+     "num": 1494,
+     "sha": "94c6e54250e5",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:844",
+     "num": 844,
+     "sha": "a8579a99b9c0",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:1622-1642",
+     "num": 1622,
+     "sha": "1bfad8545fc7",
+     "gone": false
+    },
+    {
+     "ref": "internal/url.js:1469",
+     "num": 1469,
+     "sha": "9cbe69a84c4c",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-url.js|internal/querystring.js": {
+   "file": "node/lib/internal/querystring.js",
+   "refs": [
+    {
+     "ref": "internal/querystring.js:20",
+     "num": 20,
+     "sha": "67c64f82f5f5",
+     "gone": false
+    },
+    {
+     "ref": "internal/querystring.js:45",
+     "num": 45,
+     "sha": "6a7538dda400",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox-modules\\node-url.js|querystring.js": {
+   "file": "node/lib/querystring.js",
+   "refs": [
+    {
+     "ref": "querystring.js:195",
+     "num": 195,
+     "sha": "553a8c8a8f0a",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox.ts|vendor/quickjs/quickjs.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/quickjs.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/quickjs.c:30939",
+     "num": 30939,
+     "sha": "362dbb03ba06",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:23205",
+     "num": 23205,
+     "sha": "1d339d0cb758",
+     "gone": false
+    }
+   ]
+  },
+  "core\\sandbox.ts|@nodelib/fs.walk/out/readers/async.js": {
+   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/readers/async.js",
+   "refs": [
+    {
+     "ref": "@nodelib/fs.walk/out/readers/async.js:26",
+     "num": 26,
+     "sha": "6d20e72a9aa6",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-os-process.test.ts|fast-glob/out/settings.js": {
+   "file": "_deps-survey/node_modules/fast-glob/out/settings.js",
+   "refs": [
+    {
+     "ref": "fast-glob/out/settings.js:10",
+     "num": 10,
+     "sha": "48654aa9a1be",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-os-process.test.ts|internal/bootstrap/node.js": {
+   "file": "node/lib/internal/bootstrap/node.js",
+   "refs": [
+    {
+     "ref": "internal/bootstrap/node.js:214",
+     "num": 214,
+     "sha": "432adc702160",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-stream.test.ts|@nodelib/fs.walk/out/providers/stream.js": {
+   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/providers/stream.js",
+   "refs": [
+    {
+     "ref": "@nodelib/fs.walk/out/providers/stream.js:10-18",
+     "num": 10,
+     "sha": "f7da6e6eeae8",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-stream.test.ts|csv-parse/lib/index.js": {
+   "file": "_deps-survey/node_modules/csv-parse/lib/index.js",
+   "refs": [
+    {
+     "ref": "csv-parse/lib/index.js:72",
+     "num": 72,
+     "sha": "e71b155126bc",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-url.test.ts|url.js": {
+   "file": "node/lib/url.js",
+   "refs": [
+    {
+     "ref": "url.js:519-521",
+     "num": 519,
+     "sha": "a329c09d6845",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\emulation-url.test.ts|internal/url.js": {
+   "file": "node/lib/internal/url.js",
+   "refs": [
+    {
+     "ref": "internal/url.js:889",
+     "num": 889,
+     "sha": "b8f0100391f6",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\sandbox-modules.test.ts|comparisons.js": {
+   "file": "node/lib/internal/util/comparisons.js",
+   "refs": [
+    {
+     "ref": "comparisons.js:409-412",
+     "num": 409,
+     "sha": "b617687ac3f6",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\exec-sandbox-design.md|vendor/quickjs/quickjs.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/quickjs.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/quickjs.c:445",
+     "num": 445,
+     "sha": "c2e1c3508187",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:7442-7446",
+     "num": 7442,
+     "sha": "e4aa1a643f7b",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\exec-sandbox-design.md|vendor/quickjs/libregexp.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/libregexp.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/libregexp.c:63",
+     "num": 63,
+     "sha": "24f3f5fd046e",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|node/lib/internal/streams/transform.js": {
+   "file": "node/lib/internal/streams/transform.js",
+   "refs": [
+    {
+     "ref": "node/lib/internal/streams/transform.js:126-152",
+     "num": 126,
+     "sha": "80dddfe14900",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|@nodelib/fs.walk/out/readers/async.js": {
+   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/readers/async.js",
+   "refs": [
+    {
+     "ref": "@nodelib/fs.walk/out/readers/async.js:26",
+     "num": 26,
+     "sha": "6d20e72a9aa6",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|internal/bootstrap/node.js": {
+   "file": "node/lib/internal/bootstrap/node.js",
+   "refs": [
+    {
+     "ref": "internal/bootstrap/node.js:214",
+     "num": 214,
+     "sha": "432adc702160",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|write-file-atomic/lib/index.js": {
+   "file": "_deps-survey/node_modules/write-file-atomic/lib/index.js",
+   "refs": [
+    {
+     "ref": "write-file-atomic/lib/index.js:70",
+     "num": 70,
+     "sha": "533567638136",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|mkdirp/dist/mjs/path-arg.js": {
+   "file": "_deps-survey/node_modules/mkdirp/dist/mjs/path-arg.js",
+   "refs": [
+    {
+     "ref": "mkdirp/dist/mjs/path-arg.js:11",
+     "num": 11,
+     "sha": "55fac4cd3743",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|node/lib/querystring.js": {
+   "file": "node/lib/querystring.js",
+   "refs": [
+    {
+     "ref": "node/lib/querystring.js:404-422",
+     "num": 404,
+     "sha": "985045f1c057",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\module-emulation-design.md|transform.js": {
+   "file": "node/lib/internal/streams/transform.js",
+   "refs": [
+    {
+     "ref": "transform.js:126-152",
+     "num": 126,
+     "sha": "80dddfe14900",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\plugin-lifecycle-design.md|vendor/quickjs/quickjs.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/quickjs.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/quickjs.c:445",
+     "num": 445,
+     "sha": "c2e1c3508187",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:7442-7446",
+     "num": 7442,
+     "sha": "e4aa1a643f7b",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:1875",
+     "num": 1875,
+     "sha": "cdeb39a01fe2",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:23205",
+     "num": 23205,
+     "sha": "1d339d0cb758",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\plugin-lifecycle-design.md|vendor/quickjs/libregexp.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/libregexp.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/libregexp.c:63",
+     "num": 63,
+     "sha": "24f3f5fd046e",
+     "gone": false
+    }
+   ]
+  }
+ }
+}

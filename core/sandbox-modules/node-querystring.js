@@ -414,7 +414,7 @@ export function parse(qs, sep, eq, options) {
 // ──────────────────────────────── 导出面 ────────────────────────────────
 //
 // **别名必须是同一个函数对象**：Node 的 `QueryString.encode === QueryString.stringify`、
-// `decode === parse`（实测 `_audit/qs-shape-truth.json`）。写成两份等价实现会让
+// `decode === parse`（实测 `tools/truth/data/qs-shape-truth.json`）。写成两份等价实现会让
 // `qs.encode === qs.stringify` 变成 false —— 那种差异没人会去查文档，只会诡异。
 
 const QueryString = {

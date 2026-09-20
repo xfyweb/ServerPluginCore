@@ -26,7 +26,7 @@
 //  6. 编码参数照 Node 的**宽容**行为（实测）：`update(str, 'zzz')` 当作 utf8（不报错），
 //     而 `digest('zzz')`/`digest('buffer')` 返回 **Buffer**（不是字符串）。两个入口两条规则，别统一。
 //  7. 静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`）是**固定 22.22.1 基线**
-//     （WSL 真值，`_audit/crypto-truth*.json` 生成），与 path=posix / constants=Linux / os 三分法同一取向：
+//     （WSL 真值，`tools/truth/data/crypto-truth*.json` 生成），与 path=posix / constants=Linux / os 三分法同一取向：
 //     宿主 OpenSSL 的清单会随机器变，而插件不该在两种机器上看到不同的算法表。**计算**仍交宿主，
 //     宿主不支持某个算法时如实报错（不假装成功）。
 //
@@ -597,7 +597,7 @@ function timingSafeEqual(a, b) {
 
 // ──────────────────────────── 静态清单（固定 22.22.1 基线）────────────────────────────
 
-// 由 `_audit/gen-crypto-tables.mjs` 从 WSL 真值生成——**勿手改**
+// 由 `tools/truth/gen-crypto-tables.mjs` 从 WSL 真值生成——**勿手改**
 const HASHES = Object.freeze([
   "RSA-MD5", "RSA-RIPEMD160", "RSA-SHA1", "RSA-SHA1-2",
   "RSA-SHA224", "RSA-SHA256", "RSA-SHA3-224", "RSA-SHA3-256",

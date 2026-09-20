@@ -24,8 +24,8 @@
 //     不是吝啬：读到的内容会变成沙箱堆里的字节，32 MiB 的堆撑不住更大的文件，
 //     而那时报出来的是 PLUGIN_MEMORY_LIMIT（误导，所以宁可在宿主侧按"能安全进 VM"的尺寸拒绝）。
 //  5. 不支持 `{ bigint: true }`（BigIntStats）与 `readdirSync(…, { recursive: true })`：**抛错**不降级。
-//  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`_audit/fs-url-truth.mjs` 在 WSL node v22.22.1
-//     上取的运行值，生成脚本 `_audit/gen-fs-tables.mjs`），与 `node-path.js` 固定 posix、
+//  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`tools/truth/fs-url-truth.mjs` 在 WSL node v22.22.1
+//     上取的运行值，生成脚本 `tools/truth/gen-fs-tables.mjs`），与 `node-path.js` 固定 posix、
 //     `node-constants.js` 取 Linux 是同一个取向。
 //  7. **`URL` 路径参数只在 POSIX 语义下成立**：`fileURLToPath` 是 POSIX 基线（沙箱路径语义本来就是 posix），
 //     所以 Windows 宿主上 `new URL('file:///C:/x')` 解析出的 `/C:/x` 与真实数据目录对不上。
@@ -111,7 +111,7 @@ function callBytes(name, ...args) {
 
 // ──────────────────────────── errno 翻译（设计 §7）────────────────────────────
 
-// 表由 `_audit/gen-fs-tables.mjs` 从 WSL 真值生成（node v22.22.1 的运行值）——**勿手改**
+// 表由 `tools/truth/gen-fs-tables.mjs` 从 WSL 真值生成（node v22.22.1 的运行值）——**勿手改**
 const ERRNO = {
   EPERM          : [  1, "operation not permitted"],
   ENOENT         : [  2, "no such file or directory"],
@@ -758,7 +758,7 @@ function mkdtempSync(prefix, options) {
   const enc = nameEncoding(options);
   const p = toPathString(prefix, 'prefix');
   // Node 自己会把 `XXXXXX` 拼在 prefix 后面再调 mkdtemp，所以它所有错误（连 `err.path`）都带 XXXXXX——
-  // 报错文案要对齐就得照抄这一手（`_audit/fs-url-truth.json` 的 mkdtemp_missingParent 实测）
+  // 报错文案要对齐就得照抄这一手（`tools/truth/data/fs-url-truth.json` 的 mkdtemp_missingParent 实测）
   const res = withSyscall('mkdtemp', p + 'XXXXXX', undefined, () => callJson('fs.mkdtemp', p));
   // 返回值 = **调用方写的那个前缀 + 宿主给的随机后缀**（Node 实测：相对进、相对出）——
   // 这样调用方写 `data/t-` 就回 `data/t-abc123`，分隔符形状也照旧

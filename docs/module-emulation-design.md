@@ -139,7 +139,7 @@ const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 > **有身份的 guest 对象**（`a === a`、`a !== b`），宿主方法把它收回来就能得到**当初那个宿主对象**
 > （`toHostRef(h).value === 原对象`，可继续改它的状态），宿主值的释放由 wrapper 的 host refs 表 + guest GC 驱动。
 > 所以"身份"这条**不是引擎级缺口，也不需要魔改 QuickJS**：它只是"桥还没支持第三种参数"。
-> 实测证据：`_audit/hostref-probe.mts`（两个 `Hash` 对象各自累积状态、互不串味、收尾干净）。
+> 实测证据：`tools/probes/hostref-probe.mts`（两个 `Hash` 对象各自累积状态、互不串味、收尾干净）。
 >
 > 采用它要付的代价（都不是小事，所以本批没用）：
 > ① 桥要加第三种参数类型（宿主对象引用）与对应的 `HostApi` 签名；
@@ -354,7 +354,7 @@ core/sandbox.ts
 
 **errno 与文案是 Linux 真值**：`err.errno` 用 Linux 的负值（`ENOENT` = -2），`err.message` 用
 `CODE: strerror, syscall 'path'` 的 Node 格式，strerror 文案取 **Linux**（`no such file or directory`…）——
-出处是 WSL 上的 node v22.22.1 运行值（`_audit/fs-url-truth.mjs` → `_audit/fs-url-truth.json`），
+出处是 WSL 上的 node v22.22.1 运行值（`tools/truth/fs-url-truth.mjs` → `tools/truth/data/fs-url-truth.json`），
 与 `path`(posix)、`constants`(Linux) 同一个取向。开发机是 Windows 时宿主的 errno（-4058）与文案都不同，
 **不能拿宿主当判卷人**（测试里按 `process.platform === 'linux'` 才与宿主对照）。
 
@@ -459,8 +459,8 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 **判卷人（Windows 侧真值）**：官方 `node-v22.22.1-win-x64`（解在 `_tools/`，不进仓库）——
 常量/信号/errno 是 `src/node_constants.cc` 在**编译期**由平台宏定的，**本地 `node/` 源码（v27）只能告诉你有哪些键，
-给不出 Windows 的数值**。采真值的脚本：`_audit/dump-const-win.mjs` → `const-win.json`；
-`path.win32` 的差分：`_audit/path-win32-cases-win.mjs`（采）+ `_audit/path-win32-diff.mjs`（比）。
+给不出 Windows 的数值**。采真值的脚本：`tools/truth/dump-const-win.mjs` → `const-win.json`；
+`path.win32` 的差分：`tools/truth/path-win32-cases-win.mjs`（采）+ `tools/truth/path-win32-diff.mjs`（比）。
 
 **已知边界（差分白名单里明确记账的 3 条）**：Windows 的"每盘一个 cwd"（`process.env['=C:']`）**沙箱复现不了**——
 那些 `=X:` 变量被 Node 从 JS 可见的 `process.env` 里过滤掉了，只有 C 层 `uv_os_getenv` 读得到，
@@ -521,13 +521,13 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 ## 14. 实测坑清单（第二批踩到的，写代码前先看）
 
 > 这一节只写**花了时间才弄明白、且不做就会再踩**的东西。每条都给"复现/守住它的地方"，
-> 这样它有判别力：改坏了对应测试会红。真值采集工具在 `_audit/`（仓库外工作区）。
+> 这样它有判别力：改坏了对应测试会红。真值采集工具在 `tools/truth/`。
 
 ### 14.1 沙箱环境本身
 
 | # | 坑 | 结论 / 做法 |
 |---|---|---|
-| 1 | QuickJS **没有**一批标准全局：`TextEncoder` `TextDecoder` `queueMicrotask` `structuredClone` `URL` `URLSearchParams` `atob` `btoa` `performance` `DOMException`（有 `Proxy`/`Reflect`/`WeakRef`/`Float16Array`/`Object.hasOwn`） | 引导层补齐 `queueMicrotask`；Node 那批全局由 `GLOBALS_PRELUDE` 装**仿真模块本身**（见 14.2）。探针：`_audit/quickjs-globals-probe.mjs` |
+| 1 | QuickJS **没有**一批标准全局：`TextEncoder` `TextDecoder` `queueMicrotask` `structuredClone` `URL` `URLSearchParams` `atob` `btoa` `performance` `DOMException`（有 `Proxy`/`Reflect`/`WeakRef`/`Float16Array`/`Object.hasOwn`） | 引导层补齐 `queueMicrotask`；Node 那批全局由 `GLOBALS_PRELUDE` 装**仿真模块本身**（见 14.2）。探针：`tools/probes/quickjs-globals-probe.mjs` |
 | 2 | **宿主 realm 的差分测试测不出"沙箱里缺某个全局"**（在 Node 里跑得通、进沙箱就 ReferenceError） | 每个模块**至少一条真沙箱冒烟**（先例：`sandbox.test.ts` 的微任务用例、`emulation-fs.test.ts` 最后一组） |
 | 3 | 模块装载期排的微任务（顶层 `await` 续体、`.then()`）**原来被静默丢掉**（`runModule` 不泵 job 队列，还报成功） | `runModule` 在 eval 成功后、deadline 复位**之前**泵一次 job 队列；回归用例在 `sandbox.test.ts` |
 | 4 | **顶层 await（TLA）模块**：QuickJS 的 `js_evaluate_module()`（`quickjs.c` 约 31535 行）**总是**建 promise，QTS 只在"没有异步求值"时拆开交出命名空间；真 TLA 时交回来的是未落地的 promise ⇒ 导出全取不到（症状是 `PLUGIN_NO_ENTRY`，看着像导出名写错） | **明确拒绝**：`PLUGIN_LOAD_FAILED` + "把异步初始化放进 init 钩子"。要真支持得 pump 到 promise 落地再取结果值（未排期） |
@@ -555,12 +555,12 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 14 | `mkdirSync('b/c/d', {recursive:true})` 返回**第一个被创建的目录**、`mkdtempSync('t-')` 返回 `'t-ABC123'`——都是**调用方写的那种形式**（相对进、相对出） | 宿主必须用收敛后的绝对路径，所以 shim 负责还原（`callerDepthForm` / "前缀 + 宿主给的 suffix"）；`fs.mkdtemp` 因此多回一个 `suffix` |
 | 15 | `mkdir -r` 要建**整条链**：`firstMissingAncestor` 只用于返回值，只建它会让中间层缺失、紧随其后的 `validatePath` 在 F6 上炸 | `hostApi.ts` 的 `fs.mkdir` |
 | 16 | `lstatSync` **认不出软链**：路径收敛（F2/F5）在它之前就把软链解析成了目标 | 记进 §9 已知边界；补偿能力是 `readdirSync(withFileTypes)` 的 `Dirent`（不经过收敛） |
-| 17 | 判卷人有两个陷阱：(a) **Windows 宿主不是 Linux 真值的判卷人**（errno -4058、`unlinkSync(目录)` 给 EPERM、`mkdir` 回 `\\?\` 长路径前缀）；(b) **本机宿主版本 ≠ 仿真版本**（宿主 v24 有 `mkdtempDisposable`/`Utf8Stream`，v22.22.1 没有） | 断言 **Linux 真值**（WSL 取，`_audit/fs-url-truth.json`），只在 `platform === 'linux'` 时与宿主对照；导出面拿 **v22.22.1 的真值表**比，不拿宿主比 |
+| 17 | 判卷人有两个陷阱：(a) **Windows 宿主不是 Linux 真值的判卷人**（errno -4058、`unlinkSync(目录)` 给 EPERM、`mkdir` 回 `\\?\` 长路径前缀）；(b) **本机宿主版本 ≠ 仿真版本**（宿主 v24 有 `mkdtempDisposable`/`Utf8Stream`，v22.22.1 没有） | 断言 **Linux 真值**（WSL 取，`tools/truth/data/fs-url-truth.json`），只在 `platform === 'linux'` 时与宿主对照；导出面拿 **v22.22.1 的真值表**比，不拿宿主比 |
 | 18 | 权限耦合：`bytes.*` 是**独立能力组**，`Buffer.from(str)`/`buf.toString()` 要走它 | `node:fs` 的文本读写**刻意不经** `bytes`（`fs.readText`/`fs.writeText` 在宿主侧连编解码一起做），所以 `node:fs` 只需要 `fs.read.data`/`fs.write.data`；用 `node:buffer` 的编解码、或 fs 的 Buffer 路径 / `{encoding:'buffer'}` 才要声明 `bytes.encode`/`bytes.decode` |
 
 ### 14.4 真实依赖冒烟（本批的验收证据）
 
-`_audit/dep-smoke.mts`（仓库外工作区工具）：用 esbuild 把真实 npm 包的 `node:*` 引用**内联成仿真源码**，
+`tools/smoke/dep-smoke.mts`（仓库外工作区工具）：用 esbuild 把真实 npm 包的 `node:*` 引用**内联成仿真源码**，
 产物丢进**真 QuickJS 沙箱**（真桥 + 权限判定）里跑。四个包全绿：
 
 | 包 | 走到的路径 | 结果 |
@@ -614,7 +614,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 ### 14.7 真实依赖冒烟（第三批全跑，11 个靶子）
 
-`node node_modules/tsx/dist/cli.mjs D:\git-repo\_audit\dep-smoke.mts all`：
+`node node_modules/tsx/dist/cli.mjs D:\git-repo\tools/smoke/dep-smoke.mts all`：
 
 **绿（9）**：`mkdirp` `properties` `debug` `uuid` `tmp` `dotenv` `adm-zip` `ejs` `write-file-atomic`（部分）。
 **红（2，都不是 stream 的问题，是各自的边界）**：
@@ -632,7 +632,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 查 `graceful-fs` 装载失败花了大半轮，**卡点不是它，而是诊断链**：`classifyVmFailure` 原本把
 QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for property` —— 连"哪一行"都看不到。
-**已修**：`params.stack`（截断 1200 字）。下面这张表是拿真沙箱逐条试出来的（`_audit/probe-dump-keys.mts`）：
+**已修**：`params.stack`（截断 1200 字）。下面这张表是拿真沙箱逐条试出来的（`tools/probes/probe-dump-keys.mts`）：
 
 | 写法 | QuickJS 的行为 | 消息 |
 |---|---|---|

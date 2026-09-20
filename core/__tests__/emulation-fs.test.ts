@@ -3,7 +3,7 @@
 // 判卷人有三个，各管一段（照 emulation-os-process.test.ts 的分工）：
 //   1. **宿主 Node**：平台无关的面（值、错误 `code`/`syscall`、形状）逐条差分对跑——
 //      两边跑**同一棵目录树**（各自一个根），跑完比结果；
-//   2. **Linux 真值**（`_audit/fs-url-truth.json`，WSL node v22.22.1 实测）：`errno` 与错误
+//   2. **Linux 真值**（`tools/truth/data/fs-url-truth.json`，WSL node v22.22.1 实测）：`errno` 与错误
 //      **文案**只在 Linux 上跟宿主比，其它平台直接断言录下来的 Linux 值——
 //      这台开发机是 Windows，宿主的 errno（-4058）与文案完全不同，拿它当判卷人会得出错误结论；
 //   3. **结构性断言**：凡是我们**有意与 Node 不同**的地方（越界 EACCES + spcCode、软链语义、
@@ -345,7 +345,7 @@ describe('仿真 node:fs —— 与宿主 Node 差分对跑', () => {
 
 describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言）', () => {
   it('errno 与文案用 **Linux 真值**（开发机是 Windows，宿主的 -4058/另一套文案不是判卷人）', () => {
-    // 出处：_audit/fs-url-truth.json（WSL node v22.22.1 实测）
+    // 出处：tools/truth/data/fs-url-truth.json（WSL node v22.22.1 实测）
     const table: Array<[() => void, string, number, string]> = [
       [() => fs.readFileSync(join(DATA_DIR, 'nope.txt')), 'ENOENT', -2, 'no such file or directory'],
       [() => fs.readdirSync(join(DATA_DIR, 'a.txt')), 'ENOTDIR', -20, 'not a directory'],
@@ -545,7 +545,7 @@ describe('仿真 node:fs —— 回调风格与 promises 面', () => {
     const ourFns = Object.keys(fsPromises)
       .filter((k) => k !== 'default' && k !== 'constants')
       .sort();
-    // 判卷人是**仿真版本**（22.22.1，出自 _audit/fs-url-truth.json 的 WSL 运行值），不是本机宿主：
+    // 判卷人是**仿真版本**（22.22.1，出自 tools/truth/data/fs-url-truth.json 的 WSL 运行值），不是本机宿主：
     // 这台开发机的宿主是 v24，多出 `mkdtempDisposable` 之类 22 里没有的名字——拿它当判卷人会得出错误结论。
     const V22_FSP_FNS = [
       'access', 'appendFile', 'chmod', 'chown', 'copyFile', 'cp', 'glob', 'lchmod', 'lchown', 'link',

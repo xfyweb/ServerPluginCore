@@ -32,7 +32,7 @@ import { isRegistered, isShimFileName, normalizeSpecifier, shimFileName } from '
  * 这个 handle 是不是 thenable？
  *
  * 用途只有一个：识别**带顶层 await（TLA）的模块**。QuickJS 的 `js_evaluate_module()`
- * （quickjs.c:31535）**总是**建一个 promise 并把它交给 `JS_Eval`，而 QTS 的 `QTS_Eval_MaybeAsync`
+ * （`vendor/quickjs/quickjs.c:30939`）**总是**建一个 promise 并把它交给 `JS_Eval`，而 QTS 的 `QTS_Eval_MaybeAsync`
  * 在"模块没有异步求值"时会把已落地的 promise 拆开、交出**模块命名空间**；一旦模块真的 TLA
  * （`m->async_evaluation`），交回来的就是那个未落地的 **promise**。
  * 于是：非 TLA → 命名空间对象（没有 `then`）；TLA → promise（有 `then`）。
@@ -143,7 +143,7 @@ const BOOTSTRAP = `
     }
   };
   // QuickJS **没有** queueMicrotask（实测：TextEncoder/TextDecoder/queueMicrotask/structuredClone 全无，
-  // 见 _audit/quickjs-globals-probe.mjs），而仿真模块要用它（process.nextTick、events 的 rejection 路由）。
+  // 见 tools/probes/quickjs-globals-probe.mjs），而仿真模块要用它（process.nextTick、events 的 rejection 路由）。
   // 补的是**标准全局**，不是能力——它只能把回调推迟到微任务，拿不到任何宿主资源。
   // 为什么必须在引导层补而不是各 shim 自己写：shim 是会被构建层内联进插件产物的静态文件，
   // 它们跑在沙箱里，必须能假定这个标准全局存在。
@@ -198,7 +198,7 @@ const BOOTSTRAP = `
  *
  * `global` 是 Node 的 `globalThis` 别名（老代码常写 `global.X`）；
  * `TextEncoder`/`TextDecoder`/`URL`/`URLSearchParams` 是 Node 的**标准全局**，
- * QuickJS 一个都没有（见 `_audit/quickjs-globals-probe.mjs`），所以由仿真模块补上。
+ * QuickJS 一个都没有（见 `tools/probes/quickjs-globals-probe.mjs`），所以由仿真模块补上。
  */
 const GLOBALS_PRELUDE = `
 import process from 'node:process';
@@ -721,7 +721,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   /**
    * 沙箱里的 **Node 全局**（`process` / `Buffer` / `global` / `URL` / `TextEncoder` …）。
    *
-   * 为什么必须有：**真实依赖用的是裸全局，不是 import**。实测（`_audit/dep-smoke.mts`，
+   * 为什么必须有：**真实依赖用的是裸全局，不是 import**。实测（`tools/smoke/dep-smoke.mts`，
    * 真实 npm 包内联后进真沙箱）：
    *   · `mkdirp/dist/mjs/path-arg.js` → `process.env.… || process.platform`
    *   · `mkdirp/dist/mjs/use-native.js` → `process.env.… || process.version`
@@ -996,7 +996,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       //
       // **必须显式传 `{ type: 'module' }`**：不传时 quickjs-emscripten 会打开模块自动探测
       // （QTS_Eval_MaybeAsync 的 detectModule=1 → `JS_DetectModule`），而它**只看第一个 token**
-      // （quickjs.c:23792）。esbuild 会把导出提升到文件末尾（`function init(){}` + `export { init };`），
+      // （`vendor/quickjs/quickjs.c:23205`）。esbuild 会把导出提升到文件末尾（`function init(){}` + `export { init };`），
       // 于是首 token 是 `function` → 判成脚本模式 → `unsupported keyword: export`。
       // 插件契约本来就是 ESM-only（ADR-005），显式声明模块模式既正确又不再依赖首 token 的运气。
       const started = Date.now();

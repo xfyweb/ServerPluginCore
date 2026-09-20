@@ -12,7 +12,7 @@
 //   · legacy `Url` / `parse` / `format` / `resolve` / `resolveObject` 与 `pathToFileURL` /
 //     `fileURLToPath` / `fileURLToPathBuffer` → **沙箱自实现**：它们是纯字符串算法、不依赖 URL 全局，
 //     逐行移植 node/lib/url.js（行号指本地 v27 检出）与 node/lib/internal/url.js，
-//     并由真值表 `_audit/fs-url-truth.json`（WSL node v22.22.1 实测）逐条差分守住。
+//     并由真值表 `tools/truth/data/fs-url-truth.json`（WSL node v22.22.1 实测）逐条差分守住。
 //
 // ══ 已知边界（写在这里，免得被当成 bug）══
 //   1. **路径语义固定 POSIX/Linux**（与 node-path.js 同一取向）。两处后果：

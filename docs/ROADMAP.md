@@ -89,7 +89,7 @@
    - **第二批的验收口径**（可复跑）：`node tools/dep-survey.mjs --set utils --coverage` 从 17/43 抬到 **26/43**（`debug` `ora` `cli-table3` `properties` `handlebars` `eta` `ejs` `which` 等 9 个包过闸，`joi` 由 `url` 解锁）；每模块一份与宿主 Node 的差分测试 + 至少一条**真沙箱冒烟**（宿主进程里的差分**测不出**"沙箱里缺某个全局"，这个坑踩过）；
    - **已完成（第三批）**：`crypto`（摘要/HMAC/随机/`timingSafeEqual`/一次性 `createDecipheriv` + 固定基线静态表；非对称与密钥对象明确抛错）、`zlib`（同步 + 回调面 + `crc32`）、**收口三项**（`worker_threads` 只报事实 / `process.getuid` 一族 → 固定 1000 / `querystring` 完整面）、**`stream` B1**（`Stream` legacy 函数基类 + `Readable`/`Writable`/`Duplex`/`Transform`/`PassThrough` + `finished`/`pipeline`；已知差异见设计 §9.1）。**`csv-parse` 的流式入口（B2）与 `stream/promises` 真实现留到有靶子卡住时再做**。
      覆盖度（**构建闸静态口径**，`node tools/dep-survey.mjs --set utils|core --coverage`）：utils **36/43**、core **16/27**；
-     ⚠️ 这个口径是"产物里出现过且已登记"，与"真能跑通"不是一回事——真实依赖冒烟 **10/11**（`_audit/dep-smoke.mts all`）。
+     ⚠️ 这个口径是"产物里出现过且已登记"，与"真能跑通"不是一回事——真实依赖冒烟 **10/11**（`tools/smoke/dep-smoke.mts all`）。
    - **已完成（第四批 A：Windows 支持 / 模型 B）**：**仿真平台跟随宿主**——`platform` / `path` 语义 / `EOL` /
      `devNull` / 常量表 / 沙箱可见路径形态**六者同源**（设计 §9.3）。`constants` 拆**两张平台真值表**
      （Windows v22.22.1 实跑采真值：键集差 59/51、同名不同值 49、形状差一处），`path.win32` 换成**真实现**

@@ -1,0 +1,633 @@
+[
+  {
+    "label": "fup_url_instance",
+    "value": "/tmp/a b.txt"
+  },
+  {
+    "label": "fup_url_instance_http",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_INVALID_URL_SCHEME",
+      "message": "The URL must be of scheme file"
+    }
+  },
+  {
+    "label": "fup_obj",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_INVALID_ARG_TYPE",
+      "message": "The \"path\" argument must be of type string or an instance of URL. Received an instance of Object"
+    }
+  },
+  {
+    "label": "fup_number",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_INVALID_ARG_TYPE",
+      "message": "The \"path\" argument must be of type string or an instance of URL. Received type number (123)"
+    }
+  },
+  {
+    "label": "fup_encoded_utf8",
+    "value": "/tmp/中.txt"
+  },
+  {
+    "label": "fup_encoded_backslash",
+    "value": "/tmp/a\\b"
+  },
+  {
+    "label": "fup_encoded_dotdot",
+    "value": "/tmp/a../b"
+  },
+  {
+    "label": "fup_empty_path",
+    "value": "/"
+  },
+  {
+    "label": "fup_buffer",
+    "value": {
+      "isBuffer": true,
+      "len": 15,
+      "hex": "2f746d702f612062e4b8ad2e747874",
+      "str": "/tmp/a b中.txt"
+    }
+  },
+  {
+    "label": "fup_buffer_encoded_slash",
+    "value": {
+      "isBuffer": true,
+      "hex": "2f746d702f612f62"
+    }
+  },
+  {
+    "label": "fup_buffer_url_instance",
+    "value": true
+  },
+  {
+    "label": "ptf_utf8",
+    "value": "file:///tmp/%C3%A4.txt"
+  },
+  {
+    "label": "ptf_emoji",
+    "value": "file:///tmp/%F0%9F%98%80.txt"
+  },
+  {
+    "label": "ptf_percent",
+    "value": "file:///tmp/a%2520b.txt"
+  },
+  {
+    "label": "ptf_dotdot",
+    "value": "file:///x"
+  },
+  {
+    "label": "ptf_empty",
+    "value": "file:///mnt/d/git-repo"
+  },
+  {
+    "label": "ptf_rel_dotdot",
+    "value": "file:///mnt/d/git-repo/b"
+  },
+  {
+    "label": "ptf_backslash",
+    "value": "file:///tmp/a%5Cb"
+  },
+  {
+    "label": "ptf_number",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_INVALID_ARG_TYPE",
+      "message": "The \"path\" argument must be of type string. Received type number (123)"
+    }
+  },
+  {
+    "label": "url_parse_static_ok",
+    "value": {
+      "href": "http://x/a",
+      "ctor": "URL"
+    }
+  },
+  {
+    "label": "url_parse_static_bad",
+    "value": null
+  },
+  {
+    "label": "url_parse_static_base",
+    "value": "http://x/c"
+  },
+  {
+    "label": "url_canparse_base",
+    "value": [
+      true,
+      false,
+      true
+    ]
+  },
+  {
+    "label": "url_canparse_noargs",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_MISSING_ARGS",
+      "message": "The \"url\" argument must be specified"
+    }
+  },
+  {
+    "label": "url_createObjectURL",
+    "value": "blob:nodedata:8b06fc41-fd34-4033-bd92-e8e563f52b33"
+  },
+  {
+    "label": "url_toString_toJSON",
+    "value": {
+      "str": "http://x/a?b=1#f",
+      "toStr": "http://x/a?b=1#f",
+      "json": "http://x/a?b=1#f",
+      "tag": "[object URL]"
+    }
+  },
+  {
+    "label": "url_sp_identity",
+    "value": {
+      "same1": true,
+      "same2": true,
+      "view": "c=2",
+      "view2": "c=2",
+      "href": "http://x/a?c=2"
+    }
+  },
+  {
+    "label": "url_sp_identity_href",
+    "value": {
+      "same": true,
+      "view": "d=3",
+      "href": "http://y/c?d=3"
+    }
+  },
+  {
+    "label": "url_sp_mutate_rewrites_href",
+    "value": {
+      "a": "http://x/a?b=1&z=2#f",
+      "b": "http://x/a?b=x+y&z=2#f",
+      "c": "http://x/a?b=x+y#f",
+      "d": "http://x/a?b=x+y#f"
+    }
+  },
+  {
+    "label": "url_sp_mutate_empty",
+    "value": "http://x/a"
+  },
+  {
+    "label": "url_search_noquestion",
+    "value": "?a=1|http://x/a?a=1"
+  },
+  {
+    "label": "url_hash_nohash",
+    "value": "#f|http://x/a#f"
+  },
+  {
+    "label": "url_port_empty",
+    "value": "http://x/a"
+  },
+  {
+    "label": "url_default_port",
+    "value": "http://x/a"
+  },
+  {
+    "label": "url_username_space",
+    "value": {
+      "href": "http://a%20b@x/a",
+      "username": "a%20b"
+    }
+  },
+  {
+    "label": "url_file_pathname",
+    "value": {
+      "pathname": "/C:/x",
+      "host": "",
+      "origin": "null"
+    }
+  },
+  {
+    "label": "url_origin_opaque",
+    "value": {
+      "origin": "null",
+      "protocol": "data:",
+      "href": "data:text/plain,x"
+    }
+  },
+  {
+    "label": "url_bad_input_attrs",
+    "value": {
+      "name": "TypeError",
+      "code": "ERR_INVALID_URL",
+      "message": "Invalid URL",
+      "input": "nope",
+      "hasInput": true,
+      "keys": [
+        "code",
+        "input"
+      ]
+    }
+  },
+  {
+    "label": "url_bad_input_base",
+    "value": {
+      "code": "ERR_INVALID_URL",
+      "input": "/a"
+    }
+  },
+  {
+    "label": "url_input_stringified",
+    "value": "http://x/a"
+  },
+  {
+    "label": "url_no_args",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_MISSING_ARGS",
+      "message": "The \"url\" argument must be specified"
+    }
+  },
+  {
+    "label": "url_sp_size_tag",
+    "value": {
+      "size": 1,
+      "tag": "[object URLSearchParams]",
+      "keys": [],
+      "ownProps": []
+    }
+  },
+  {
+    "label": "url_sp_record",
+    "value": "a=1&b=undefined&c=null"
+  },
+  {
+    "label": "url_sp_pairs_nonstring",
+    "value": "a=1&b=null"
+  },
+  {
+    "label": "url_sp_from_sp",
+    "value": "a=1&b=2"
+  },
+  {
+    "label": "url_sp_from_url",
+    "value": ""
+  },
+  {
+    "label": "url_sp_undefined",
+    "value": ""
+  },
+  {
+    "label": "url_sp_number",
+    "value": "123="
+  },
+  {
+    "label": "url_sp_leading_question",
+    "value": "a=1"
+  },
+  {
+    "label": "url_sp_semicolon",
+    "value": "a=1%3Bb%3D2"
+  },
+  {
+    "label": "url_sp_empty_kv",
+    "value": "a=|=b|a="
+  },
+  {
+    "label": "url_sp_forEach_args",
+    "value": [
+      [
+        "1",
+        "a",
+        {}
+      ]
+    ]
+  },
+  {
+    "label": "url_sp_sort_stable",
+    "error": {
+      "name": "TypeError",
+      "message": "Cannot read properties of undefined (reading 'toString')"
+    }
+  },
+  {
+    "label": "url_sp_delete_missing",
+    "value": "a=1"
+  },
+  {
+    "label": "url_sp_set_multi",
+    "value": "a=9&b=2"
+  },
+  {
+    "label": "url_sp_iterator_symbols",
+    "value": {
+      "keys": "function",
+      "symIter": "function",
+      "entriesIsIterator": "function"
+    }
+  },
+  {
+    "label": "url_sp_encoded_utf8",
+    "value": "ä"
+  },
+  {
+    "label": "url_sp_plus_in_value",
+    "value": "b c"
+  },
+  {
+    "label": "url_sp_pct20",
+    "value": " "
+  },
+  {
+    "label": "url_sp_serialize_utf8",
+    "value": "a=%C3%A4"
+  },
+  {
+    "label": "url_sp_serialize_tilde",
+    "value": "a=%21*%27%28%29%7E-._"
+  },
+  {
+    "label": "url_sp_serialize_slash",
+    "value": "a=%2F%3F%3A%40%26%3D%2B%24%2C%3B%5B%5D%7B%7D%7C%5C%5E%60%3C%3E%23%22"
+  },
+  {
+    "label": "legacy_parse_Url_instance_passthrough",
+    "value": true
+  },
+  {
+    "label": "legacy_format_options_url",
+    "value": [
+      "http://u:p@x:8080/a?b=1#f",
+      "http://u:p@x:8080/a?b=1",
+      "http://u:p@x:8080/a#f",
+      "http://x:8080/a?b=1#f"
+    ]
+  },
+  {
+    "label": "legacy_parse_query_noproto",
+    "value": {
+      "c": "1"
+    }
+  },
+  {
+    "label": "legacy_parse_empty_query",
+    "value": {}
+  },
+  {
+    "label": "legacy_parse_query_proto",
+    "value": "[object Object]"
+  },
+  {
+    "label": "legacy_resolveObject_smoke",
+    "value": "http://x/c"
+  },
+  {
+    "label": "legacy_resolveObject_nosource",
+    "value": "http://x/a"
+  },
+  {
+    "label": "legacy_resolve_relative_only",
+    "value": "/a/c"
+  },
+  {
+    "label": "legacy_Url_direct",
+    "value": {
+      "proto": "http:",
+      "href": "http://x/a?b=1",
+      "fmt": "http://x/a?b=1",
+      "query": {
+        "b": "1"
+      }
+    }
+  },
+  {
+    "label": "legacy_parse_hash_only",
+    "value": {
+      "protocol": null,
+      "slashes": null,
+      "auth": null,
+      "host": null,
+      "port": null,
+      "hostname": null,
+      "hash": "#f",
+      "search": null,
+      "query": null,
+      "pathname": null,
+      "path": null,
+      "href": "#f"
+    }
+  },
+  {
+    "label": "legacy_parse_query_only",
+    "value": {
+      "protocol": null,
+      "slashes": null,
+      "auth": null,
+      "host": null,
+      "port": null,
+      "hostname": null,
+      "hash": null,
+      "search": "?a=1",
+      "query": "a=1",
+      "pathname": null,
+      "path": "?a=1",
+      "href": "?a=1"
+    }
+  },
+  {
+    "label": "legacy_parse_slashslash",
+    "value": {
+      "protocol": null,
+      "slashes": null,
+      "auth": null,
+      "host": null,
+      "port": null,
+      "hostname": null,
+      "hash": null,
+      "search": null,
+      "query": null,
+      "pathname": "//a//b",
+      "path": "//a//b",
+      "href": "//a//b"
+    }
+  },
+  {
+    "label": "legacy_parse_slashslash_host",
+    "value": {
+      "protocol": null,
+      "slashes": true,
+      "auth": null,
+      "host": "a",
+      "port": null,
+      "hostname": "a",
+      "hash": null,
+      "search": null,
+      "query": null,
+      "pathname": "//b",
+      "path": "//b",
+      "href": "//a//b"
+    }
+  },
+  {
+    "label": "legacy_parse_port_invalid",
+    "value": "http://x/:abc/a"
+  },
+  {
+    "label": "legacy_parse_idn",
+    "value": "xn--4ca0bs.com"
+  },
+  {
+    "label": "legacy_parse_upper_proto",
+    "value": "http://x.com/A"
+  },
+  {
+    "label": "legacy_parse_auth_encoded",
+    "value": "a@b:p"
+  },
+  {
+    "label": "legacy_parse_authesh",
+    "value": "http://a/%20b/c"
+  },
+  {
+    "label": "legacy_parse_ws",
+    "value": "ws://x/a"
+  },
+  {
+    "label": "legacy_parse_file",
+    "value": {
+      "href": "file:///tmp/x",
+      "pathname": "/tmp/x",
+      "host": "",
+      "hostname": ""
+    }
+  },
+  {
+    "label": "legacy_parse_mailto_query",
+    "value": "?subject=x|mailto:a@b.com?subject=x"
+  },
+  {
+    "label": "legacy_format_no_slashes_file",
+    "value": "file:///tmp/x"
+  },
+  {
+    "label": "legacy_format_protocol_only",
+    "value": "http://x"
+  },
+  {
+    "label": "legacy_parse_simple_path",
+    "value": {
+      "protocol": null,
+      "slashes": null,
+      "auth": null,
+      "host": null,
+      "port": null,
+      "hostname": null,
+      "hash": null,
+      "search": null,
+      "query": {},
+      "pathname": "/a/b",
+      "path": "/a/b",
+      "href": "/a/b"
+    }
+  },
+  {
+    "label": "urlToHttpOptions_nonurl",
+    "value": {
+      "href": "http://x/a",
+      "protocol": "http:",
+      "hostname": "x",
+      "port": "",
+      "pathname": "/a",
+      "search": "",
+      "hash": "",
+      "username": "",
+      "password": "",
+      "path": "/a"
+    }
+  },
+  {
+    "label": "urlToHttpOptions_ipv6",
+    "value": {
+      "protocol": "http:",
+      "hostname": "::1",
+      "hash": "",
+      "search": "",
+      "pathname": "/a",
+      "path": "/a",
+      "href": "http://[::1]:8080/a",
+      "port": 8080
+    }
+  },
+  {
+    "label": "urlToHttpOptions_noport",
+    "value": {
+      "protocol": "http:",
+      "hostname": "x",
+      "hash": "",
+      "search": "",
+      "pathname": "/a",
+      "path": "/a",
+      "href": "http://x/a"
+    }
+  },
+  {
+    "label": "urlToHttpOptions_encoded_auth",
+    "value": {
+      "protocol": "http:",
+      "hostname": "x",
+      "hash": "",
+      "search": "",
+      "pathname": "/a",
+      "path": "/a",
+      "href": "http://a%40b:p%20q@x/a",
+      "auth": "a@b:p q"
+    }
+  },
+  {
+    "label": "domainToASCII_basic",
+    "value": [
+      "xn--fiq228c.com",
+      "example.com",
+      "xn--fiq228c.com"
+    ]
+  },
+  {
+    "label": "domainToUnicode_basic",
+    "value": [
+      "中文.com",
+      "example.com"
+    ]
+  },
+  {
+    "label": "domainToASCII_missing",
+    "value": "ERR:ERR_MISSING_ARGS:The \"domain\" argument must be specified"
+  },
+  {
+    "label": "domainToASCII_empty",
+    "value": ""
+  },
+  {
+    "label": "hostless_unsafe",
+    "value": [
+      "javascript:alert(1)",
+      "javascript://x/%20"
+    ]
+  },
+  {
+    "label": "missing_module_attrs",
+    "value": [
+      "URL",
+      "URLSearchParams",
+      "Url",
+      "default",
+      "domainToASCII",
+      "domainToUnicode",
+      "fileURLToPath",
+      "fileURLToPathBuffer",
+      "format",
+      "parse",
+      "pathToFileURL",
+      "resolve",
+      "resolveObject",
+      "urlToHttpOptions"
+    ]
+  }
+]

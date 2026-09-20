@@ -38,7 +38,7 @@ const API_POINTS: Record<string, { scope: Scope; grant: Grant }> = {
   // ── fs：**待讨论项**（用户 2026-09-18 定："fs 先不动，仅 self + 仅自身目录"）──
   // 语义上的张力：它们碰的是宿主文件系统里的真实文件 ⇒ 按 `scope` 的定义像 host；
   // 而 `grant: install`（要声明、安装即生效、可一键收回）正是"宿主资源但属于该插件"那一档。
-  // 「内容式权限」（按路径/内容而不是按方法名划权）要单独讨论，见 `_audit/batch-4-plan.md` §2.3。
+  // 「内容式权限」（按路径/内容而不是按方法名划权）要单独讨论，见批次规划文档 `batch-4-plan.md` §2.3（开发工作区文档，不随仓库分发）。
   // 在那之前保持现状：**self + auto = 免声明**，不引入新摩擦（真实插件几乎必然用 fs）。
   'fs.read.data': { scope: 'self', grant: 'auto' },
   'fs.write.data': { scope: 'self', grant: 'auto' },

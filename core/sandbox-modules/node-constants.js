@@ -6,9 +6,9 @@
 //
 // **取哪张表由 `globalThis.__spcEnv.platform` 决定**（P2-E / 模型 B：仿真平台跟随宿主）。
 // 两份都是 **node v22.22.1** 的运行值真值，逐键可核：
-//   · Linux：wsl -e node /mnt/d/git-repo/_audit/dump-const.mjs            （linux/x64）
-//   · Windows：_tools/node-v22.22.1-win-x64/node.exe _audit/dump-const-win.mjs（win32/x64）
-//   → 再跑 _audit/gen-constants2.mjs 生成本文件（生成脚本不进仓库：它依赖那两次执行）
+//   · Linux：wsl -e node tools/truth/dump-const.mjs            （linux/x64）
+//   · Windows：用官方 node v22.22.1 的 node.exe 跑 tools/truth/dump-const-win.mjs（win32/x64）
+//   → 再跑 tools/truth/gen-constants2.mjs 生成本文件（两份真值在 tools/truth/data/ 下）
 //
 // 三处**结构性**差异（不是"几个数值不同"，所以必须整表分）：
 //   1. 键集：Windows 有 59 个 Linux 没有的键（`WSA*` 54 + `SIGBREAK` 等），Linux 有 51 个 Windows 没有的

@@ -117,7 +117,7 @@ function tagOf(v) {
  * 为什么要它：Node 对 URL 是**整体比较 `href`**（`comparisons.js:409-412`），
  * 而不是当普通对象逐键比。少了这条，`deepStrictEqual(new URL('https://a/'), new URL('https://b/'))`
  * 会**通过**（两个 URL 的自有键都是空的 symbol 属性）——那是**静默的判等错误**，
- * 比"少支持一个类型"危险得多。差分电池 `_audit/deep-cmp-battery.mjs` 的 A6 组一直在报这条。
+ * 比"少支持一个类型"危险得多。差分电池 `tools/batteries/deep-cmp-battery.mjs` 的 A6 组一直在报这条。
  *
  * 判据用 `@@toStringTag`（`URL.prototype[Symbol.toStringTag] === 'URL'`，跨 realm 稳定），
  * 不依赖 `instanceof`——后者的 realm 语义在宿主 realm 与沙箱 realm 之间会变。

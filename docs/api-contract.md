@@ -258,7 +258,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 >
 > ⚠️ **`fs.read.data` / `fs.write.data` 暂留 `self`**：它们碰的是宿主文件系统里的真实文件，
 > 按 `scope` 的定义更像 `host`（`grant: install` 那一档）。「内容式权限」（按路径/内容而不是按
-> 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦。见 `_audit/batch-4-plan.md` §2.3。
+> 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦。见批次规划文档 `batch-4-plan.md` §2.3（开发工作区文档，不随仓库分发）。
 
 ### 7.1 等级（`confidentiality` / `executionLevel`）的落地现状与缺口
 
@@ -279,7 +279,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 **结论**：等级机制目前**只在单测里活着**；生产路径上等于"每个权限点一个固定等级"——
 与设计意图不符（这正是"读无关文件低、读机密目录高"做不到的原因）。
 
-**补法（待与「内容式权限」一起定，见 `_audit/batch-4-plan.md` §5）**：
+**补法（待与「内容式权限」一起定，见批次规划文档 `batch-4-plan.md` §5（开发工作区文档，不随仓库分发））**：
 ① `HostApi` 的方法表加 `metaFor?(args, ctx)` —— **原语自己声明"这次碰的是什么"**
 （`fs.readText` 看路径落在哪个目录、`exec.run` 看模板与命令、`events.publish` 看事件等级）；
 ② 桥把它与 `pathLevels` 覆盖一起交给 `checkPermission`；

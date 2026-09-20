@@ -5,6 +5,10 @@ build/
 *.tsbuildinfo
 core/bin/
 
+# 工具生成物（跑一次就重新生成，别提交；见 tools/README.md）
+#   tools/smoke/bundles/ —— dep-smoke 用 esbuild 把真实 npm 包打成的靶子
+tools/smoke/bundles/
+
 # 环境与密钥
 .env
 .env.*

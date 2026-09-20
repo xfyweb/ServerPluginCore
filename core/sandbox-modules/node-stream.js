@@ -3,7 +3,7 @@
 // 这个模块的风险不在代码量，而在"**证明它够用**"：Node 的流是几千行的状态机，语义互相纠缠
 // （flowing/paused、背压、`'drain'`、`'end'/'finish'/'close'` 的时机、objectMode 与 byte mode）。
 // 所以这里不追求"对齐 Node 文档"，只追求**对齐真实依赖实际走到的那些路径**——范围是逐包读出来的
-// （`_audit/stream-surface.mjs` + `stream-usage-probe.mjs`），不是猜的：
+// （`tools/truth/stream-surface.mjs` + `stream-usage-probe.mjs`），不是猜的：
 //
 //   · `graceful-fs/legacy-streams.js:14`：`Stream.call(this)`（**legacy 函数式基类**，不能用 class）
 //   · `fast-glob/out/providers/stream.js:15`：`new Readable({ objectMode: true, read() {} })`

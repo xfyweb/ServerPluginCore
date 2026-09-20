@@ -68,7 +68,7 @@ export function validatePath(requested: string, roots: string[]): PathValidation
   /**
    * ⚠️ **一切判定都必须用规范化后的路径**（`resolve()` 一次），不能拿调用方写的那串直接比。
    *
-   * 为什么（实测踩到，`_audit/dep-smoke.mts`）：Windows 上 `C:/a/b` 与 `C:\a\b` 是同一个位置，
+   * 为什么（实测踩到，`tools/smoke/dep-smoke.mts`）：Windows 上 `C:/a/b` 与 `C:\a\b` 是同一个位置，
    * 但字符串不同。而 `node-path.js` 的 `resolve()` 产出的**正是正斜杠形式**（POSIX 语义 + 盘符），
    * 真实依赖又普遍写 `fs.mkdirSync(path.resolve(p))`（`mkdirp/dist/mjs/path-arg.js:11`）——
    * 于是"前缀匹配"拿 `C:/…` 去比 `C:\…` 的根，判定为**越界**（EACCES），而它其实就在数据目录里。

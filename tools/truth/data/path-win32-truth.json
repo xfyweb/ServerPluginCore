@@ -1,0 +1,944 @@
+{
+ "meta": {
+  "node": "v22.22.1",
+  "platform": "win32",
+  "cwds": [
+   "C:/Windows",
+   "C:/Windows/System32",
+   "D:/"
+  ],
+  "driveCwds": {}
+ },
+ "results": [
+  {
+   "id": "resolve.empty",
+   "C:/Windows": "C:\\Windows",
+   "C:/Windows/System32": "C:\\Windows\\System32",
+   "D:/": "D:\\"
+  },
+  {
+   "id": "resolve.dot",
+   "C:/Windows": "C:\\Windows",
+   "C:/Windows/System32": "C:\\Windows\\System32",
+   "D:/": "D:\\"
+  },
+  {
+   "id": "resolve.rel",
+   "C:/Windows": "C:\\Windows\\a\\b",
+   "C:/Windows/System32": "C:\\Windows\\System32\\a\\b",
+   "D:/": "D:\\a\\b"
+  },
+  {
+   "id": "resolve.rel-slash",
+   "C:/Windows": "C:\\Windows\\a\\b",
+   "C:/Windows/System32": "C:\\Windows\\System32\\a\\b",
+   "D:/": "D:\\a\\b"
+  },
+  {
+   "id": "resolve.abs-drive",
+   "C:/Windows": "C:\\y",
+   "C:/Windows/System32": "C:\\y",
+   "D:/": "C:\\y"
+  },
+  {
+   "id": "resolve.abs-forward",
+   "C:/Windows": "C:\\x\\y",
+   "C:/Windows/System32": "C:\\x\\y",
+   "D:/": "C:\\x\\y"
+  },
+  {
+   "id": "resolve.drive-only",
+   "C:/Windows": "C:\\Windows",
+   "C:/Windows/System32": "C:\\Windows\\System32",
+   "D:/": "C:\\Windows\\System32"
+  },
+  {
+   "id": "resolve.drive-rel",
+   "C:/Windows": "C:\\Windows\\a",
+   "C:/Windows/System32": "C:\\Windows\\System32\\a",
+   "D:/": "C:\\Windows\\System32\\a"
+  },
+  {
+   "id": "resolve.other-drive",
+   "C:/Windows": "D:\\z",
+   "C:/Windows/System32": "D:\\z",
+   "D:/": "D:\\z"
+  },
+  {
+   "id": "resolve.root-only",
+   "C:/Windows": "C:\\",
+   "C:/Windows/System32": "C:\\",
+   "D:/": "D:\\"
+  },
+  {
+   "id": "resolve.unc",
+   "C:/Windows": "\\\\server\\share\\b",
+   "C:/Windows/System32": "\\\\server\\share\\b",
+   "D:/": "\\\\server\\share\\b"
+  },
+  {
+   "id": "resolve.unc-root-only",
+   "C:/Windows": "\\\\server\\share\\",
+   "C:/Windows/System32": "\\\\server\\share\\",
+   "D:/": "\\\\server\\share\\"
+  },
+  {
+   "id": "resolve.device",
+   "C:/Windows": "\\\\.\\PHYSICALDRIVE0",
+   "C:/Windows/System32": "\\\\.\\PHYSICALDRIVE0",
+   "D:/": "\\\\.\\PHYSICALDRIVE0"
+  },
+  {
+   "id": "resolve.long-prefix",
+   "C:/Windows": "\\\\?\\C:\\x\\y",
+   "C:/Windows/System32": "\\\\?\\C:\\x\\y",
+   "D:/": "\\\\?\\C:\\x\\y"
+  },
+  {
+   "id": "resolve.multi",
+   "C:/Windows": "C:\\a\\c",
+   "C:/Windows/System32": "C:\\a\\c",
+   "D:/": "C:\\a\\c"
+  },
+  {
+   "id": "resolve.multi-abs-wins",
+   "C:/Windows": "D:\\b",
+   "C:/Windows/System32": "D:\\b",
+   "D:/": "D:\\b"
+  },
+  {
+   "id": "resolve.up-above-root",
+   "C:/Windows": "C:\\a",
+   "C:/Windows/System32": "C:\\a",
+   "D:/": "C:\\a"
+  },
+  {
+   "id": "resolve.empty-seg",
+   "C:/Windows": "C:\\Windows",
+   "C:/Windows/System32": "C:\\Windows\\System32",
+   "D:/": "D:\\"
+  },
+  {
+   "id": "resolve.slash-only",
+   "C:/Windows": "C:\\",
+   "C:/Windows/System32": "C:\\",
+   "D:/": "D:\\"
+  },
+  {
+   "id": "resolve.reserved",
+   "C:/Windows": "C:\\Windows\\CON",
+   "C:/Windows/System32": "C:\\Windows\\System32\\CON",
+   "D:/": "D:\\CON"
+  },
+  {
+   "id": "resolve.reserved-drive",
+   "C:/Windows": "C:\\Windows\\CON",
+   "C:/Windows/System32": "C:\\Windows\\System32\\CON",
+   "D:/": "C:\\Windows\\System32\\CON"
+  },
+  {
+   "id": "normalize.empty",
+   "C:/Windows": ".",
+   "C:/Windows/System32": ".",
+   "D:/": "."
+  },
+  {
+   "id": "normalize.single-slash",
+   "C:/Windows": "\\",
+   "C:/Windows/System32": "\\",
+   "D:/": "\\"
+  },
+  {
+   "id": "normalize.single-letter",
+   "C:/Windows": "a",
+   "C:/Windows/System32": "a",
+   "D:/": "a"
+  },
+  {
+   "id": "normalize.dots",
+   "C:/Windows": "C:\\b",
+   "C:/Windows/System32": "C:\\b",
+   "D:/": "C:\\b"
+  },
+  {
+   "id": "normalize.trailing",
+   "C:/Windows": "C:\\a\\b\\",
+   "C:/Windows/System32": "C:\\a\\b\\",
+   "D:/": "C:\\a\\b\\"
+  },
+  {
+   "id": "normalize.mixed",
+   "C:/Windows": "C:\\a\\b\\c\\",
+   "C:/Windows/System32": "C:\\a\\b\\c\\",
+   "D:/": "C:\\a\\b\\c\\"
+  },
+  {
+   "id": "normalize.unc",
+   "C:/Windows": "\\\\server\\share\\",
+   "C:/Windows/System32": "\\\\server\\share\\",
+   "D:/": "\\\\server\\share\\"
+  },
+  {
+   "id": "normalize.unc-leftover",
+   "C:/Windows": "\\\\server\\share\\",
+   "C:/Windows/System32": "\\\\server\\share\\",
+   "D:/": "\\\\server\\share\\"
+  },
+  {
+   "id": "normalize.device-root",
+   "C:/Windows": "\\\\.\\PHYSICALDRIVE0",
+   "C:/Windows/System32": "\\\\.\\PHYSICALDRIVE0",
+   "D:/": "\\\\.\\PHYSICALDRIVE0"
+  },
+  {
+   "id": "normalize.long-unc",
+   "C:/Windows": "\\\\?\\UNC\\server\\share\\x",
+   "C:/Windows/System32": "\\\\?\\UNC\\server\\share\\x",
+   "D:/": "\\\\?\\UNC\\server\\share\\x"
+  },
+  {
+   "id": "normalize.reserved",
+   "C:/Windows": "CON",
+   "C:/Windows/System32": "CON",
+   "D:/": "CON"
+  },
+  {
+   "id": "normalize.reserved-drive",
+   "C:/Windows": "C:CON",
+   "C:/Windows/System32": "C:CON",
+   "D:/": "C:CON"
+  },
+  {
+   "id": "normalize.reserved-long",
+   "C:/Windows": "\\\\?\\COM1",
+   "C:/Windows/System32": "\\\\?\\COM1",
+   "D:/": "\\\\?\\COM1"
+  },
+  {
+   "id": "normalize.fake-abs-1",
+   "C:/Windows": "a:C:",
+   "C:/Windows/System32": "a:C:",
+   "D:/": "a:C:"
+  },
+  {
+   "id": "normalize.fake-abs-2",
+   "C:/Windows": "x:y:z",
+   "C:/Windows/System32": "x:y:z",
+   "D:/": "x:y:z"
+  },
+  {
+   "id": "normalize.fake-abs-3",
+   "C:/Windows": ".\\..\\C:",
+   "C:/Windows/System32": ".\\..\\C:",
+   "D:/": ".\\..\\C:"
+  },
+  {
+   "id": "normalize.drive-rel",
+   "C:/Windows": "C:a\\b",
+   "C:/Windows/System32": "C:a\\b",
+   "D:/": "C:a\\b"
+  },
+  {
+   "id": "normalize.double-slash",
+   "C:/Windows": "\\\\server\\share\\",
+   "C:/Windows/System32": "\\\\server\\share\\",
+   "D:/": "\\\\server\\share\\"
+  },
+  {
+   "id": "normalize.dots-only",
+   "C:/Windows": "..",
+   "C:/Windows/System32": "..",
+   "D:/": ".."
+  },
+  {
+   "id": "normalize.dot-only",
+   "C:/Windows": ".",
+   "C:/Windows/System32": ".",
+   "D:/": "."
+  },
+  {
+   "id": "isAbsolute.empty",
+   "C:/Windows": false,
+   "C:/Windows/System32": false,
+   "D:/": false
+  },
+  {
+   "id": "isAbsolute.drive-root",
+   "C:/Windows": true,
+   "C:/Windows/System32": true,
+   "D:/": true
+  },
+  {
+   "id": "isAbsolute.drive-only",
+   "C:/Windows": false,
+   "C:/Windows/System32": false,
+   "D:/": false
+  },
+  {
+   "id": "isAbsolute.drive-rel",
+   "C:/Windows": false,
+   "C:/Windows/System32": false,
+   "D:/": false
+  },
+  {
+   "id": "isAbsolute.slash",
+   "C:/Windows": true,
+   "C:/Windows/System32": true,
+   "D:/": true
+  },
+  {
+   "id": "isAbsolute.forward",
+   "C:/Windows": true,
+   "C:/Windows/System32": true,
+   "D:/": true
+  },
+  {
+   "id": "isAbsolute.unc",
+   "C:/Windows": true,
+   "C:/Windows/System32": true,
+   "D:/": true
+  },
+  {
+   "id": "isAbsolute.rel",
+   "C:/Windows": false,
+   "C:/Windows/System32": false,
+   "D:/": false
+  },
+  {
+   "id": "join.none",
+   "C:/Windows": ".",
+   "C:/Windows/System32": ".",
+   "D:/": "."
+  },
+  {
+   "id": "join.basic",
+   "C:/Windows": "a\\b",
+   "C:/Windows/System32": "a\\b",
+   "D:/": "a\\b"
+  },
+  {
+   "id": "join.drive",
+   "C:/Windows": "C:\\a\\b",
+   "C:/Windows/System32": "C:\\a\\b",
+   "D:/": "C:\\a\\b"
+  },
+  {
+   "id": "join.unc",
+   "C:/Windows": "\\\\server\\share\\",
+   "C:/Windows/System32": "\\\\server\\share\\",
+   "D:/": "\\\\server\\share\\"
+  },
+  {
+   "id": "join.triple-slash",
+   "C:/Windows": "\\a\\b",
+   "C:/Windows/System32": "\\a\\b",
+   "D:/": "\\a\\b"
+  },
+  {
+   "id": "join.reserved",
+   "C:/Windows": "CON\\x",
+   "C:/Windows/System32": "CON\\x",
+   "D:/": "CON\\x"
+  },
+  {
+   "id": "join.reserved-drive",
+   "C:/Windows": "C:CON\\x",
+   "C:/Windows/System32": "C:CON\\x",
+   "D:/": "C:CON\\x"
+  },
+  {
+   "id": "join.dots",
+   "C:/Windows": "b",
+   "C:/Windows/System32": "b",
+   "D:/": "b"
+  },
+  {
+   "id": "join.empty-args",
+   "C:/Windows": "a",
+   "C:/Windows/System32": "a",
+   "D:/": "a"
+  },
+  {
+   "id": "join.mixed-sep",
+   "C:/Windows": "a\\b\\c\\d",
+   "C:/Windows/System32": "a\\b\\c\\d",
+   "D:/": "a\\b\\c\\d"
+  },
+  {
+   "id": "relative.same",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "relative.case",
+   "C:/Windows": "c",
+   "C:/Windows/System32": "c",
+   "D:/": "c"
+  },
+  {
+   "id": "relative.cross-drive",
+   "C:/Windows": "D:\\b",
+   "C:/Windows/System32": "D:\\b",
+   "D:/": "D:\\b"
+  },
+  {
+   "id": "relative.up",
+   "C:/Windows": "..\\..",
+   "C:/Windows/System32": "..\\..",
+   "D:/": "..\\.."
+  },
+  {
+   "id": "relative.down",
+   "C:/Windows": "b\\c",
+   "C:/Windows/System32": "b\\c",
+   "D:/": "b\\c"
+  },
+  {
+   "id": "relative.device-root",
+   "C:/Windows": "a",
+   "C:/Windows/System32": "a",
+   "D:/": "a"
+  },
+  {
+   "id": "relative.device-root-back",
+   "C:/Windows": "..",
+   "C:/Windows/System32": "..",
+   "D:/": ".."
+  },
+  {
+   "id": "relative.rel-args",
+   "C:/Windows": "..\\b",
+   "C:/Windows/System32": "..\\b",
+   "D:/": "..\\b"
+  },
+  {
+   "id": "relative.unc",
+   "C:/Windows": "..\\b",
+   "C:/Windows/System32": "..\\b",
+   "D:/": "..\\b"
+  },
+  {
+   "id": "toNs.empty",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "toNs.drive",
+   "C:/Windows": "\\\\?\\C:\\a\\b",
+   "C:/Windows/System32": "\\\\?\\C:\\a\\b",
+   "D:/": "\\\\?\\C:\\a\\b"
+  },
+  {
+   "id": "toNs.drive-root",
+   "C:/Windows": "\\\\?\\C:\\",
+   "C:/Windows/System32": "\\\\?\\C:\\",
+   "D:/": "\\\\?\\C:\\"
+  },
+  {
+   "id": "toNs.unc",
+   "C:/Windows": "\\\\?\\UNC\\server\\share\\a",
+   "C:/Windows/System32": "\\\\?\\UNC\\server\\share\\a",
+   "D:/": "\\\\?\\UNC\\server\\share\\a"
+  },
+  {
+   "id": "toNs.long",
+   "C:/Windows": "\\\\?\\C:\\a",
+   "C:/Windows/System32": "\\\\?\\C:\\a",
+   "D:/": "\\\\?\\C:\\a"
+  },
+  {
+   "id": "toNs.device",
+   "C:/Windows": "\\\\.\\PHYSICALDRIVE0",
+   "C:/Windows/System32": "\\\\.\\PHYSICALDRIVE0",
+   "D:/": "\\\\.\\PHYSICALDRIVE0"
+  },
+  {
+   "id": "toNs.rel",
+   "C:/Windows": "\\\\?\\C:\\Windows\\a\\b",
+   "C:/Windows/System32": "\\\\?\\C:\\Windows\\System32\\a\\b",
+   "D:/": "\\\\?\\D:\\a\\b"
+  },
+  {
+   "id": "dirname.empty",
+   "C:/Windows": ".",
+   "C:/Windows/System32": ".",
+   "D:/": "."
+  },
+  {
+   "id": "dirname.slash",
+   "C:/Windows": "/",
+   "C:/Windows/System32": "/",
+   "D:/": "/"
+  },
+  {
+   "id": "dirname.drive-root",
+   "C:/Windows": "C:\\",
+   "C:/Windows/System32": "C:\\",
+   "D:/": "C:\\"
+  },
+  {
+   "id": "dirname.drive-only",
+   "C:/Windows": "C:",
+   "C:/Windows/System32": "C:",
+   "D:/": "C:"
+  },
+  {
+   "id": "dirname.drive-rel",
+   "C:/Windows": "C:",
+   "C:/Windows/System32": "C:",
+   "D:/": "C:"
+  },
+  {
+   "id": "dirname.file",
+   "C:/Windows": "C:\\a",
+   "C:/Windows/System32": "C:\\a",
+   "D:/": "C:\\a"
+  },
+  {
+   "id": "dirname.trailing",
+   "C:/Windows": "C:\\a",
+   "C:/Windows/System32": "C:\\a",
+   "D:/": "C:\\a"
+  },
+  {
+   "id": "dirname.forward",
+   "C:/Windows": "C:/a",
+   "C:/Windows/System32": "C:/a",
+   "D:/": "C:/a"
+  },
+  {
+   "id": "dirname.unc-root",
+   "C:/Windows": "\\\\server\\share",
+   "C:/Windows/System32": "\\\\server\\share",
+   "D:/": "\\\\server\\share"
+  },
+  {
+   "id": "dirname.unc-deep",
+   "C:/Windows": "\\\\server\\share\\a",
+   "C:/Windows/System32": "\\\\server\\share\\a",
+   "D:/": "\\\\server\\share\\a"
+  },
+  {
+   "id": "dirname.rel",
+   "C:/Windows": "a",
+   "C:/Windows/System32": "a",
+   "D:/": "a"
+  },
+  {
+   "id": "dirname.dot",
+   "C:/Windows": ".",
+   "C:/Windows/System32": ".",
+   "D:/": "."
+  },
+  {
+   "id": "basename.empty",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "basename.file",
+   "C:/Windows": "b.txt",
+   "C:/Windows/System32": "b.txt",
+   "D:/": "b.txt"
+  },
+  {
+   "id": "basename.suffix",
+   "C:/Windows": "b",
+   "C:/Windows/System32": "b",
+   "D:/": "b"
+  },
+  {
+   "id": "basename.suffix-mismatch",
+   "C:/Windows": "b.txt",
+   "C:/Windows/System32": "b.txt",
+   "D:/": "b.txt"
+  },
+  {
+   "id": "basename.suffix-eq",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "basename.trailing",
+   "C:/Windows": "b",
+   "C:/Windows/System32": "b",
+   "D:/": "b"
+  },
+  {
+   "id": "basename.drive-only",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "basename.root",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "basename.dots",
+   "C:/Windows": "..",
+   "C:/Windows/System32": "..",
+   "D:/": ".."
+  },
+  {
+   "id": "basename.unc",
+   "C:/Windows": "share",
+   "C:/Windows/System32": "share",
+   "D:/": "share"
+  },
+  {
+   "id": "extname.empty",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "extname.file",
+   "C:/Windows": ".txt",
+   "C:/Windows/System32": ".txt",
+   "D:/": ".txt"
+  },
+  {
+   "id": "extname.multi-dot",
+   "C:/Windows": ".gz",
+   "C:/Windows/System32": ".gz",
+   "D:/": ".gz"
+  },
+  {
+   "id": "extname.dotfile",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "extname.dots",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "extname.trailing-dot",
+   "C:/Windows": ".",
+   "C:/Windows/System32": ".",
+   "D:/": "."
+  },
+  {
+   "id": "extname.drive",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "extname.dir-dot",
+   "C:/Windows": "",
+   "C:/Windows/System32": "",
+   "D:/": ""
+  },
+  {
+   "id": "format.dir-base",
+   "C:/Windows": "C:\\a\\b.txt",
+   "C:/Windows/System32": "C:\\a\\b.txt",
+   "D:/": "C:\\a\\b.txt"
+  },
+  {
+   "id": "format.root-base",
+   "C:/Windows": "C:\\b.txt",
+   "C:/Windows/System32": "C:\\b.txt",
+   "D:/": "C:\\b.txt"
+  },
+  {
+   "id": "format.name-ext",
+   "C:/Windows": "C:\\a\\b.txt",
+   "C:/Windows/System32": "C:\\a\\b.txt",
+   "D:/": "C:\\a\\b.txt"
+  },
+  {
+   "id": "format.ext-dot",
+   "C:/Windows": "C:\\a\\b.txt",
+   "C:/Windows/System32": "C:\\a\\b.txt",
+   "D:/": "C:\\a\\b.txt"
+  },
+  {
+   "id": "format.only-name",
+   "C:/Windows": "b",
+   "C:/Windows/System32": "b",
+   "D:/": "b"
+  },
+  {
+   "id": "format.unc",
+   "C:/Windows": "\\\\server\\share\\b",
+   "C:/Windows/System32": "\\\\server\\share\\b",
+   "D:/": "\\\\server\\share\\b"
+  },
+  {
+   "id": "parse.empty",
+   "C:/Windows": {
+    "root": "",
+    "dir": "",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "C:/Windows/System32": {
+    "root": "",
+    "dir": "",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "D:/": {
+    "root": "",
+    "dir": "",
+    "base": "",
+    "ext": "",
+    "name": ""
+   }
+  },
+  {
+   "id": "parse.file",
+   "C:/Windows": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "C:/Windows/System32": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "D:/": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   }
+  },
+  {
+   "id": "parse.drive-root",
+   "C:/Windows": {
+    "root": "C:\\",
+    "dir": "C:\\",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "C:/Windows/System32": {
+    "root": "C:\\",
+    "dir": "C:\\",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "D:/": {
+    "root": "C:\\",
+    "dir": "C:\\",
+    "base": "",
+    "ext": "",
+    "name": ""
+   }
+  },
+  {
+   "id": "parse.drive-only",
+   "C:/Windows": {
+    "root": "C:",
+    "dir": "C:",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "C:/Windows/System32": {
+    "root": "C:",
+    "dir": "C:",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "D:/": {
+    "root": "C:",
+    "dir": "C:",
+    "base": "",
+    "ext": "",
+    "name": ""
+   }
+  },
+  {
+   "id": "parse.trailing",
+   "C:/Windows": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": "b",
+    "ext": "",
+    "name": "b"
+   },
+   "C:/Windows/System32": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": "b",
+    "ext": "",
+    "name": "b"
+   },
+   "D:/": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": "b",
+    "ext": "",
+    "name": "b"
+   }
+  },
+  {
+   "id": "parse.unc",
+   "C:/Windows": {
+    "root": "\\\\server\\share\\",
+    "dir": "\\\\server\\share\\a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "C:/Windows/System32": {
+    "root": "\\\\server\\share\\",
+    "dir": "\\\\server\\share\\a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "D:/": {
+    "root": "\\\\server\\share\\",
+    "dir": "\\\\server\\share\\a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   }
+  },
+  {
+   "id": "parse.unc-root",
+   "C:/Windows": {
+    "root": "\\\\server\\share",
+    "dir": "\\\\server\\share",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "C:/Windows/System32": {
+    "root": "\\\\server\\share",
+    "dir": "\\\\server\\share",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "D:/": {
+    "root": "\\\\server\\share",
+    "dir": "\\\\server\\share",
+    "base": "",
+    "ext": "",
+    "name": ""
+   }
+  },
+  {
+   "id": "parse.forward",
+   "C:/Windows": {
+    "root": "C:/",
+    "dir": "C:/a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "C:/Windows/System32": {
+    "root": "C:/",
+    "dir": "C:/a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "D:/": {
+    "root": "C:/",
+    "dir": "C:/a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   }
+  },
+  {
+   "id": "parse.dotfile",
+   "C:/Windows": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": ".gitignore",
+    "ext": "",
+    "name": ".gitignore"
+   },
+   "C:/Windows/System32": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": ".gitignore",
+    "ext": "",
+    "name": ".gitignore"
+   },
+   "D:/": {
+    "root": "C:\\",
+    "dir": "C:\\a",
+    "base": ".gitignore",
+    "ext": "",
+    "name": ".gitignore"
+   }
+  },
+  {
+   "id": "parse.slash-only",
+   "C:/Windows": {
+    "root": "/",
+    "dir": "/",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "C:/Windows/System32": {
+    "root": "/",
+    "dir": "/",
+    "base": "",
+    "ext": "",
+    "name": ""
+   },
+   "D:/": {
+    "root": "/",
+    "dir": "/",
+    "base": "",
+    "ext": "",
+    "name": ""
+   }
+  },
+  {
+   "id": "parse.rel",
+   "C:/Windows": {
+    "root": "",
+    "dir": "a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "C:/Windows/System32": {
+    "root": "",
+    "dir": "a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   },
+   "D:/": {
+    "root": "",
+    "dir": "a",
+    "base": "b.txt",
+    "ext": ".txt",
+    "name": "b"
+   }
+  }
+ ]
+}

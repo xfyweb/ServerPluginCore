@@ -344,7 +344,7 @@ test.block();
 
 /**
  * 为什么这条测试必须**在真沙箱里**跑：`process.nextTick` 与 `events` 的 rejection 路由都用了
- * `queueMicrotask`，而 QuickJS **没有**这个全局（实测见 `_audit/quickjs-globals-probe.mjs`）。
+ * `queueMicrotask`，而 QuickJS **没有**这个全局（实测见 `tools/probes/quickjs-globals-probe.mjs`）。
  * 在宿主 realm 里跑的差分测试（Node 有 queueMicrotask）**测不出**这个缺口——
  * 这正是"仿真模块的验收必须至少有一条真沙箱冒烟"的理由。
  */

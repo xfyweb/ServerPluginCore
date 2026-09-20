@@ -38,7 +38,7 @@ after(() => rmSync(DATA_DIR, { recursive: true, force: true }));
  * 沙箱里看到的路径一律是 **POSIX 形态**（`\` → `/`）：沙箱路径语义固定 posix，而 Windows 开发机上
  * 数据目录是 `C:\Users\…`。两边不一致就会出错——实测：`tmp` 包拿
  * `path.relative(fs.realpathSync(os.tmpdir()), …)` 一对，反斜杠立刻算出 `../C:\…` 然后自己抛错
- * （见 `core/emulated-env.ts` 与 `_audit/dep-smoke.mts`）。所以断言也按沙箱形态写。
+ * （见 `core/emulated-env.ts` 与 `tools/smoke/dep-smoke.mts`）。所以断言也按沙箱形态写。
  *
  * ⚠️ **不要补前导 `/`**：那会让宿主侧 `path.resolve('/C:/…')` 解析成 `<cwd>/C:/…` ⇒ `validatePath`
  * 判越界、真实依赖 EACCES（试过，`fast-glob` 的 scandir 立刻炸）。
@@ -128,7 +128,7 @@ describe('仿真 node:os —— 仿真平台跟随宿主（P2-E / 模型 B）vs 
     assert.equal(Array.isArray(list), true);
     assert.equal(list.length, nodeOs.availableParallelism()); // 与 availableParallelism 同源
     assert.equal(list.length, osShim.availableParallelism());
-    // 形状与基线一致：三个键、times 五个计数（真值 `_audit/os-cpus-truth.json`，v22.22.1）
+    // 形状与基线一致：三个键、times 五个计数（真值 `tools/truth/data/os-cpus-truth.json`，v22.22.1）
     assert.deepEqual(Object.keys(list[0]), ['model', 'speed', 'times']);
     assert.deepEqual(Object.keys(list[0].times), ['user', 'nice', 'sys', 'idle', 'irq']);
     // 身份字段不给宿主真值（不给型号、也不编造主频）
@@ -144,7 +144,7 @@ describe('仿真 node:os —— 仿真平台跟随宿主（P2-E / 模型 B）vs 
 
   it('os.constants 分四组，且与**平台真值**逐项一致（分组按真值给，不靠前缀猜）', () => {
     const c = osShim.constants as Record<string, Record<string, number>>;
-    // 分组形状：linux 有 dlopen 组，**win32 没有**（真值：`_audit/const-win.json` 的 os.dlopen 为空）
+    // 分组形状：linux 有 dlopen 组，**win32 没有**（真值：`tools/truth/data/const-win.json` 的 os.dlopen 为空）
     const expectedGroups = process.platform === 'win32'
       ? ['dlopen', 'errno', 'priority', 'signals']
       : ['dlopen', 'errno', 'priority', 'signals'];

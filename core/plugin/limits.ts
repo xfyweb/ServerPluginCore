@@ -3,18 +3,19 @@
 // 为什么单列一个文件：这四条防线是"插件不能拖垮核心"的全部依据，且都是纯逻辑
 // （装配 + deadline + 泵循环），可独立单测，不必起沙箱。
 //
-// QuickJS 语义（本地 C 源码 `D:\git-repo\quickjs` 核实，非推测）：
-//   · 中断轮询：`js_poll_interrupts()` 计数器初值 `JS_INTERRUPT_COUNTER_INIT = 10000`（quickjs.c:512），
-//     解释器主循环每个 opcode/跳转都轮询（quickjs.c:18824-18917），函数调用入口也轮询（quickjs.c:17787）；
+// QuickJS 语义（**核实的是我们发行的那份引擎** `vendor/quickjs/quickjs.c`，非推测；
+// ⚠️ **不是**上游那个独立的 `quickjs/` 克隆——两者行号相差数百行；基准见仓库根 `AGENTS.md` §3.1）：
+//   · 中断轮询：`js_poll_interrupts()` 计数器初值 `JS_INTERRUPT_COUNTER_INIT = 10000`（`vendor/quickjs/quickjs.c:445`），
+//     解释器主循环每个 opcode/跳转都轮询（`vendor/quickjs/quickjs.c:18430-18523`），函数调用入口也轮询（`vendor/quickjs/quickjs.c:17393`）；
 //   · **中断异常不可捕获**：`JS_ThrowInterrupted()` = InternalError("interrupted") +
-//     `JS_SetUncatchableException(ctx, TRUE)`（quickjs.c:7858-7862）；catch 展开时看到
-//     `current_exception_is_uncatchable` 就跳过 CATCH 分支（quickjs.c:20670）→ 插件 try/catch 吞不掉超时；
-//     该标志在下一次 `JS_Throw` 时复位（quickjs.c:7360），不会污染后续异常；
-//   · **job 泵也被中断覆盖**：`JS_ExecutePendingJob`（quickjs.c:2303）直接调 `job_func`（异步续体），
+//     `JS_SetUncatchableException(ctx, TRUE)`（`vendor/quickjs/quickjs.c:7442-7446`）；catch 展开时看到
+//     `current_exception_is_uncatchable` 就跳过 CATCH 分支（`vendor/quickjs/quickjs.c:20086`）→ 插件 try/catch 吞不掉超时；
+//     该标志在下一次 `JS_Throw` 时复位（`vendor/quickjs/quickjs.c:6944`），不会污染后续异常；
+//   · **job 泵也被中断覆盖**：`JS_ExecutePendingJob`（`vendor/quickjs/quickjs.c:1875`）直接调 `job_func`（异步续体），
 //     走的还是解释器 → 无限微任务链同样会被 deadline 打断，不会把核心挂死；
-//   · 内存超限：分配返回 NULL → `JS_ThrowOutOfMemory` → InternalError("out of memory")（quickjs.c:2160/7778-7787），
+//   · 内存超限：分配返回 NULL → `JS_ThrowOutOfMemory` → InternalError("out of memory")（`vendor/quickjs/quickjs.c:1741`/`:1221-1230`），
 //     **可捕获**（未设 uncatchable）——所以只能按 message 归类，插件吞掉它也不会突破上限（分配照样失败）；
-//   · 栈超限：`JS_ThrowStackOverflow` → InternalError("stack overflow")（quickjs.c:7789-7792）。
+//   · 栈超限：`JS_ThrowStackOverflow` → InternalError("stack overflow")（`vendor/quickjs/quickjs.c:7373-7376`）。
 //
 // 三者都表现为 InternalError + 不同的 message，因此宿主侧归类就是"看 name + message"。
 import { isFail, type QuickJSRuntime } from 'quickjs-emscripten';

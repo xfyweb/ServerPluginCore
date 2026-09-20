@@ -67,9 +67,17 @@ QuickJSRuntime(rt = ...) not found when trying to free HostRef(id = -2147483648)
 
 ### 上游状态
 
-- [Issue #261](https://github.com/justjake/quickjs-emscripten/issues/261)：OPEN（2026-04 创建），多人受影响，**无修复 PR、无维护者回复**；
+- [Issue #261](https://github.com/justjake/quickjs-emscripten/issues/261)：**OPEN**（标题即本问题）。
+  ⚠️ **但它已经有修复、并且已合并** —— PR [#256](https://github.com/justjake/quickjs-emscripten/pull/256)
+  `fix: swap runtime disposal ordering in asyncify variant`，**2026-07-23 合并进 `main`**（`4ccfbf5af`）。
+  issue 之所以还 OPEN，是因为**该修复尚未随版本发布**（最新 tag 仍是 `v0.32.0`）。
 - 同断言另有 [Issue #269](https://github.com/justjake/quickjs-emscripten/issues/269) / [#235](https://github.com/justjake/quickjs-emscripten/issues/235)（promise job + 大量对象的另一触发路径，未来 async 场景需关注）；
-- 上游维护不活跃（0.32.0 为 latest）→ **本地补丁是唯一可靠方案**。
+- **上游状态：在维护，只是发版慢** —— 不要把"不发版"当成"不维护"。事实（截至 2026-09-20）：
+  最近一次合并是 **2026-07-23**（#256 / #267）；`v0.32.0` 发布于 **2026-02-16**，至今约 7 个月未发新版；
+  历史上也有更长间隔（`0.31.0` 2024-09-07 → `0.32.0` 2026-02-16，约 17 个月）。
+  ⇒ 本地补丁是**当前唯一可用**的办法（因为修复还没发布），**但它是权宜之计而不是"唯一可靠方案"**：
+  **上游一发版就应当换回官方依赖、删掉补丁**。（对应地，我们的 fork 用 `main` 逐字镜像上游 + 改动全放 `spc`，
+  就是为了"上游一发版就能轻松 rebase 跟上"。）
 
 ### 本地修复（pnpm patch）
 

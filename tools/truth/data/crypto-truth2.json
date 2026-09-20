@@ -1,0 +1,307 @@
+{
+ "getCurves": [
+  "Oakley-EC2N-3",
+  "Oakley-EC2N-4",
+  "SM2",
+  "brainpoolP160r1",
+  "brainpoolP160t1",
+  "brainpoolP192r1",
+  "brainpoolP192t1",
+  "brainpoolP224r1",
+  "brainpoolP224t1",
+  "brainpoolP256r1",
+  "brainpoolP256t1",
+  "brainpoolP320r1",
+  "brainpoolP320t1",
+  "brainpoolP384r1",
+  "brainpoolP384t1",
+  "brainpoolP512r1",
+  "brainpoolP512t1",
+  "c2pnb163v1",
+  "c2pnb163v2",
+  "c2pnb163v3",
+  "c2pnb176v1",
+  "c2pnb208w1",
+  "c2pnb272w1",
+  "c2pnb304w1",
+  "c2pnb368w1",
+  "c2tnb191v1",
+  "c2tnb191v2",
+  "c2tnb191v3",
+  "c2tnb239v1",
+  "c2tnb239v2",
+  "c2tnb239v3",
+  "c2tnb359v1",
+  "c2tnb431r1",
+  "prime192v1",
+  "prime192v2",
+  "prime192v3",
+  "prime239v1",
+  "prime239v2",
+  "prime239v3",
+  "prime256v1",
+  "secp112r1",
+  "secp112r2",
+  "secp128r1",
+  "secp128r2",
+  "secp160k1",
+  "secp160r1",
+  "secp160r2",
+  "secp192k1",
+  "secp224k1",
+  "secp224r1",
+  "secp256k1",
+  "secp384r1",
+  "secp521r1",
+  "sect113r1",
+  "sect113r2",
+  "sect131r1",
+  "sect131r2",
+  "sect163k1",
+  "sect163r1",
+  "sect163r2",
+  "sect193r1",
+  "sect193r2",
+  "sect233k1",
+  "sect233r1",
+  "sect239k1",
+  "sect283k1",
+  "sect283r1",
+  "sect409k1",
+  "sect409r1",
+  "sect571k1",
+  "sect571r1",
+  "wap-wsg-idm-ecid-wtls1",
+  "wap-wsg-idm-ecid-wtls10",
+  "wap-wsg-idm-ecid-wtls11",
+  "wap-wsg-idm-ecid-wtls12",
+  "wap-wsg-idm-ecid-wtls3",
+  "wap-wsg-idm-ecid-wtls4",
+  "wap-wsg-idm-ecid-wtls5",
+  "wap-wsg-idm-ecid-wtls6",
+  "wap-wsg-idm-ecid-wtls7",
+  "wap-wsg-idm-ecid-wtls8",
+  "wap-wsg-idm-ecid-wtls9"
+ ],
+ "getFips": {
+  "ok": true,
+  "value": 0
+ },
+ "constantsRaw": {
+  "OPENSSL_VERSION_NUMBER": 810549328,
+  "SSL_OP_ALL": 2147485776,
+  "SSL_OP_ALLOW_NO_DHE_KEX": 1024,
+  "SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION": 262144,
+  "SSL_OP_CIPHER_SERVER_PREFERENCE": 4194304,
+  "SSL_OP_CISCO_ANYCONNECT": 32768,
+  "SSL_OP_COOKIE_EXCHANGE": 8192,
+  "SSL_OP_CRYPTOPRO_TLSEXT_BUG": 2147483648,
+  "SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS": 2048,
+  "SSL_OP_LEGACY_SERVER_CONNECT": 4,
+  "SSL_OP_NO_COMPRESSION": 131072,
+  "SSL_OP_NO_ENCRYPT_THEN_MAC": 524288,
+  "SSL_OP_NO_QUERY_MTU": 4096,
+  "SSL_OP_NO_RENEGOTIATION": 1073741824,
+  "SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION": 65536,
+  "SSL_OP_NO_SSLv2": 0,
+  "SSL_OP_NO_SSLv3": 33554432,
+  "SSL_OP_NO_TICKET": 16384,
+  "SSL_OP_NO_TLSv1": 67108864,
+  "SSL_OP_NO_TLSv1_1": 268435456,
+  "SSL_OP_NO_TLSv1_2": 134217728,
+  "SSL_OP_NO_TLSv1_3": 536870912,
+  "SSL_OP_PRIORITIZE_CHACHA": 2097152,
+  "SSL_OP_TLS_ROLLBACK_BUG": 8388608,
+  "ENGINE_METHOD_RSA": 1,
+  "ENGINE_METHOD_DSA": 2,
+  "ENGINE_METHOD_DH": 4,
+  "ENGINE_METHOD_RAND": 8,
+  "ENGINE_METHOD_EC": 2048,
+  "ENGINE_METHOD_CIPHERS": 64,
+  "ENGINE_METHOD_DIGESTS": 128,
+  "ENGINE_METHOD_PKEY_METHS": 512,
+  "ENGINE_METHOD_PKEY_ASN1_METHS": 1024,
+  "ENGINE_METHOD_ALL": 65535,
+  "ENGINE_METHOD_NONE": 0,
+  "DH_CHECK_P_NOT_SAFE_PRIME": 2,
+  "DH_CHECK_P_NOT_PRIME": 1,
+  "DH_UNABLE_TO_CHECK_GENERATOR": 4,
+  "DH_NOT_SUITABLE_GENERATOR": 8,
+  "RSA_PKCS1_PADDING": 1,
+  "RSA_NO_PADDING": 3,
+  "RSA_PKCS1_OAEP_PADDING": 4,
+  "RSA_X931_PADDING": 5,
+  "RSA_PKCS1_PSS_PADDING": 6,
+  "RSA_PSS_SALTLEN_DIGEST": -1,
+  "RSA_PSS_SALTLEN_MAX_SIGN": -2,
+  "RSA_PSS_SALTLEN_AUTO": -2,
+  "defaultCoreCipherList": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
+  "TLS1_VERSION": 769,
+  "TLS1_1_VERSION": 770,
+  "TLS1_2_VERSION": 771,
+  "TLS1_3_VERSION": 772,
+  "POINT_CONVERSION_COMPRESSED": 2,
+  "POINT_CONVERSION_UNCOMPRESSED": 4,
+  "POINT_CONVERSION_HYBRID": 6,
+  "defaultCipherList": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA"
+ },
+ "webcryptoKeys": [
+  "constructor",
+  "getRandomValues",
+  "randomUUID",
+  "subtle"
+ ],
+ "subtleKeys": [],
+ "hashOneShot": {
+  "hex": {
+   "ok": true,
+   "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+  },
+  "base64": {
+   "ok": true,
+   "value": "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+  },
+  "buffer": {
+   "ok": true,
+   "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+  },
+  "md5": {
+   "ok": true,
+   "value": "900150983cd24fb0d6963f7d28e17f72"
+  },
+  "badAlg": {
+   "ok": false,
+   "name": "Error",
+   "message": "Digest method nope is not supported"
+  }
+ },
+ "randomInt": {
+  "sync": {
+   "ok": true,
+   "value": 5
+  },
+  "syncRange": {
+   "ok": true,
+   "value": 5
+  },
+  "badRange": {
+   "ok": false,
+   "name": "RangeError",
+   "code": "ERR_OUT_OF_RANGE",
+   "message": "The value of \"max\" is out of range. It must be greater than the value of \"min\" (5). Received 5"
+  },
+  "float": {
+   "ok": false,
+   "name": "TypeError",
+   "code": "ERR_INVALID_ARG_TYPE",
+   "message": "The \"max\" argument must be a safe integer. Received type number (1.5)"
+  },
+  "callback": "undefined"
+ },
+ "randomFill": {
+  "sync": {
+   "ok": true,
+   "value": true
+  },
+  "offset": {
+   "ok": true,
+   "value": 8
+  },
+  "asyncKind": "function"
+ },
+ "decipher": {
+  "happy": {
+   "ok": true,
+   "value": "hello dotenv"
+  },
+  "badKeyLength": {
+   "ok": false,
+   "name": "RangeError",
+   "code": "ERR_CRYPTO_INVALID_KEYLEN",
+   "message": "Invalid key length"
+  },
+  "badIvLength": {
+   "ok": true,
+   "keys": [
+    "_decoder",
+    "_options"
+   ],
+   "type": "Decipheriv"
+  },
+  "badAlg": {
+   "ok": false,
+   "name": "Error",
+   "code": "ERR_CRYPTO_UNKNOWN_CIPHER",
+   "message": "Unknown cipher"
+  },
+  "badTag": {
+   "ok": false,
+   "name": "Error",
+   "message": "Unsupported state or unable to authenticate data"
+  },
+  "updateReturnType": {
+   "ok": true,
+   "bytes": "68656c6c6f20646f74656e76"
+  },
+  "noTag": {
+   "ok": false,
+   "name": "Error",
+   "message": "Unsupported state or unable to authenticate data"
+  },
+  "finalTwice": {
+   "ok": false,
+   "name": "Error",
+   "code": "ERR_CRYPTO_INVALID_STATE",
+   "message": "Invalid state"
+  },
+  "setTagAfterFinal": {
+   "ok": false,
+   "name": "Error",
+   "message": "Unsupported state or unable to authenticate data"
+  },
+  "outputEncoding": {
+   "ok": true,
+   "value": "68656c6c6f20646f74656e76"
+  },
+  "protoKeys": {
+   "ok": true,
+   "array": [
+    "_flush",
+    "_transform",
+    "constructor",
+    "final",
+    "setAAD",
+    "setAuthTag",
+    "setAutoPadding",
+    "update"
+   ]
+  }
+ },
+ "hashProtoKeys": {
+  "ok": true,
+  "array": [
+   "_flush",
+   "_transform",
+   "constructor",
+   "copy",
+   "digest",
+   "update"
+  ]
+ },
+ "hashOwnKeys": {
+  "ok": true,
+  "array": [
+   "_options"
+  ]
+ },
+ "hmacProtoKeys": {
+  "ok": true,
+  "array": [
+   "_flush",
+   "_transform",
+   "constructor",
+   "digest",
+   "update"
+  ]
+ }
+}

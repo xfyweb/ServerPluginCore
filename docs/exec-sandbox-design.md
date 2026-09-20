@@ -110,8 +110,8 @@ Landlock 需内核 5.13+。2020 年前后的 LTS（Ubuntu 20.04 GA=5.4、Debian 
 
 源码依据：
 
-- 轮询点：`js_poll_interrupts()` 递减计数器（初值 `JS_INTERRUPT_COUNTER_INIT = 10000`，`quickjs.c:512`、`:7877-7884`），覆盖解释器主循环每个 opcode/跳转（`:18824-18917`）、函数调用入口（`:17787`）、字符串/大对象操作（`:16373`/`:16443`）；**正则引擎有独立计数器**（`libregexp.c:63`），回溯里也轮询。
-- 中断异常**不可捕获**：`JS_ThrowInterrupted()` = `InternalError("interrupted")` + `JS_SetUncatchableException(ctx, TRUE)`（`quickjs.c:7858-7862`）→ 插件无法 `try/catch` 吞掉超时。
+- 轮询点：`js_poll_interrupts()` 递减计数器（初值 `JS_INTERRUPT_COUNTER_INIT = 10000`，`vendor/quickjs/quickjs.c:445`、`:7461-7468`），覆盖解释器主循环每个 opcode/跳转（`:18430-18523`）、函数调用入口（`:17393`）、`for-in` 枚举循环（`:15976`/`:16046`）；**正则引擎有独立计数器**（`vendor/quickjs/libregexp.c:63`），回溯里也轮询。
+- 中断异常**不可捕获**：`JS_ThrowInterrupted()` = `InternalError("interrupted")` + `JS_SetUncatchableException(ctx, TRUE)`（`vendor/quickjs/quickjs.c:7442-7446`）→ 插件无法 `try/catch` 吞掉超时。
 - 内存：`JS_SetMemoryLimit` 写 `malloc_limit`（`:2221-2224`），分配/重分配时检查（`:2160`、`:2198`），超限先 GC（`js_trigger_gc`）再抛 `out of memory`（`:7783`）。
 - job 队列：promise 续体是 job，需宿主驱动（`JS_ExecutePendingJob`，`:2303`）——`executePendingJobs()` 不跑，`await` 之后的代码就不执行。
 

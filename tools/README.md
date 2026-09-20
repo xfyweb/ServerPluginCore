@@ -128,6 +128,112 @@ node node_modules/tsx/dist/cli.mjs tools/bridge-bench.mjs --json
 
 > **改动二进制通道后必须重跑本工具**。数字变了要能解释：换机器、改实现、还是误伤？
 
+## 仿真层的真值链与验收工具（2026-09-20 从开发工作区迁入）
+
+> 这一批原先住在仓库外的开发工作区（`_audit/`）里，于是仓库文档只能引用一个**读者看不到的路径**——
+> 等于"结论可复核"这句话打了折。它们本来就是**结论的来源**，迁进来引用才成立。
+>
+> 路径统一由 **`tools/paths.mjs`** 提供：仓库内的位置自己推（任何人克隆都能跑）；
+> **仓库外的两样**——判卷人 node、依赖取样目录——默认按工作区布局猜，可用环境变量覆盖：
+> `SPC_JUDGE_NODE` / `SPC_SURVEY_DIR`。
+
+### `tools/batteries/` —— 仿真层差分验收
+
+| 工具 | 干什么 | 判据 |
+|---|---|---|
+| `deep-cmp-battery.mjs` | 深比较/断言语义：**68 组 × 3 操作**，与宿主 Node 对跑 | **0 分歧** |
+| `events-battery.mjs` | `events` 语义：**34 组剧本**（error/close/drain 序列、监听器时序…） | **0 分歧** |
+
+```bash
+node tools/batteries/deep-cmp-battery.mjs
+node tools/batteries/events-battery.mjs
+```
+
+这两个是**改动仿真层后必跑的**（见 `AGENTS.md` §4.1 的验收三件套）。
+
+### `tools/truth/` —— 真值采集 / 生成 / 校验链
+
+**为什么有它**：`core/sandbox-modules/*.js` 里那些"勿手改"的表（常量、errno、crypto、zlib、fs 错误文案）
+**不是手抄的**，是"在基线 node v22.22.1 上跑出来、再生成进去"的。这条链就是它们的出处：
+
+```
+采集（在基线环境里跑，输出到 data/）
+  dump-const.mjs        ← 在 WSL 里跑，取 Linux 的 os.constants
+  dump-const-win.mjs    ← 用判卷人 node.exe 跑，取 Windows 的
+  fs-url-truth.mjs / fs-shape-truth.mjs / crypto-truth{,2}.mjs / zlib-truth.mjs /
+  qs-shape-truth.mjs / qs-unescbuf-truth.mjs / os-cpus-truth.mjs      ← 各模块的运行值
+  path-win32-cases.mjs → path-win32-cases-win.mjs                     ← path.win32 的用例与 Windows 侧真值
+        ↓  产物都在 tools/truth/data/
+生成（把真值写进仿真模块，**改表走这条链，别手抄**）
+  gen-constants2.mjs → core/sandbox-modules/node-constants.js
+  gen-fs-tables.mjs / splice-fs-tables.mjs → node-fs.js
+  gen-crypto-tables.mjs / gen-zlib-tables2.mjs / wire-zlib.mjs → node-crypto.js / node-zlib.js
+        ↓
+校验
+  verify-constants.mjs / cmp-constants.mjs          ← 逐键核对
+  path-win32-diff.mjs                               ← 与真 Windows 的差异（判据：363/366 + 3 条记账边界）
+```
+
+**判卷人**（Windows 侧真值）是官方 `node-v22.22.1-win-x64` 解压出的 `node.exe`——**仓库外**，需自行下载。
+
+### `tools/smoke/dep-smoke.mts` —— 真实依赖冒烟
+
+用 esbuild 把**真实 npm 包**的 `node:*` 引用**内联成仿真源码**，再放进真沙箱跑，看它是"能跑"还是"卡在缺全局"。
+
+```bash
+# 需要取样目录（同 dep-survey.mjs 的 ../_deps-survey）
+node node_modules/tsx/dist/cli.mjs tools/smoke/dep-smoke.mts all
+```
+
+靶子产物写在 `tools/smoke/bundles/`（**生成物，已 gitignore**）。
+当前基线 **11 个靶子里 10 个过**，唯一不过的是 `graceful-fs`（装载期 `no setter for property`，
+处置方案在构建层，见 `docs/module-emulation-design.md` §14.8）。
+
+### `tools/probes/` —— 被文档引用的证据探针
+
+这些是"一次性调查"留下的探针，但**被设计文档当作证据引用**（"QuickJS 没有这批全局"就出自
+`quickjs-globals-probe.mjs`），所以一并迁进来，让引用可复核：
+
+| 探针 | 证明了什么 |
+|---|---|
+| `quickjs-globals-probe.mjs` | QuickJS 原生缺哪些标准全局（`TextEncoder`/`queueMicrotask`/`URL`…） |
+| `diag-fastglob.mts` | `path` 固定 posix 会把 `C:/a/b` 认成相对路径（→ 现在认盘符） |
+| `probe-dump-keys.mts` | 沙箱里错误对象的键面（`params.stack` 那条诊断链） |
+| `hostref-probe.mts` | HostRef 身份的 v1 探针（归因已被 `hostref-probe2` 修正，留作对照） |
+
+> ⚠️ 这些**不是回归门禁**，别加进 `pnpm test`；它们的作用是"结论的保质期到了就重跑一遍"。
+
+### `tools/check-line-refs.mjs` —— 注释里引的行号，还是当初那一行吗？
+
+**为什么有它**：注释引"源码路径:行号"是为了标明**结论的出处**，而行号是**提交相对**的 ——
+源码一升级就静默烂掉，而且没有任何东西会报错。实测过一次：`quickjs.c` 的两个副本
+（我们发行的 vendored 那份 vs 上游独立克隆）**同一断言行号相差 428 行**，照错的那份去核对会找不到东西。
+
+```bash
+node tools/check-line-refs.mjs            # 体检（与快照比）
+node tools/check-line-refs.mjs --update   # 核对无误后，把当前状态记成新快照
+node tools/check-line-refs.mjs --json
+```
+
+**它判"变了没有"，不判"对不对"** —— 这不是偷懒，是试过两种启发式都很糟：
+太松的（随便撞上一个标识符就算过）连"把 `:445` 改成 `:1445`（那行只有一个 `}`）"都抓不住；
+太紧的会把正确的引用判成漂移（锚常常是散文级的，如"内存超限那个检查"）。
+所以：**正确性靠人核一次并 `--update` 记快照，之后由它守住"别再悄悄变"**。
+
+判据是「引用处 + 目标文件」上的**签名列表**（每处引用 = `行号:该行内容哈希`）——
+改行号、或目标行内容变了，都会报"变了"，并给出前后对比。缺失的源码树会**跳过并说明**。
+
+**三类基准**（详见仓库根 `AGENTS.md` §3.1）：
+
+| 引用的源码 | 默认去哪找 | 覆盖用 |
+|---|---|---|
+| `vendor/quickjs/*.c` | `<仓库>/../quickjs-emscripten-spc/vendor/quickjs` | `SPC_VENDOR_ROOT` |
+| Node 源码 `lib/*.js` | `<仓库>/../node` | `SPC_NODE_ROOT` |
+| 第三方包 | 仓库自己的 `node_modules` + `../_deps-survey/node_modules` | — |
+
+> ⚠️ 它**不是回归门禁**（别加进 `pnpm test`）：报"变了"意味着**结论的保质期到了**，
+> 应当去看一眼那一行、决定是"源码升了该重核"还是"引用该更新"，然后 `--update`。
+
 ## 写新工具的约定
 
 1. **先说清它回答什么问题**——文件头注释里写，否则半年后没人知道它为什么存在；

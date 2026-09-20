@@ -1,5 +1,6 @@
 # 插件生命周期与装载器设计
 
+
 - 状态：**已落地（P1.5a，2026-09）**——交付物与**实现偏差**见 §14
 - 关联：ADR-001（零环境权力）、ADR-005（沙箱与插件类型）、api-contract §4/§4.1（方法组）、exec-sandbox-design §3（运行时限额）、plugin-signature-design §9（安装记录）、ROADMAP P1.5
 - 定位：**冻结"什么是插件、宿主怎么把它跑起来"这份契约**。构建层（打包/签名产物）、开发工具（`new`/`dev`）都以本文件为输入。
@@ -174,9 +175,9 @@ export async function stop(ctx: PluginContext) {
 
 ### 4.2 QuickJS 语义（本地源码实测，`D:\git-repo\quickjs`）
 
-- **中断轮询**：`js_poll_interrupts()` 递减计数器，初值 `JS_INTERRUPT_COUNTER_INIT = 10000`（`quickjs.c:512`、`:7877-7884`）；轮询点覆盖解释器主循环每个 opcode/跳转（`:18824-18917`）、函数调用入口（`:17787`）、字符串/大对象操作（`:16373`/`:16443`）。
-- **正则回溯也会被打断**：`libregexp.c:63` 有独立的 `INTERRUPT_COUNTER_INIT`（回溯循环里轮询）→ `(a+)+$` 这类灾难性回溯拦得住。
-- **中断异常不可捕获**：`JS_ThrowInterrupted()` = `InternalError("interrupted")` + **`JS_SetUncatchableException(ctx, TRUE)`**（`quickjs.c:7858-7862`）→ 插件**无法 `try/catch` 吞掉超时**。
+- **中断轮询**：`js_poll_interrupts()` 递减计数器，初值 `JS_INTERRUPT_COUNTER_INIT = 10000`（`vendor/quickjs/quickjs.c:445`、`:7461-7468`）；轮询点覆盖解释器主循环每个 opcode/跳转（`:18430-18523`）、函数调用入口（`:17393`）、`for-in` 枚举循环（`:15976`/`:16046`）。
+- **正则回溯也会被打断**：`vendor/quickjs/libregexp.c:63` 有独立的 `INTERRUPT_COUNTER_INIT`（回溯循环里轮询）→ `(a+)+$` 这类灾难性回溯拦得住。
+- **中断异常不可捕获**：`JS_ThrowInterrupted()` = `InternalError("interrupted")` + **`JS_SetUncatchableException(ctx, TRUE)`**（`vendor/quickjs/quickjs.c:7442-7446`）→ 插件**无法 `try/catch` 吞掉超时**。
 - **内存**：`JS_SetMemoryLimit` 写 `malloc_limit`（`:2221-2224`），分配/重分配时检查（`:2160`、`:2198`），超限先 GC（`js_trigger_gc`）再抛 `out of memory`（`:7783`）。
 - **栈**：`JS_SetMaxStackSize`（`:2850`）。
 
@@ -189,7 +190,7 @@ VM 在等宿主 Promise 时处于 asyncify 挂起状态、**不执行代码**，
 
 ### 4.4 job 泵（async 钩子能跑起来的前提）
 
-QuickJS 里 promise 的续体是 job，需要宿主驱动（`JS_ExecutePendingJob`，`quickjs.c:2303`）：
+QuickJS 里 promise 的续体是 job，需要宿主驱动（`JS_ExecutePendingJob`，`vendor/quickjs/quickjs.c:1875`）：
 
 ```
 调用钩子 → 等它返回 → 若返回值是 Promise，则循环：
@@ -465,7 +466,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 
 1. **`fs.write.home` 已删除**：它是 spike 遗留（写用户主目录）。P1.5 起 fs 的作用域**统一为插件数据目录**，`fs.read.data` / `fs.write.data` 两个点覆盖读写。
 2. **`fs.write` 会补建缺失的父目录**——但**仅当最近的已存在祖先的 realpath 落在数据目录内**，建完再走一遍完整校验。没有这一步插件写不了 `backups/2026-09-18/x.tar`（F6 会报 `PARENT_MISSING`），而按日期分目录是最基本的用法。这不是放松 F6：它防的是逃逸，不是禁止插件建自己的目录树。
-3. **求值必须显式按模块**：`evalCodeAsync(src, 'plugin.js', { type: 'module' })`。不传 options 时 quickjs-emscripten 会打开模块自动探测，而 `JS_DetectModule` **只看第一个 token**（`quickjs.c:23792`）；esbuild 会把导出提升到文件末尾（`function init(){}` + `export { init };`），首 token 变成 `function` → 判成脚本模式 → `unsupported keyword: export`。**没有 `import` 的插件会全部加载失败**——这是实测抓到的真 bug，不是理论风险。
+3. **求值必须显式按模块**：`evalCodeAsync(src, 'plugin.js', { type: 'module' })`。不传 options 时 quickjs-emscripten 会打开模块自动探测，而 `JS_DetectModule` **只看第一个 token**（`vendor/quickjs/quickjs.c:23205`）；esbuild 会把导出提升到文件末尾（`function init(){}` + `export { init };`），首 token 变成 `function` → 判成脚本模式 → `unsupported keyword: export`。**没有 `import` 的插件会全部加载失败**——这是实测抓到的真 bug，不是理论风险。
 4. **WASM 模块实例不可复用**：`setMaxStackSize` 在 asyncify 变体上是**整个模块的全局副作用**（上游 d.ts 明确写了会一并调整 `ASYNCIFY_STACK_SIZE`）。复用模块换速度 = 让栈限额退化成进程级且互相污染。实测复用只省 12ms/沙箱，不值得，因此**每个沙箱各起一份模块实例**。
 5. **新增错误码**（§5 的清单未列，但实现需要）：`PLUGIN_STACK_LIMIT`（栈超限，与内存分开）、`PLUGIN_STOP_FAILED`、`PLUGIN_TIMER_FAILED`、`PLUGIN_TIMER_TIMEOUT`、`PLUGIN_DISPOSED`、`GRANT_WILDCARD`（管理员写 `kv.*` 时给专门的提示，比"权限被拒绝"准确）、`CONFIG_INVALID`、`RECORDS_INVALID`、`KV_INVALID`/`KV_KEY_INVALID`/`KV_VALUE_INVALID`/`KV_VALUE_TOO_LARGE`/`KV_LIMIT_EXCEEDED`/`KV_TOTAL_LIMIT_EXCEEDED`、`NOT_A_FILE`、`NOT_A_DIRECTORY`、`EVENT_TOPIC_NOT_DECLARED`、`TIMER_INTERVAL_INVALID`/`TIMER_HANDLER_INVALID`/`TIMER_UNAVAILABLE`/`TIMER_LIMIT_EXCEEDED`。全部只增不改，中英文都补了词条。
 6. **新增配置项 `timerTimeoutMs`**（默认 5000）：定时器回调与钩子享受同样的限额，需要一个 deadline 来源；§10 的键表没列它。

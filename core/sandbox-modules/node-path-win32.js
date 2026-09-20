@@ -6,7 +6,7 @@
 //
 // 为什么不直接抄 Node 的源码：它依赖 `primordials`、`internal/constants`、`internal/validators` 与
 // `process.env['=C:']`（每盘一个 cwd）——搬进来会带一整串沙箱里没有的内部设施。所以**照算法重写**，
-// 验收方式是**与真 Windows 上的 node v22.22.1 逐条差分**（`_audit/path-win32-diff.mjs`）。
+// 验收方式是**与真 Windows 上的 node v22.22.1 逐条差分**（`tools/truth/path-win32-diff.mjs`）。
 //
 // 边界（写清楚免得被当 bug）：
 //   1. **盘符相对 cwd 走沙箱 cwd**：Node 用 `process.cwd()` + `process.env['=C:']`；沙箱里

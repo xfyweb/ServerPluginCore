@@ -12,7 +12,7 @@
 //
 // 为什么改：虚拟根 `/` 会让 `path.resolve('out/a')` 得到 `/out/a`，再交给 fs 就是**作用域外** →
 // EACCES。真实依赖正是这么写的——`mkdirp/dist/mjs/path-arg.js:11` 就是 `path = resolve(path)`，
-// 于是 `mkdirp.sync('out/a/b/c')` 直接 EACCES（实测：`_audit/dep-smoke.mts`）。
+// 于是 `mkdirp.sync('out/a/b/c')` 直接 EACCES（实测：`tools/smoke/dep-smoke.mts`）。
 // 已知边界：Windows 开发机上数据目录是 `D:\…` 形态，这里统一换成 `/` 分隔（`D:/…`）让 POSIX 的
 // `dirname`/`join`/`..` 都能用；但 `posixIsAbsolute('D:/…')` 仍按 POSIX 语义给 **false**（不认盘符）。
 // Linux 上（部署目标）完全自洽。
@@ -124,7 +124,7 @@ function posixJoin(...args) {
  *
  * ⚠️ 这条不是"为了兼容 Windows 顺手加的"，而是**自洽性要求**：`process.cwd()`（= 数据目录）在
  * Windows 宿主机上就是 `C:/Users/…` 这个形态，如果 `resolve` 不认它是绝对路径，就会把 cwd 再拼一次：
- * `posixResolve('C:/Users/x/tree')` → `C:/Users/x/C:/Users/x/tree`（**实测**，见 `_audit/diag-fastglob.mts`）。
+ * `posixResolve('C:/Users/x/tree')` → `C:/Users/x/C:/Users/x/tree`（**实测**，见 `tools/probes/diag-fastglob.mts`）。
  * 后果是真实依赖（`fast-glob` 拿 `path.posixResolve(task.base)` 当 glob base）算出错误的 base ⇒ 一个条目都匹配不到，
  * 而且**不报错、只给空结果**。
  *
@@ -396,7 +396,7 @@ export const delimiter = ':';
  *
  * 来历：P2-E 之前这里是一排"明确抛错"的占位（模型 A：沙箱永远假装 Linux）。
  * 现在走**模型 B（仿真平台跟随宿主）**，所以 win32 必须有真语义——见 `node-path-win32.js`，
- * 照 `node/lib/path.js` 的 win32 那半重写，由 `_audit/path-win32-diff.mjs` 与真 Windows 上的
+ * 照 `node/lib/path.js` 的 win32 那半重写，由 `tools/truth/path-win32-diff.mjs` 与真 Windows 上的
  * node v22.22.1 逐条差分。
  *
  * ⚠️ **必须惰性**：`node-path.js` ⇄ `node-path-win32.js` 是循环 import，本模块的顶层代码

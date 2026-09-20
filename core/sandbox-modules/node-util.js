@@ -4,7 +4,7 @@
 // `format`/`inspect`/`types` 收的都是**沙箱值**（对象、闭包、原型、循环引用）。交给宿主只能传 JSON
 // ——原型、getter、Map/Set、循环引用全丢，那正是"假等/假值"这类静默 bug 的温床。
 // 唯一走宿主代工的是 `TextEncoder`/`TextDecoder`：QuickJS **没有**这两个全局（实测见
-// `_audit/quickjs-globals-probe.mjs`），而编解码保真本来就该交给宿主（§3.2.2 的三条理由）。
+// `tools/probes/quickjs-globals-probe.mjs`），而编解码保真本来就该交给宿主（§3.2.2 的三条理由）。
 //
 // **已知边界**（写在这里免得被当 bug）：
 //   · `inspect` 是**结构子集**，不追求与 Node 逐字符相同（缩进/换行/颜色排版不复刻）；

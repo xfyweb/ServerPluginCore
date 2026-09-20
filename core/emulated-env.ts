@@ -35,7 +35,7 @@ export type EmulatedPlatform = 'linux' | 'win32';
 /** 平台三元组：`platform` / `EOL` / `devNull`——**必须一起选**，不许半跟 */
 const PLATFORM_TRAITS: Record<EmulatedPlatform, { eol: string; devNull: string }> = {
   linux: { eol: '\n', devNull: '/dev/null' },
-  // 真值来源：Windows v22.22.1 实跑（`_audit/const-win.json` 的 `facts`）
+  // 真值来源：Windows v22.22.1 实跑（`tools/truth/data/const-win.json` 的 `facts`）
   win32: { eol: '\r\n', devNull: '\\\\.\\nul' },
 };
 

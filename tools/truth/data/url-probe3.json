@@ -1,0 +1,328 @@
+[
+  {
+    "label": "idna_compare",
+    "value": [
+      {
+        "h": "ÄÖÜ.com",
+        "legacy": "xn--4ca0bs.com",
+        "dascii": "xn--4ca0bs.com",
+        "same": true
+      },
+      {
+        "h": "a_b.com",
+        "legacy": "a_b.com",
+        "dascii": "a_b.com",
+        "same": true
+      },
+      {
+        "h": "ex ample.com",
+        "legacy": "ex",
+        "dascii": "",
+        "same": false
+      },
+      {
+        "h": "xn--fiq228c.com",
+        "legacy": "xn--fiq228c.com",
+        "dascii": "xn--fiq228c.com",
+        "same": true
+      },
+      {
+        "h": "a..b",
+        "legacy": "a..b",
+        "dascii": "a..b",
+        "same": true
+      },
+      {
+        "h": "-a.com",
+        "legacy": "-a.com",
+        "dascii": "-a.com",
+        "same": true
+      },
+      {
+        "h": "a-.com",
+        "legacy": "a-.com",
+        "dascii": "a-.com",
+        "same": true
+      },
+      {
+        "h": "中文.com",
+        "legacy": "xn--fiq228c.com",
+        "dascii": "xn--fiq228c.com",
+        "same": true
+      },
+      {
+        "h": "a%b.com",
+        "legacy": "a",
+        "dascii": "",
+        "same": false
+      },
+      {
+        "h": "a\tb.com",
+        "legacy": "ab.com",
+        "dascii": "ab.com",
+        "same": true
+      },
+      {
+        "h": "a\u0000b.com",
+        "legacy": "ERR:ERR_INVALID_URL",
+        "dascii": "",
+        "same": false
+      },
+      {
+        "h": "xn--a.com",
+        "legacy": "ERR:ERR_INVALID_URL",
+        "dascii": "",
+        "same": false
+      },
+      {
+        "h": "A.COM",
+        "legacy": "a.com",
+        "dascii": "a.com",
+        "same": true
+      },
+      {
+        "h": "aaaaaaaaaaaa…(304)",
+        "legacy": "",
+        "dascii": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+        "same": false
+      },
+      {
+        "h": "ünïcödé.example",
+        "legacy": "xn--ncd-dma1a7bzb.example",
+        "dascii": "xn--ncd-dma1a7bzb.example",
+        "same": true
+      },
+      {
+        "h": "a b",
+        "legacy": "a",
+        "dascii": "",
+        "same": false
+      },
+      {
+        "h": "%41.com",
+        "legacy": "",
+        "dascii": "a.com",
+        "same": false
+      }
+    ]
+  },
+  {
+    "label": "sp_sort_stable",
+    "value": "a=2&a=4&b=1&b=3"
+  },
+  {
+    "label": "sp_sort_return"
+  },
+  {
+    "label": "sp_delete_two_arg",
+    "value": "a=1"
+  },
+  {
+    "label": "sp_has_two_arg",
+    "value": [
+      true,
+      false,
+      true
+    ]
+  },
+  {
+    "label": "sp_missing_args_append",
+    "value": "ERR_MISSING_ARGS|The \"name\" and \"value\" arguments must be specified"
+  },
+  {
+    "label": "sp_missing_args_get",
+    "value": "ERR_MISSING_ARGS|The \"name\" argument must be specified"
+  },
+  {
+    "label": "sp_missing_args_delete",
+    "value": "ERR_MISSING_ARGS|The \"name\" argument must be specified"
+  },
+  {
+    "label": "sp_bad_tuple",
+    "value": "ERR_INVALID_TUPLE|Each query pair must be an iterable [name, value] tuple"
+  },
+  {
+    "label": "sp_bad_tuple2",
+    "value": "ERR_INVALID_TUPLE|Each query pair must be an iterable [name, value] tuple"
+  },
+  {
+    "label": "sp_pair_null",
+    "value": "ERR_INVALID_TUPLE|Each query pair must be an iterable [name, value] tuple"
+  },
+  {
+    "label": "sp_bad_callback",
+    "value": "ERR_INVALID_ARG_TYPE|The \"callback\" argument must be of type function. Received type number (1)"
+  },
+  {
+    "label": "sp_iter_tag",
+    "value": {
+      "tag": "[object URLSearchParams Iterator]",
+      "proto": "iter",
+      "selfIter": true,
+      "next": "{\"value\":[\"a\",\"1\"],\"done\":false}",
+      "done": "{\"done\":true}"
+    }
+  },
+  {
+    "label": "sp_searchparams_setter",
+    "value": "ERR:TypeError|Cannot set property searchParams of [object URL] which has only a getter"
+  },
+  {
+    "label": "url_parse_noargs",
+    "value": "ERR:ERR_MISSING_ARGS|The \"url\" argument must be specified"
+  },
+  {
+    "label": "sp_string_lone_surrogate",
+    "value": {
+      "s": "%EF%BF%BD=1",
+      "k": 1
+    }
+  },
+  {
+    "label": "sp_percent_malformed",
+    "value": "a=%25zz"
+  },
+  {
+    "label": "sp_pct_incomplete",
+    "value": "a=%EF%BF%BD|�"
+  },
+  {
+    "label": "u_href_setter_invalid",
+    "error": {
+      "name": "TypeError",
+      "code": "ERR_INVALID_URL",
+      "message": "Invalid URL"
+    }
+  },
+  {
+    "label": "u_pathname_setter_query",
+    "value": "http://x/c%3Fd?b=1"
+  },
+  {
+    "label": "u_search_empties",
+    "value": "http://x/a"
+  },
+  {
+    "label": "u_search_just_question",
+    "value": "http://x/a?"
+  },
+  {
+    "label": "u_hash_just_hash",
+    "value": "http://x/a#"
+  },
+  {
+    "label": "u_base_url_instance",
+    "value": "http://x/c"
+  },
+  {
+    "label": "u_base_urlsearchparams",
+    "value": "ERR:ERR_INVALID_URL"
+  },
+  {
+    "label": "u_tojson_json",
+    "value": "{\"u\":\"http://x/a?b=1#f\"}"
+  },
+  {
+    "label": "legacy_query_decode",
+    "value": {
+      "a": "�",
+      "b": "%zz",
+      "c": " ",
+      "d": "+",
+      "e": ""
+    }
+  },
+  {
+    "label": "legacy_query_repeat",
+    "value": {
+      "b": [
+        "1",
+        "2",
+        "3"
+      ]
+    }
+  },
+  {
+    "label": "legacy_query_empty_pairs",
+    "value": {
+      "a": "1",
+      "b": "2",
+      "": "c"
+    }
+  },
+  {
+    "label": "legacy_format_query_array",
+    "value": "http://x/a?b=1&b=2"
+  },
+  {
+    "label": "legacy_format_query_str",
+    "value": "http://x/a"
+  },
+  {
+    "label": "legacy_format_query_empty",
+    "value": "http://x"
+  },
+  {
+    "label": "legacy_format_query_space",
+    "value": "http://x/a?b=x%20y"
+  },
+  {
+    "label": "legacy_format_null",
+    "value": "ERR_INVALID_ARG_TYPE|The \"urlObject\" argument must be one of type object or string. Received null"
+  },
+  {
+    "label": "legacy_format_auth_escape",
+    "value": "http://a%20b%40c@x"
+  },
+  {
+    "label": "legacy_format_no_query_obj",
+    "value": "http://x/a?b=1"
+  },
+  {
+    "label": "legacy_parse_plus_path",
+    "value": "/a+b"
+  },
+  {
+    "label": "legacy_parse_tab",
+    "value": "http://x/a"
+  },
+  {
+    "label": "legacy_parse_leading_space",
+    "value": "http://x/a"
+  },
+  {
+    "label": "legacy_parse_backslash",
+    "value": "http://x/a"
+  },
+  {
+    "label": "legacy_parse_href_roundtrip",
+    "value": [
+      "http://u:p@x:8080/a/b?c=1#f",
+      "http://u:p@x:8080/a/b?c=1#f"
+    ]
+  },
+  {
+    "label": "legacy_Url_format_hash_only",
+    "value": "#f"
+  },
+  {
+    "label": "legacy_resolveObject_result_type",
+    "value": true
+  },
+  {
+    "label": "legacy_parse_percent_host",
+    "value": ""
+  },
+  {
+    "label": "legacy_parse_ipv6_bad",
+    "value": "ERR:ERR_INVALID_URL|Invalid URL"
+  },
+  {
+    "label": "legacy_parse_long_host",
+    "value": ""
+  },
+  {
+    "label": "legacy_domainToUnicode_missing",
+    "value": "ERR_MISSING_ARGS|The \"domain\" argument must be specified"
+  }
+]

@@ -3,7 +3,7 @@
 // 判卷人有三个，各管一段（照 emulation-os-process.test.ts / emulation-fs.test.ts 的分工）：
 //   1. **宿主 Node**：平台无关的面逐条差分对跑——宿主通道用的是**真的宿主 API**
 //      （`buildHostApi` + 一个只做"取参 / JSON 化 / 错误信封"三件事的假桥），宿主实现一行都不重写；
-//   2. **v22.22.1 真值**（`_audit/fs-url-truth.json`，WSL node v22.22.1 实测 + `_audit/url-probe*.json`）：
+//   2. **v22.22.1 真值**（`tools/truth/data/fs-url-truth.json`，WSL node v22.22.1 实测 + `tools/truth/data/url-probe*.json`）：
 //      仿真基线固定 v22.22.1，宿主 v24 在个别地方已经偏离（最典型的是 `URLPattern` 进了导出面、
 //      非法端口从"当路径段"改成抛错）。凡是与平台无关的那些值，直接把录下来的真值写死在这里断言——
 //      这台开发机是 Windows，拿宿主当判卷人在这些点上会得出错误结论；
@@ -107,7 +107,7 @@ function diff(label: string, mine: () => unknown, theirs: () => unknown): void {
 // 导出面 + 文件 URL（POSIX 基线）
 // ─────────────────────────────────────────────────────────────
 describe('仿真 node:url —— 导出面', () => {
-  it('导出键与 v22.22.1 一致（真值：_audit/fs-url-truth.json 的 urlExportKeys）', () => {
+  it('导出键与 v22.22.1 一致（真值：tools/truth/data/fs-url-truth.json 的 urlExportKeys）', () => {
     // 与 v22.22.1 对齐而不是与宿主对齐：宿主 v24 多了一个 `URLPattern`
     // （它是独立的内置绑定，Node 在 v24 才挂到 url 模块上），仿真基线里没有它。
     assert.deepStrictEqual(Object.keys(U).sort(), [
@@ -140,7 +140,7 @@ describe('仿真 node:url —— 导出面', () => {
 
 describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，真值表逐条）', () => {
   // 绝对路径的结果**与平台无关**（我们的 resolve 固定 posix），所以这些真值在任何宿主上都成立：
-  // 出处 _audit/fs-url-truth.json + _audit/url-probe2.json（WSL node v22.22.1）。
+  // 出处 tools/truth/data/fs-url-truth.json + tools/truth/data/url-probe2.json（WSL node v22.22.1）。
   const PTF_TRUTH: Array<[string, string]> = [
     ['/tmp/a b#c.txt', 'file:///tmp/a%20b%23c.txt'],
     ['/', 'file:///'],
@@ -150,7 +150,7 @@ describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，
     ['/tmp/😀.txt', 'file:///tmp/%F0%9F%98%80.txt'],
     ['/tmp/a%20b.txt', 'file:///tmp/a%2520b.txt'],
     ['/tmp/a\\b', 'file:///tmp/a%5Cb'],
-    // 逐字符验过 0x01–0x7F（_audit 探针）：这 15 个 + C0 控制符 + 0x7F 会被**预转义**，
+    // 逐字符验过 0x01–0x7F（开发工作区的探针实测）：这 15 个 + C0 控制符 + 0x7F 会被**预转义**，
     // 剩下的交给宿主解析器。少了预转义表，`~`/`|`/`^` 这些就会原样留在 href 里。
     ['/tmp/a~b|c^d`e{f}g[h]i<j>k"l', 'file:///tmp/a%7Eb%7Cc%5Ed%60e%7Bf%7Dg%5Bh%5Di%3Cj%3Ek%22l'],
     ['/tmp/a\u0001b\u007fc', 'file:///tmp/a%01b%7Fc'],
@@ -170,7 +170,7 @@ describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，
   });
 
   it('fileURLToPath：真值表的四种错误与三条成功路径', () => {
-    // 出处 _audit/fs-url-truth.json（Linux）——我们固定 posix，所以在任何宿主上都是这些值
+    // 出处 tools/truth/data/fs-url-truth.json（Linux）——我们固定 posix，所以在任何宿主上都是这些值
     assert.equal(U.fileURLToPath('file:///tmp/a%20b.txt'), '/tmp/a b.txt');
     assert.equal(U.fileURLToPath('file://localhost/tmp/x'), '/tmp/x');
     assert.equal(U.fileURLToPath('file:///C:/x/y'), '/C:/x/y');
@@ -308,7 +308,7 @@ describe('仿真 node:url —— legacy Url/parse/format/resolve', () => {
   });
 
   it('parseQueryString=true 用 querystring 语义：重复键变数组、null 原型、上限 1000', () => {
-    // 真值：_audit/url-probe3.json（重复键 / 空段 / 非 UTF-8 百分号 / 上限）
+    // 真值：tools/truth/data/url-probe3.json（重复键 / 空段 / 非 UTF-8 百分号 / 上限）
     const q = U.parse('http://x/?b=1&b=2&b=3&a=%E4&c=+&d=%2B&e', true).query;
     assert.deepStrictEqual({ ...q }, { b: ['1', '2', '3'], a: '\uFFFD', c: ' ', d: '+', e: '' });
     assert.equal(Object.getPrototypeOf(q), null, 'query 是 { __proto__: null }');
@@ -1034,7 +1034,7 @@ console.log('OBJURL ' + thrown);
       ['url.parse', 'url.encode'],
     );
     const lines = out.split('\n');
-    // 前提核对：沙箱里**没有 QuickJS 原生的** URL/URLSearchParams（探测见 `_audit/quickjs-globals-probe.mjs`）。
+    // 前提核对：沙箱里**没有 QuickJS 原生的** URL/URLSearchParams（探测见 `tools/probes/quickjs-globals-probe.mjs`）。
     // 现在 `globalThis.URL`/`URLSearchParams` 是**仿真件**（`core/sandbox.ts` 的 GLOBALS_PRELUDE 装的，
     // 与 Node 一样把 URL 暴露成标准全局）——这正是宿主编解码的必要性来源：解析跑在宿主里。
     assert.equal(lines[0], 'NATIVE function,function');

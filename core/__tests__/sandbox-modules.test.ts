@@ -207,7 +207,7 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
 
   it('相对路径按**沙箱 cwd（数据目录）**兜底——不能是虚拟根 `/`（真实依赖会撞 EACCES）', async () => {
     // 来历：`mkdirp/dist/mjs/path-arg.js` 就是 `path = resolve(path)`。用虚拟根时
-    // `resolve('out/a')` = `/out/a`，交给 fs 就是作用域外 → EACCES（`_audit/dep-smoke.mts` 实测）。
+    // `resolve('out/a')` = `/out/a`，交给 fs 就是作用域外 → EACCES（`tools/smoke/dep-smoke.mts` 实测）。
     // 现在与 `process.cwd()`、fs 的相对路径解析同源 = `__spcEnv.dataDir`。
     const prev = (globalThis as any).__spcEnv;
     try {
@@ -222,7 +222,7 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
       // **且盘符路径算绝对**——这条曾经是"已知边界"（isAbsolute 给 false），但它会让
       // `resolve('C:/…/tree')` 把 cwd 再拼一次（`C:/…/C:/…/tree`）⇒ 真实依赖（fast-glob 拿
       // `path.resolve(task.base)` 当 glob base）算出错误 base、**一个条目都匹配不到且不报错**。
-      // 实测：`_audit/diag-fastglob.mts`。所以现在认盘符（Linux 部署上这条分支不触发）。
+      // 实测：`tools/probes/diag-fastglob.mts`。所以现在认盘符（Linux 部署上这条分支不触发）。
       (globalThis as any).__spcEnv = JSON.stringify({ dataDir: 'D:\\spc\\data' });
       const winFresh = await loadShimFresh('node-path.js');
       assert.equal(winFresh.resolve('a'), 'D:/spc/data/a');
@@ -259,7 +259,7 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
 
   it('`path.win32` 的真语义有一条**本地判卷人**：与真 Windows node 的差分脚本', () => {
     // 这里只钉几个"最容易被顺手改坏"的点；完整差分（366 组）在
-    // `_audit/path-win32-diff.mjs`（判卷人 = `_tools/node-v22.22.1-win-x64/node.exe`）
+    // `tools/truth/path-win32-diff.mjs`（判卷人 = `_tools/node-v22.22.1-win-x64/node.exe`）
     assert.equal(shim.win32.resolve('C:/x/../y'), 'C:\\y');
     assert.equal(shim.win32.normalize('C:/a//b/./c/'), 'C:\\a\\b\\c\\');
     assert.equal(shim.win32.isAbsolute('C:a'), false); // 盘符**相对**路径不是绝对
@@ -893,7 +893,7 @@ describe('仿真 node:path/win32 —— 真实现（P2-E）', async () => {
     // ⚠️ 这条用例以前断言的是"每个方法都抛 ERR_NOT_SUPPORTED_IN_SANDBOX"（模型 A 的占位）。
     // P2-E 换成模型 B 之后 win32 必须有真语义，所以改成**与宿主 Node 的 win32 比**。
     // 注意：`node:path.win32` 在**任何**平台上都可用（它是纯算法），所以这里在 Linux CI 上也有判卷人。
-    // cwd 相关的用例不在这里比（我们与宿主的 cwd 不同），那部分交给 `_audit/path-win32-diff.mjs`。
+    // cwd 相关的用例不在这里比（我们与宿主的 cwd 不同），那部分交给 `tools/truth/path-win32-diff.mjs`。
     const portable: Array<[string, unknown[]]> = [
       ['normalize', ['C:/a//b/./c/']],
       ['normalize', ['C:\\a\\..\\..\\b']],
@@ -1491,7 +1491,7 @@ describe('仿真 node:constants', async () => {
   });
 
   it('**两张平台表都在，且按 `__spcEnv.platform` 选**（P2-E 模型 B，离线可跑）', async () => {
-    // 判据取 Windows v22.22.1 的真值（`_audit/const-win.json`）——**不依赖判卷人在场**：
+    // 判据取 Windows v22.22.1 的真值（`tools/truth/data/const-win.json`）——**不依赖判卷人在场**：
     // 那几个值是编译期定的，写死在用例里正好当"表没被改坏"的守门人。
     const prev = (globalThis as any).__spcEnv;
     try {
@@ -1697,7 +1697,7 @@ describe('仿真 node:assert —— 与 node:assert 对齐', async () => {
     // URL：Node 是**整体比 `href`**（`comparisons.js:409-412`），不是当普通对象逐键比。
     // 少了这条分支，`deepStrictEqual(两个不同 URL)` 会**通过**（URL 的自有键本来就没有字符串键）
     // —— 那是**静默判等**，比"少支持一个类型"危险。这条以前只在仓库外的差分电池里可见
-    // （`_audit/deep-cmp-battery.mjs` 的 A6 组一直报它），现在钉进测试。
+    // （`tools/batteries/deep-cmp-battery.mjs` 的 A6 组一直报它），现在钉进测试。
     ['主干 URL 同 href 相等', (a) => a.deepStrictEqual(new URL('https://a.example/x'), new URL('https://a.example/x'))],
     ['主干 URL 不同 href 不等', (a) => a.deepStrictEqual(new URL('https://a.example/'), new URL('https://b.example/'))],
     ['主干 URL vs 同形状普通对象', (a) => a.deepStrictEqual(new URL('https://a.example/'), { href: 'https://a.example/' })],

@@ -1,0 +1,1308 @@
+{
+  "meta": {
+    "node": "v22.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "fsConstants": {
+    "COPYFILE_EXCL": 1,
+    "COPYFILE_FICLONE": 2,
+    "COPYFILE_FICLONE_FORCE": 4,
+    "F_OK": 0,
+    "O_APPEND": 1024,
+    "O_CREAT": 64,
+    "O_DIRECT": 16384,
+    "O_DIRECTORY": 65536,
+    "O_DSYNC": 4096,
+    "O_EXCL": 128,
+    "O_NOATIME": 262144,
+    "O_NOCTTY": 256,
+    "O_NOFOLLOW": 131072,
+    "O_NONBLOCK": 2048,
+    "O_RDONLY": 0,
+    "O_RDWR": 2,
+    "O_SYNC": 1052672,
+    "O_TRUNC": 512,
+    "O_WRONLY": 1,
+    "R_OK": 4,
+    "S_IFBLK": 24576,
+    "S_IFCHR": 8192,
+    "S_IFDIR": 16384,
+    "S_IFIFO": 4096,
+    "S_IFLNK": 40960,
+    "S_IFMT": 61440,
+    "S_IFREG": 32768,
+    "S_IFSOCK": 49152,
+    "S_IRGRP": 32,
+    "S_IROTH": 4,
+    "S_IRUSR": 256,
+    "S_IRWXG": 56,
+    "S_IRWXO": 7,
+    "S_IRWXU": 448,
+    "S_IWGRP": 16,
+    "S_IWOTH": 2,
+    "S_IWUSR": 128,
+    "S_IXGRP": 8,
+    "S_IXOTH": 1,
+    "S_IXUSR": 64,
+    "UV_DIRENT_BLOCK": 7,
+    "UV_DIRENT_CHAR": 6,
+    "UV_DIRENT_DIR": 2,
+    "UV_DIRENT_FIFO": 4,
+    "UV_DIRENT_FILE": 1,
+    "UV_DIRENT_LINK": 3,
+    "UV_DIRENT_SOCKET": 5,
+    "UV_DIRENT_UNKNOWN": 0,
+    "UV_FS_COPYFILE_EXCL": 1,
+    "UV_FS_COPYFILE_FICLONE": 2,
+    "UV_FS_COPYFILE_FICLONE_FORCE": 4,
+    "UV_FS_O_FILEMAP": 0,
+    "UV_FS_SYMLINK_DIR": 1,
+    "UV_FS_SYMLINK_JUNCTION": 2,
+    "W_OK": 2,
+    "X_OK": 1
+  },
+  "systemErrorMessages": {
+    "E2BIG": {
+      "num": 7,
+      "message": "argument list too long"
+    },
+    "EACCES": {
+      "num": 13,
+      "message": "permission denied"
+    },
+    "EADDRINUSE": {
+      "num": 98,
+      "message": "address already in use"
+    },
+    "EADDRNOTAVAIL": {
+      "num": 99,
+      "message": "address not available"
+    },
+    "EAFNOSUPPORT": {
+      "num": 97,
+      "message": "address family not supported"
+    },
+    "EAGAIN": {
+      "num": 11,
+      "message": "resource temporarily unavailable"
+    },
+    "EALREADY": {
+      "num": 114,
+      "message": "connection already in progress"
+    },
+    "EBADF": {
+      "num": 9,
+      "message": "bad file descriptor"
+    },
+    "EBADMSG": {
+      "num": 74,
+      "message": "Unknown system error -74"
+    },
+    "EBUSY": {
+      "num": 16,
+      "message": "resource busy or locked"
+    },
+    "ECANCELED": {
+      "num": 125,
+      "message": "operation canceled"
+    },
+    "ECHILD": {
+      "num": 10,
+      "message": "Unknown system error -10"
+    },
+    "ECONNABORTED": {
+      "num": 103,
+      "message": "software caused connection abort"
+    },
+    "ECONNREFUSED": {
+      "num": 111,
+      "message": "connection refused"
+    },
+    "ECONNRESET": {
+      "num": 104,
+      "message": "connection reset by peer"
+    },
+    "EDEADLK": {
+      "num": 35,
+      "message": "Unknown system error -35"
+    },
+    "EDESTADDRREQ": {
+      "num": 89,
+      "message": "destination address required"
+    },
+    "EDOM": {
+      "num": 33,
+      "message": "Unknown system error -33"
+    },
+    "EDQUOT": {
+      "num": 122,
+      "message": "Unknown system error -122"
+    },
+    "EEXIST": {
+      "num": 17,
+      "message": "file already exists"
+    },
+    "EFAULT": {
+      "num": 14,
+      "message": "bad address in system call argument"
+    },
+    "EFBIG": {
+      "num": 27,
+      "message": "file too large"
+    },
+    "EHOSTUNREACH": {
+      "num": 113,
+      "message": "host is unreachable"
+    },
+    "EIDRM": {
+      "num": 43,
+      "message": "Unknown system error -43"
+    },
+    "EILSEQ": {
+      "num": 84,
+      "message": "illegal byte sequence"
+    },
+    "EINPROGRESS": {
+      "num": 115,
+      "message": "Unknown system error -115"
+    },
+    "EINTR": {
+      "num": 4,
+      "message": "interrupted system call"
+    },
+    "EINVAL": {
+      "num": 22,
+      "message": "invalid argument"
+    },
+    "EIO": {
+      "num": 5,
+      "message": "i/o error"
+    },
+    "EISCONN": {
+      "num": 106,
+      "message": "socket is already connected"
+    },
+    "EISDIR": {
+      "num": 21,
+      "message": "illegal operation on a directory"
+    },
+    "ELOOP": {
+      "num": 40,
+      "message": "too many symbolic links encountered"
+    },
+    "EMFILE": {
+      "num": 24,
+      "message": "too many open files"
+    },
+    "EMLINK": {
+      "num": 31,
+      "message": "too many links"
+    },
+    "EMSGSIZE": {
+      "num": 90,
+      "message": "message too long"
+    },
+    "EMULTIHOP": {
+      "num": 72,
+      "message": "Unknown system error -72"
+    },
+    "ENAMETOOLONG": {
+      "num": 36,
+      "message": "name too long"
+    },
+    "ENETDOWN": {
+      "num": 100,
+      "message": "network is down"
+    },
+    "ENETRESET": {
+      "num": 102,
+      "message": "Unknown system error -102"
+    },
+    "ENETUNREACH": {
+      "num": 101,
+      "message": "network is unreachable"
+    },
+    "ENFILE": {
+      "num": 23,
+      "message": "file table overflow"
+    },
+    "ENOBUFS": {
+      "num": 105,
+      "message": "no buffer space available"
+    },
+    "ENODATA": {
+      "num": 61,
+      "message": "no data available"
+    },
+    "ENODEV": {
+      "num": 19,
+      "message": "no such device"
+    },
+    "ENOENT": {
+      "num": 2,
+      "message": "no such file or directory"
+    },
+    "ENOEXEC": {
+      "num": 8,
+      "message": "exec format error"
+    },
+    "ENOLCK": {
+      "num": 37,
+      "message": "Unknown system error -37"
+    },
+    "ENOLINK": {
+      "num": 67,
+      "message": "Unknown system error -67"
+    },
+    "ENOMEM": {
+      "num": 12,
+      "message": "not enough memory"
+    },
+    "ENOMSG": {
+      "num": 42,
+      "message": "Unknown system error -42"
+    },
+    "ENOPROTOOPT": {
+      "num": 92,
+      "message": "protocol not available"
+    },
+    "ENOSPC": {
+      "num": 28,
+      "message": "no space left on device"
+    },
+    "ENOSR": {
+      "num": 63,
+      "message": "Unknown system error -63"
+    },
+    "ENOSTR": {
+      "num": 60,
+      "message": "Unknown system error -60"
+    },
+    "ENOSYS": {
+      "num": 38,
+      "message": "function not implemented"
+    },
+    "ENOTCONN": {
+      "num": 107,
+      "message": "socket is not connected"
+    },
+    "ENOTDIR": {
+      "num": 20,
+      "message": "not a directory"
+    },
+    "ENOTEMPTY": {
+      "num": 39,
+      "message": "directory not empty"
+    },
+    "ENOTSOCK": {
+      "num": 88,
+      "message": "socket operation on non-socket"
+    },
+    "ENOTSUP": {
+      "num": 95,
+      "message": "operation not supported on socket"
+    },
+    "ENOTTY": {
+      "num": 25,
+      "message": "inappropriate ioctl for device"
+    },
+    "ENXIO": {
+      "num": 6,
+      "message": "no such device or address"
+    },
+    "EOPNOTSUPP": {
+      "num": 95,
+      "message": "operation not supported on socket"
+    },
+    "EOVERFLOW": {
+      "num": 75,
+      "message": "value too large for defined data type"
+    },
+    "EPERM": {
+      "num": 1,
+      "message": "operation not permitted"
+    },
+    "EPIPE": {
+      "num": 32,
+      "message": "broken pipe"
+    },
+    "EPROTO": {
+      "num": 71,
+      "message": "protocol error"
+    },
+    "EPROTONOSUPPORT": {
+      "num": 93,
+      "message": "protocol not supported"
+    },
+    "EPROTOTYPE": {
+      "num": 91,
+      "message": "protocol wrong type for socket"
+    },
+    "ERANGE": {
+      "num": 34,
+      "message": "result too large"
+    },
+    "EROFS": {
+      "num": 30,
+      "message": "read-only file system"
+    },
+    "ESPIPE": {
+      "num": 29,
+      "message": "invalid seek"
+    },
+    "ESRCH": {
+      "num": 3,
+      "message": "no such process"
+    },
+    "ESTALE": {
+      "num": 116,
+      "message": "Unknown system error -116"
+    },
+    "ETIME": {
+      "num": 62,
+      "message": "Unknown system error -62"
+    },
+    "ETIMEDOUT": {
+      "num": 110,
+      "message": "connection timed out"
+    },
+    "ETXTBSY": {
+      "num": 26,
+      "message": "text file is busy"
+    },
+    "EWOULDBLOCK": {
+      "num": 11,
+      "message": "resource temporarily unavailable"
+    },
+    "EXDEV": {
+      "num": 18,
+      "message": "cross-device link not permitted"
+    }
+  },
+  "errorShapes": {
+    "readFile_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "open",
+        "message": "ENOENT: no such file or directory, open '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "readFile_isDir": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "EISDIR",
+        "errno": -21,
+        "syscall": "read",
+        "message": "EISDIR: illegal operation on a directory, read"
+      }
+    },
+    "readdir_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "scandir",
+        "message": "ENOENT: no such file or directory, scandir '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "readdir_isFile": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOTDIR",
+        "errno": -20,
+        "syscall": "scandir",
+        "message": "ENOTDIR: not a directory, scandir '/tmp/spc-truth-qDBtVM/a.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/a.txt"
+      }
+    },
+    "stat_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "stat",
+        "message": "ENOENT: no such file or directory, stat '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "lstat_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "lstat",
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "unlink_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "unlink",
+        "message": "ENOENT: no such file or directory, unlink '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "unlink_isDir": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "EISDIR",
+        "errno": -21,
+        "syscall": "unlink",
+        "message": "EISDIR: illegal operation on a directory, unlink '/tmp/spc-truth-qDBtVM/sub'",
+        "path": "/tmp/spc-truth-qDBtVM/sub"
+      }
+    },
+    "rmdir_nonEmpty": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOTEMPTY",
+        "errno": -39,
+        "syscall": "rmdir",
+        "message": "ENOTEMPTY: directory not empty, rmdir '/tmp/spc-truth-qDBtVM'",
+        "path": "/tmp/spc-truth-qDBtVM"
+      }
+    },
+    "rmdir_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "rmdir",
+        "message": "ENOENT: no such file or directory, rmdir '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "rmdir_missing_recursiveFalse": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "rmdir",
+        "message": "ENOENT: no such file or directory, rmdir '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "rmdir_recursiveOpt": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "lstat",
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "rm_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "lstat",
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "rm_missing_force": {
+      "ok": true
+    },
+    "rm_isDir_nonRecursive": {
+      "ok": false,
+      "error": {
+        "name": "SystemError",
+        "code": "ERR_FS_EISDIR",
+        "errno": 21,
+        "syscall": "rm",
+        "message": "Path is a directory: rm returned EISDIR (is a directory) /tmp/spc-truth-qDBtVM/sub",
+        "path": "/tmp/spc-truth-qDBtVM/sub"
+      }
+    },
+    "rm_dir_nonEmpty_nonRecursive": {
+      "ok": false,
+      "error": {
+        "name": "SystemError",
+        "code": "ERR_FS_EISDIR",
+        "errno": 21,
+        "syscall": "rm",
+        "message": "Path is a directory: rm returned EISDIR (is a directory) /tmp/spc-truth-qDBtVM",
+        "path": "/tmp/spc-truth-qDBtVM"
+      }
+    },
+    "mkdir_existing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "EEXIST",
+        "errno": -17,
+        "syscall": "mkdir",
+        "message": "EEXIST: file already exists, mkdir '/tmp/spc-truth-qDBtVM'",
+        "path": "/tmp/spc-truth-qDBtVM"
+      }
+    },
+    "mkdir_existing_recursive": {
+      "ok": true
+    },
+    "mkdir_missingParent": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "mkdir",
+        "message": "ENOENT: no such file or directory, mkdir '/tmp/spc-truth-qDBtVM/x/y'",
+        "path": "/tmp/spc-truth-qDBtVM/x/y"
+      }
+    },
+    "mkdir_missingParent_recursive": {
+      "ok": true,
+      "value": "/tmp/spc-truth-qDBtVM/x"
+    },
+    "rename_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "rename",
+        "message": "ENOENT: no such file or directory, rename '/tmp/spc-truth-qDBtVM/nope.txt' -> '/tmp/spc-truth-qDBtVM/z'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt",
+        "dest": "/tmp/spc-truth-qDBtVM/z"
+      }
+    },
+    "copyFile_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "copyfile",
+        "message": "ENOENT: no such file or directory, copyfile '/tmp/spc-truth-qDBtVM/nope.txt' -> '/tmp/spc-truth-qDBtVM/z'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt",
+        "dest": "/tmp/spc-truth-qDBtVM/z"
+      }
+    },
+    "copyFile_excl_exists": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "EEXIST",
+        "errno": -17,
+        "syscall": "copyfile",
+        "message": "EEXIST: file already exists, copyfile '/tmp/spc-truth-qDBtVM/a.txt' -> '/tmp/spc-truth-qDBtVM/a.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/a.txt",
+        "dest": "/tmp/spc-truth-qDBtVM/a.txt"
+      }
+    },
+    "access_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "access",
+        "message": "ENOENT: no such file or directory, access '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "access_missing_rw": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "access",
+        "message": "ENOENT: no such file or directory, access '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "readFile_badEncoding": {
+      "ok": false,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_VALUE",
+        "message": "The argument 'encoding' is invalid encoding. Received 'zzz'"
+      }
+    },
+    "readFile_badFlag": {
+      "ok": false,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_VALUE",
+        "message": "The argument 'flags' is invalid. Received 'zzz'"
+      }
+    },
+    "writeFile_badData": {
+      "ok": false,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE",
+        "message": "The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received type number (42)"
+      }
+    },
+    "readdir_badEncoding": {
+      "ok": false,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_VALUE",
+        "message": "The argument 'encoding' is invalid encoding. Received 'zzz'"
+      }
+    },
+    "open_badFlag": {
+      "ok": false,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_VALUE",
+        "message": "The argument 'flags' is invalid. Received 'zzz'"
+      }
+    },
+    "realpath_missing": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "lstat",
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
+        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+      }
+    },
+    "mkdtemp_missingParent": {
+      "ok": false,
+      "error": {
+        "name": "Error",
+        "code": "ENOENT",
+        "errno": -2,
+        "syscall": "mkdtemp",
+        "message": "ENOENT: no such file or directory, mkdtemp '/tmp/spc-truth-qDBtVM/nodir/p-XXXXXX'",
+        "path": "/tmp/spc-truth-qDBtVM/nodir/p-XXXXXX"
+      }
+    },
+    "mkdtemp_badPrefix": {
+      "ok": false,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE",
+        "message": "The \"prefix\" argument must be of type string or an instance of Buffer or URL. Received type number (123)"
+      }
+    }
+  },
+  "mkdirReturn": {
+    "recursive": "/tmp/spc-truth-qDBtVM/r1"
+  },
+  "openReturn": {
+    "type": "number",
+    "isInt": true
+  },
+  "url": [
+    {
+      "label": "pathToFileURL_abs_posix",
+      "value": "file:///tmp/a%20b%23c.txt"
+    },
+    {
+      "label": "pathToFileURL_rel",
+      "value": "file:///mnt/d/git-repo/rel/x.txt"
+    },
+    {
+      "label": "pathToFileURL_dot",
+      "value": "file:///mnt/d/git-repo"
+    },
+    {
+      "label": "pathToFileURL_root",
+      "value": "file:///"
+    },
+    {
+      "label": "pathToFileURL_trailingSlash",
+      "value": "file:///tmp/dir/"
+    },
+    {
+      "label": "fileURLToPath_basic",
+      "value": "/tmp/a b.txt"
+    },
+    {
+      "label": "fileURLToPath_host",
+      "value": "/tmp/x"
+    },
+    {
+      "label": "fileURLToPath_bad_host",
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_FILE_URL_HOST",
+        "message": "File URL host must be \"localhost\" or empty on linux"
+      }
+    },
+    {
+      "label": "fileURLToPath_noScheme",
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_URL",
+        "message": "Invalid URL"
+      }
+    },
+    {
+      "label": "fileURLToPath_encodedSlash",
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_FILE_URL_PATH",
+        "message": "File URL path must not include encoded / characters"
+      }
+    },
+    {
+      "label": "fileURLToPath_windowsish",
+      "value": "/C:/x/y"
+    },
+    {
+      "label": "legacy_parse_full",
+      "value": {
+        "protocol": "http:",
+        "slashes": true,
+        "auth": "u:p",
+        "host": "example.com:8080",
+        "port": "8080",
+        "hostname": "example.com",
+        "hash": "#frag",
+        "search": "?c=1&d=2",
+        "query": "c=1&d=2",
+        "pathname": "/a/b",
+        "path": "/a/b?c=1&d=2",
+        "href": "http://u:p@example.com:8080/a/b?c=1&d=2#frag"
+      }
+    },
+    {
+      "label": "legacy_parse_slashes",
+      "value": {
+        "protocol": "http:",
+        "slashes": true,
+        "auth": null,
+        "host": "example.com",
+        "port": null,
+        "hostname": "example.com",
+        "hash": null,
+        "search": null,
+        "query": null,
+        "pathname": "/a",
+        "path": "/a",
+        "href": "http://example.com/a"
+      }
+    },
+    {
+      "label": "legacy_parse_noSlashes",
+      "value": {
+        "protocol": "mailto:",
+        "slashes": null,
+        "auth": "a",
+        "host": "b.com",
+        "port": null,
+        "hostname": "b.com",
+        "hash": null,
+        "search": null,
+        "query": null,
+        "pathname": null,
+        "path": null,
+        "href": "mailto:a@b.com"
+      }
+    },
+    {
+      "label": "legacy_parse_noslash_host",
+      "value": {
+        "protocol": "http:",
+        "slashes": null,
+        "auth": null,
+        "host": null,
+        "port": null,
+        "hostname": null,
+        "hash": null,
+        "search": null,
+        "query": null,
+        "pathname": "example.com/a",
+        "path": "example.com/a",
+        "href": "http:example.com/a"
+      }
+    },
+    {
+      "label": "legacy_parse_weird",
+      "value": {
+        "protocol": "http:",
+        "slashes": true,
+        "auth": null,
+        "host": "a",
+        "port": null,
+        "hostname": "a",
+        "hash": null,
+        "search": null,
+        "query": null,
+        "pathname": "%20b/c",
+        "path": "%20b/c",
+        "href": "http://a/%20b/c"
+      }
+    },
+    {
+      "label": "legacy_parse_relative",
+      "value": {
+        "protocol": null,
+        "slashes": null,
+        "auth": null,
+        "host": null,
+        "port": null,
+        "hostname": null,
+        "hash": "#d",
+        "search": "?c",
+        "query": "c",
+        "pathname": "/a/b",
+        "path": "/a/b?c",
+        "href": "/a/b?c#d"
+      }
+    },
+    {
+      "label": "legacy_parse_hostless_path",
+      "value": {
+        "protocol": null,
+        "slashes": null,
+        "auth": null,
+        "host": null,
+        "port": null,
+        "hostname": null,
+        "hash": null,
+        "search": null,
+        "query": null,
+        "pathname": "a/b",
+        "path": "a/b",
+        "href": "a/b"
+      }
+    },
+    {
+      "label": "legacy_parse_noQueryString",
+      "value": {
+        "protocol": "http:",
+        "slashes": true,
+        "auth": null,
+        "host": "x",
+        "port": null,
+        "hostname": "x",
+        "hash": null,
+        "search": "?b=1",
+        "query": "b=1",
+        "pathname": "/a",
+        "path": "/a?b=1",
+        "href": "http://x/a?b=1"
+      }
+    },
+    {
+      "label": "legacy_parse_queryString",
+      "value": {
+        "protocol": "http:",
+        "slashes": true,
+        "auth": null,
+        "host": "x",
+        "port": null,
+        "hostname": "x",
+        "hash": null,
+        "search": "?b=1&b=2",
+        "query": {
+          "b": [
+            "1",
+            "2"
+          ]
+        },
+        "pathname": "/a",
+        "path": "/a?b=1&b=2",
+        "href": "http://x/a?b=1&b=2"
+      }
+    },
+    {
+      "label": "legacy_parse_IPv6",
+      "value": {
+        "protocol": "http:",
+        "slashes": true,
+        "auth": null,
+        "host": "[::1]:8080",
+        "port": "8080",
+        "hostname": "::1",
+        "hash": null,
+        "search": null,
+        "query": null,
+        "pathname": "/x",
+        "path": "/x",
+        "href": "http://[::1]:8080/x"
+      }
+    },
+    {
+      "label": "legacy_format_obj",
+      "value": "http://x.com/a?b=1#f"
+    },
+    {
+      "label": "legacy_format_str",
+      "value": "http://x/a"
+    },
+    {
+      "label": "legacy_format_auth_only",
+      "value": "http://u:p@x.com"
+    },
+    {
+      "label": "legacy_resolve_basic",
+      "value": "http://x/c"
+    },
+    {
+      "label": "legacy_resolve_abs",
+      "value": "https://y/z"
+    },
+    {
+      "label": "legacy_resolve_query",
+      "value": "http://x/a?r=2"
+    },
+    {
+      "label": "legacy_resolve_protorel",
+      "value": "http://y/b"
+    },
+    {
+      "label": "legacy_resolve_hash",
+      "value": "http://x/a#g"
+    },
+    {
+      "label": "legacy_urlToHttpOptions",
+      "value": {
+        "protocol": "http:",
+        "hostname": "x",
+        "hash": "#f",
+        "search": "?b=1",
+        "pathname": "/a",
+        "path": "/a?b=1",
+        "href": "http://u:p@x:8080/a?b=1#f",
+        "port": 8080,
+        "auth": "u:p"
+      }
+    },
+    {
+      "label": "WHATWG_basic",
+      "value": "http://u:p@x:8080/a?b=1#f"
+    },
+    {
+      "label": "WHATWG_components",
+      "value": {
+        "href": "http://u:p@x:8080/a/b?b=1&c=%20#f",
+        "origin": "http://x:8080",
+        "protocol": "http:",
+        "username": "u",
+        "password": "p",
+        "host": "x:8080",
+        "hostname": "x",
+        "port": "8080",
+        "pathname": "/a/b",
+        "search": "?b=1&c=%20",
+        "searchParams": "b=1&c=+",
+        "hash": "#f",
+        "json": "http://u:p@x:8080/a/b?b=1&c=%20#f"
+      }
+    },
+    {
+      "label": "WHATWG_setters",
+      "value": {
+        "href": "https://y:8080/p?q=1#h",
+        "searchParams": "q=1",
+        "afterParams": "https://y:8080/p?q=1&z=2#h",
+        "params": "q=1&z=2"
+      }
+    },
+    {
+      "label": "WHATWG_badInput",
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_URL",
+        "message": "Invalid URL"
+      }
+    },
+    {
+      "label": "WHATWG_relative",
+      "value": "http://x/c"
+    },
+    {
+      "label": "WHATWG_canParse",
+      "value": [
+        true,
+        false
+      ]
+    },
+    {
+      "label": "WHATWG_invalidSetters",
+      "value": [
+        "http://x/a",
+        "http://x/a",
+        "http://x/a"
+      ]
+    },
+    {
+      "label": "params_serialize_space",
+      "value": "a=b+c"
+    },
+    {
+      "label": "params_serialize_specials",
+      "value": "a=%21*%27%28%29%7E-._&b=%C3%A4&c=%2B%26%3D&="
+    },
+    {
+      "label": "params_parse_plus",
+      "value": [
+        [
+          "a",
+          "b c"
+        ],
+        [
+          "d",
+          " "
+        ]
+      ]
+    },
+    {
+      "label": "params_iteration",
+      "value": {
+        "size": 3,
+        "entries": [
+          [
+            "a",
+            "1"
+          ],
+          [
+            "b",
+            "2"
+          ],
+          [
+            "a",
+            "3"
+          ]
+        ],
+        "keys": [
+          "a",
+          "b",
+          "a"
+        ],
+        "values": [
+          "1",
+          "2",
+          "3"
+        ],
+        "all": [
+          "1",
+          "3"
+        ],
+        "has": true,
+        "sorted": "a=1&a=3&b=2"
+      }
+    },
+    {
+      "label": "params_mutations",
+      "value": {
+        "str": "a=9&c=x+y",
+        "size": 2,
+        "string": "a=9&c=x+y"
+      }
+    },
+    {
+      "label": "params_from_object_and_url",
+      "value": ""
+    },
+    {
+      "label": "url_export_keys",
+      "value": [
+        "URL",
+        "URLSearchParams",
+        "Url",
+        "default",
+        "domainToASCII",
+        "domainToUnicode",
+        "fileURLToPath",
+        "fileURLToPathBuffer",
+        "format",
+        "parse",
+        "pathToFileURL",
+        "resolve",
+        "resolveObject",
+        "urlToHttpOptions"
+      ]
+    },
+    {
+      "label": "legacy_Url_instanceof",
+      "value": true
+    },
+    {
+      "label": "legacy_parse_slashes_denormalized",
+      "value": "//a//b"
+    }
+  ],
+  "urlExportKeys": [
+    "URL",
+    "URLSearchParams",
+    "Url",
+    "default",
+    "domainToASCII",
+    "domainToUnicode",
+    "fileURLToPath",
+    "fileURLToPathBuffer",
+    "format",
+    "parse",
+    "pathToFileURL",
+    "resolve",
+    "resolveObject",
+    "urlToHttpOptions"
+  ],
+  "fsExportKeys": [
+    "Dir",
+    "Dirent",
+    "F_OK",
+    "FileReadStream",
+    "FileWriteStream",
+    "R_OK",
+    "ReadStream",
+    "Stats",
+    "W_OK",
+    "WriteStream",
+    "X_OK",
+    "_toUnixTimestamp",
+    "access",
+    "accessSync",
+    "appendFile",
+    "appendFileSync",
+    "chmod",
+    "chmodSync",
+    "chown",
+    "chownSync",
+    "close",
+    "closeSync",
+    "constants",
+    "copyFile",
+    "copyFileSync",
+    "cp",
+    "cpSync",
+    "createReadStream",
+    "createWriteStream",
+    "default",
+    "exists",
+    "existsSync",
+    "fchmod",
+    "fchmodSync",
+    "fchown",
+    "fchownSync",
+    "fdatasync",
+    "fdatasyncSync",
+    "fstat",
+    "fstatSync",
+    "fsync",
+    "fsyncSync",
+    "ftruncate",
+    "ftruncateSync",
+    "futimes",
+    "futimesSync",
+    "glob",
+    "globSync",
+    "lchmod",
+    "lchmodSync",
+    "lchown",
+    "lchownSync",
+    "link",
+    "linkSync",
+    "lstat",
+    "lstatSync",
+    "lutimes",
+    "lutimesSync",
+    "mkdir",
+    "mkdirSync",
+    "mkdtemp",
+    "mkdtempSync",
+    "open",
+    "openAsBlob",
+    "openSync",
+    "opendir",
+    "opendirSync",
+    "promises",
+    "read",
+    "readFile",
+    "readFileSync",
+    "readSync",
+    "readdir",
+    "readdirSync",
+    "readlink",
+    "readlinkSync",
+    "readv",
+    "readvSync",
+    "realpath",
+    "realpathSync",
+    "rename",
+    "renameSync",
+    "rm",
+    "rmSync",
+    "rmdir",
+    "rmdirSync",
+    "stat",
+    "statSync",
+    "statfs",
+    "statfsSync",
+    "symlink",
+    "symlinkSync",
+    "truncate",
+    "truncateSync",
+    "unlink",
+    "unlinkSync",
+    "unwatchFile",
+    "utimes",
+    "utimesSync",
+    "watch",
+    "watchFile",
+    "write",
+    "writeFile",
+    "writeFileSync",
+    "writeSync",
+    "writev",
+    "writevSync"
+  ],
+  "fspExportKeys": [
+    "access",
+    "appendFile",
+    "chmod",
+    "chown",
+    "constants",
+    "copyFile",
+    "cp",
+    "glob",
+    "lchmod",
+    "lchown",
+    "link",
+    "lstat",
+    "lutimes",
+    "mkdir",
+    "mkdtemp",
+    "open",
+    "opendir",
+    "readFile",
+    "readdir",
+    "readlink",
+    "realpath",
+    "rename",
+    "rm",
+    "rmdir",
+    "stat",
+    "statfs",
+    "symlink",
+    "truncate",
+    "unlink",
+    "utimes",
+    "watch",
+    "writeFile"
+  ]
+}

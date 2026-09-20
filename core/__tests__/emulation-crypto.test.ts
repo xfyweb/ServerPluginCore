@@ -307,7 +307,7 @@ describe('仿真 node:crypto —— 随机性、静态清单与有意不同', ()
   });
 
   it('静态清单按 **v22.22.1 基线**（不与宿主比：它随 OpenSSL 版本变）', () => {
-    // 出处：_audit/crypto-truth*.json（WSL node v22.22.1）
+    // 出处：tools/truth/data/crypto-truth*.json（WSL node v22.22.1）
     assert.equal(shim.getHashes().length, 52);
     assert.equal(shim.getCiphers().length, 134);
     assert.equal(shim.getCurves().length, 82);
