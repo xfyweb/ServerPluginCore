@@ -21,6 +21,44 @@
 // 运行：pnpm verify:sandbox
 
 import { newQuickJSAsyncWASMModule, Scope } from 'quickjs-emscripten';
+import { spawnSync } from 'node:child_process';
+
+// ── S8：内存增长后收尾（上游 #269）+ asyncify newContext 的包装语义 ──────────────
+// 为什么单独开子进程：命中的后果是 **WASM abort（不可 catch）**，会把本脚本一起打死，
+// 于是后面的用例与汇总全都看不到 —— 那不是"测试失败"，是"报告消失"，最难查。
+// 子进程做两件事：
+//   ① B：`newContext({ contextPointer })` 必须**包装**传入的指针，而不是新建一个 context。
+//      没修时 exit 3 立刻返回（不必等收尾 abort），诊断清楚。
+//   ② A：promise job 里分配 200k 个对象，让 WASM 内存在这**一次**调用里增长
+//      （≈16 MiB → 23 MiB），然后收尾。没修时 out 参数的视图已 detach，
+//      `ctxPtr` 读成 undefined ⇒ 凭空 newContext 一个没人释放的 context ⇒ 收尾断言 abort。
+const S8_CHILD = `
+const { newQuickJSAsyncWASMModule } = await import(process.env.SPC_VERIFY_ENGINE);
+const QuickJS = await newQuickJSAsyncWASMModule();
+const rt = QuickJS.newRuntime();
+const vm = rt.newContext();
+
+// ① B：包装语义（注意**不要** dispose wrapped：它不拥有那个 context）
+const wrapped = rt.newContext({ contextPointer: vm.ctx.value });
+if (wrapped.ctx.value !== vm.ctx.value) {
+  console.error('B 未生效：newContext({contextPointer}) 新建了 context '
+    + wrapped.ctx.value + ' ≠ ' + vm.ctx.value);
+  process.exit(3);
+}
+
+// ② A：同一个 promise job 里大量分配 + 收尾
+rt.setMemoryLimit(32 * 1024 * 1024);
+rt.setMaxStackSize(512 * 1024);
+// ⚠️ 必须 dispose 返回值：漏掉它 = 留一个未释放的 handle ⇒ 那个 promise 一直活着 ⇒
+//    收尾断言照样 abort（**另一种原因**，与本用例要测的 A 无关）。
+//    本文件第一版就漏了这行，于是把"脚本自己的泄漏"误报成了"补丁不完整"。
+const r = vm.evalCode('Promise.resolve().then(() => { const a = []; for (let i = 0; i < 200000; i++) a.push({ i }); })');
+if (r.error) { r.error.dispose(); } else { r.value.dispose(); }
+rt.executePendingJobs();
+vm.dispose();
+rt.dispose();
+console.log('S8_CLEAN_TEARDOWN');
+`;
 
 let failed = 0;
 const results = [];
@@ -106,16 +144,49 @@ await run('F fn-only', async (_rt, vm) => {
   wrapped.dispose();
 });
 
+// S8. 内存增长后收尾 + newContext 包装（子进程；见文件头的 S8_CHILD 说明）
+{
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', S8_CHILD], {
+    env: { ...process.env, SPC_VERIFY_ENGINE: import.meta.resolve('quickjs-emscripten') },
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  const out = `${child.stdout ?? ''}${child.stderr ?? ''}`;
+  if (child.status === 0 && out.includes('S8_CLEAN_TEARDOWN')) {
+    results.push('PASS: S8 gc-teardown (+ newContext 包装)');
+  } else {
+    failed++;
+    const why =
+      child.status === 3
+        ? 'B 未生效：asyncify 的 newContext 没包装 contextPointer'
+        : out.includes('Assertion failed')
+          ? 'WASM abort：内存增长后读 out 参数读到 undefined（上游 #269）'
+          : `子进程异常退出 status=${child.status} signal=${child.signal ?? '-'}`;
+    results.push(`FAIL: S8 gc-teardown -> ${why}`);
+    console.error(
+      '[S8 诊断] 子进程尾部输出：\n' +
+        out
+          .split('\n')
+          .filter((l) => l.trim() !== '')
+          .slice(-6)
+          .join('\n'),
+    );
+  }
+}
+
 console.log(results.join('\n'));
 console.log(`\n${results.length - failed}/${results.length} passed`);
 
 if (failed > 0) {
   console.error(
-    '\n[回归失败] 宿主函数相关用例 FAIL——quickjs-emscripten-core 补丁可能未生效。\n' +
+    '\n[回归失败] 用例 FAIL——quickjs-emscripten-core 补丁可能未生效。\n' +
       '检查：pnpm-workspace.yaml 的 patchedDependencies 与 patches/quickjs-emscripten-core.patch\n' +
-      '修复：pnpm install 重新应用补丁',
+      '修复：pnpm install 重新应用补丁\n' +
+      '（补丁现含三条：#256 释放顺序 / A=executePendingJobs 的 out 参数从当前堆重读 / ' +
+      'B=asyncify newContext 尊重 contextPointer；见 patches/ 与该文件头注释）',
   );
   process.exit(1);
 } else {
-  console.log('[OK] quickjs-emscripten asyncify 释放顺序补丁生效，宿主函数无泄漏。');
+  console.log('[OK] quickjs-emscripten-core 补丁生效：释放顺序（#256）、内存增长后收尾（#269/A）、'
+    + 'newContext 包装（B）与宿主函数无泄漏均通过。');
 }
