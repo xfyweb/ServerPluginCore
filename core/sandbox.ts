@@ -624,6 +624,21 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         // ③ 执行宿主实现
         try {
           const result = method.fn(...raw);
+          // ⚠️ fail-closed：宿主方法**不得**返回 Promise（thenable）。
+          // 为什么必须显式拦：`JSON.stringify(promise)` **不报错**，它给的是 `{}` ——
+          // 于是"宿主方法被写成 async"会**静默**退化成"插件收到一个空对象"，属于最难查的一类失败。
+          // ⚠️ 真异步是**另一件事**：要 Promise 通道 + 挂起语义 + 预算/并发/卸载/审计四条契约
+          //    （见 `_audit/docs/hostref-design-notes.md` §4）。在它落地之前，这里一律拒绝。
+          if (
+            result !== null &&
+            (typeof result === 'object' || typeof result === 'function') &&
+            typeof (result as { then?: unknown }).then === 'function'
+          ) {
+            throw new SpcError('INTERNAL', {
+              method: name,
+              reason: 'async-host-method-not-supported',
+            });
+          }
           // 二进制结果走 newArrayBuffer（一次拷贝）；其余仍是 JSON 文本信封。
           // 失败路径**一律**回字符串信封，于是沙箱侧可以按「ArrayBuffer = 数据 / 字符串 = 错误」区分。
           const bytes = method.binaryResult ? toExactBytes(result) : null;

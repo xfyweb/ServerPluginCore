@@ -55,6 +55,43 @@ try {
   assert.match(logs.join('\n'), /CAUGHT code=PATH_OUT_OF_SCOPE path=\/etc\/passwd/);
 });
 
+test('宿主方法返回 Promise ⇒ fail-closed（INTERNAL: async-host-method-not-supported）', async () => {
+  // 为什么必须钉住这条：宿主方法被误写成 `async` 时，`JSON.stringify(promise)` **不报错**、给的是 `{}`，
+  // 插件会**静默**收到一个空对象 —— 属"静默失败"那一类，最难查。
+  // 修复前这条必红（RAW 会是 `{}`）；修复后拿到带 code/reason 的英文错误信封。
+  const api: HostApi = {
+    'test.async': {
+      permission: 'fs.write.data', // 给一个已授予的点，确保走到"执行宿主实现"那一步
+      async fn() {
+        return { ok: true }; // 故意返回 Promise（模拟宿主实现失误）
+      },
+    },
+  };
+  const sandbox = await createSandbox(api, OPTIONS);
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  };
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+const raw = globalThis.__host['test.async']();
+console.log('RAW=' + raw);
+`,
+    );
+  } finally {
+    console.log = origLog;
+    sandbox.dispose(); // 与 D2 同理：这条路径也不许在释放时命中断言
+  }
+  const out = logs.join('\n');
+  assert.match(out, /__spcError/);
+  assert.match(out, /INTERNAL/);
+  assert.match(out, /async-host-method-not-supported/);
+  assert.doesNotMatch(out, /RAW=\{\}/); // 旧行为：静默给空对象
+});
+
 test('插件未捕获错误 → PLUGIN_LOAD_FAILED（带 cause），且 dispose 不崩（D1/D2 回归）', async () => {
   const sandbox = await createSandbox(hostApi, OPTIONS);
   await assert.rejects(
