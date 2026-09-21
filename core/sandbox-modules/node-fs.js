@@ -947,6 +947,110 @@ function ftruncateSync(fd, len) {
   withSyscall('ftruncate', undefined, undefined, () => callJson('fs.fdFtruncate', JSON.stringify(n), JSON.stringify(l)));
 }
 
+// ──────────────────────────── fd 面（回调式）────────────────────────────
+
+/**
+ * 回调式 fd 面（Node 的 error-first 约定）。两条纪律：
+ *   · **参数校验同步抛**（Node 也这样：`fs.read(fd, 'x', …)` 当场 `ERR_INVALID_ARG_TYPE`），
+ *     只有 **I/O 错误**才交给回调；
+ *   · **回调异步触发**（queueMicrotask，与文件里其它回调面一致 —— Node 的回调来自线程池）。
+ *
+ * 读写走**真异步**宿主方法（`fs.fdReadAsync`/`fs.fdWriteAsync` → 宿主的 `FileHandle` 异步 API）：
+ * 插件这边看起来还是"一次调用"，但那段时间**宿主事件循环真的没被阻塞**（asyncify 挂起，
+ * 见 `docs/plugin-lifecycle-design.md` §4.3）。open/close/fstat/fsync/ftruncate 是轻量元数据操作，
+ * 直接复用同步实现 + `callbackify` 的延迟派发。
+ */
+function readCb(fd, buffer, offset, length, position, cb) {
+  if (typeof cb !== 'function') throw invalidArgType('callback', ['function'], cb);
+  const n = assertFd(fd);
+  const off = offset === undefined ? 0 : offset;
+  const len =
+    length === undefined
+      ? ArrayBuffer.isView(buffer)
+        ? buffer.byteLength - (typeof off === 'number' ? off : 0)
+        : 0
+      : length;
+  const view = assertOffsetLength(buffer, off, len);
+  const pos = fdPositionArg(position);
+  queueMicrotask(() => {
+    try {
+      const bytes = Buffer.from(
+        callBytes(
+          'fs.fdReadAsync',
+          JSON.stringify(n),
+          JSON.stringify(view.length),
+          pos === undefined ? undefined : JSON.stringify(pos),
+        ),
+      );
+      new Uint8Array(buffer.buffer, buffer.byteOffset + view.offset, bytes.length).set(bytes);
+      cb(null, bytes.length, buffer);
+    } catch (err) {
+      cb(toNodeError(err, 'read'));
+    }
+  });
+}
+
+/** 回调式 `fs.open`：走**异步打开**（宿主 `fs/promises.open` ⇒ 真异步 + 之后能走 `fh.read/write`） */
+function openCb(path, flags, mode, cb) {
+  const args = [flags, mode, cb];
+  while (args.length > 0 && args[args.length - 1] === undefined) args.pop();
+  const callback = args.pop();
+  if (typeof callback !== 'function') throw invalidArgType('callback', ['function'], callback);
+  const f = args[0] === undefined ? 'r' : args[0];
+  const p = toPathString(path);
+  const needWrite = flagsNeedWrite(f);
+  queueMicrotask(() => {
+    try {
+      const res = callJson(
+        needWrite ? 'fs.fdOpenWriteAsync' : 'fs.fdOpenReadAsync',
+        p,
+        JSON.stringify(f),
+      );
+      callback(null, res.fd);
+    } catch (err) {
+      callback(toNodeError(err, 'open', p));
+    }
+  });
+}
+
+/** `fs.write(fd, buffer[, offset[, length[, position]]], cb)` 与 `fs.write(fd, string[, position[, encoding]], cb)` */
+function writeCb(fd, data, offsetOrPosition, lengthOrEncoding, position, cb) {
+  // 重载判定看"最后一个参数是不是函数"：Node 的两种重载参数个数不同（5 参 / 4 参 / 3 参）
+  const args = [data, offsetOrPosition, lengthOrEncoding, position, cb];
+  while (args.length > 0 && args[args.length - 1] === undefined) args.pop();
+  const callback = args.pop();
+  if (typeof callback !== 'function') throw invalidArgType('callback', ['function'], callback);
+  const n = assertFd(fd);
+  let bytes;
+  let pos;
+  if (typeof data === 'string') {
+    pos = fdPositionArg(args[1]);
+    const enc = args[2] === undefined ? 'utf8' : args[2];
+    assertEncoding(enc);
+    bytes = Buffer.from(data, enc);
+  } else {
+    const off = args[1] === undefined ? 0 : args[1];
+    const len =
+      args[2] === undefined ? (ArrayBuffer.isView(data) ? data.byteLength - (typeof off === 'number' ? off : 0) : 0) : args[2];
+    const view = assertOffsetLength(data, off, len);
+    bytes = Buffer.from(data.buffer, data.byteOffset + view.offset, view.length);
+    pos = fdPositionArg(args[3]);
+  }
+  queueMicrotask(() => {
+    try {
+      const res = callJson(
+        'fs.fdWriteAsync',
+        JSON.stringify(n),
+        bytes,
+        pos === undefined ? undefined : JSON.stringify(pos),
+      );
+      callback(null, res.bytesWritten, typeof data === 'string' ? data : data);
+    } catch (err) {
+      callback(toNodeError(err, 'write'));
+    }
+  });
+}
+
 function readdirSync(path, options) {
   const opts = options !== undefined && options !== null && typeof options === 'object' ? options : undefined;
   if (opts && opts.recursive === true) {
@@ -1218,28 +1322,29 @@ const promises = {
 // ──────────────────────────── 明确不支持的能力 ────────────────────────────
 
 /**
- * ⚠️ 2026-09-21 起**同步 fd 面已支持**（`openSync`/`closeSync`/`readSync`/`writeSync`/`fstatSync`/
- * `ftruncateSync`/`fsyncSync`，见上面的"fd 面（同步）"一节）。剩下的是**异步/向量/句柄对象**那些面：
- * 回调式（`fs.open`/`fs.read`/…）、`readv/writev`、`fs.promises.open` 的 `FileHandle`、
- * `fs.createReadStream`、`Dir`/`opendir`。
+ * ⚠️ 2026-09-21 起**同步 fd 面与回调式 fd 面都已支持**（见上面"fd 面（同步）/（回调式）"两节）。
+ * 剩下的是**向量与句柄对象**那些面：`readv`/`writev`、`fs.promises.open` 的 `FileHandle`、
+ * `fs.createReadStream`、`Dir`/`opendir`、`fs.watch`。
  */
-const FD_WHY = 'only the synchronous fd face is exposed (openSync/readSync/writeSync/closeSync/fstatSync/ftruncateSync/fsyncSync); the callback, vector, FileHandle and stream faces are not';
+const FD_WHY = 'the fd face is exposed synchronously (openSync/readSync/writeSync/closeSync/fstatSync/ftruncateSync/fsyncSync) and via callbacks (open/read/write/close/fstat/ftruncate/fsync); the vector (readv/writev), FileHandle (fs.promises.open), stream and Dir faces are not';
 const STREAM_WHY = 'streams are not available in the sandbox (this batch does not emulate node:stream)';
 const WATCH_WHY = 'there is no inotify surface in the sandbox (poll with timers/@host/api)';
 const SYMLINK_WHY = 'symlink/link creation is not exposed to plugins';
 const META_WHY = 'host-managed metadata (mode/owner/timestamps) is not exposed';
 
-const open = stub('fs.open', FD_WHY);
-const close = stub('fs.close', FD_WHY);
-const read = stub('fs.read', FD_WHY);
+// 回调面：open/read/write 走真异步（Async 宿主方法）；close/fstat/ftruncate/fsync 是轻量元数据操作，
+// 复用 callbackify（延迟派发 + 同步宿主实现）
+const open = openCb;
+const close = callbackify(closeSync);
+const read = readCb;
+const write = writeCb;
+const fstat = callbackify(fstatSync);
+const ftruncate = callbackify(ftruncateSync);
+const fsync = callbackify(fsyncSync);
 const readv = stub('fs.readv', FD_WHY);
 const readvSync = stub('fs.readvSync', FD_WHY);
-const write = stub('fs.write', FD_WHY);
 const writev = stub('fs.writev', FD_WHY);
 const writevSync = stub('fs.writevSync', FD_WHY);
-const fstat = stub('fs.fstat', FD_WHY);
-const ftruncate = stub('fs.ftruncate', FD_WHY);
-const fsync = stub('fs.fsync', FD_WHY);
 const fdatasync = stub('fs.fdatasync', FD_WHY);
 const fdatasyncSync = stub('fs.fdatasyncSync', FD_WHY);
 const fchmod = stub('fs.fchmod', FD_WHY);

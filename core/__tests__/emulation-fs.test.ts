@@ -481,13 +481,13 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     // 2026-09-21：同步 fd 面接上了真 OS 资源（句柄模型），所以它**不在**"抛错"名单里了。
     // 这条用例同时钉住两半：支持的那半是**函数且真的能用**（下面单独验），不支持的那半必须明确抛错。
     const supportedSyncFd = ['openSync', 'closeSync', 'readSync', 'writeSync', 'fstatSync', 'ftruncateSync', 'fsyncSync'];
-    for (const name of supportedSyncFd) {
+    const supportedCallbackFd = ['open', 'close', 'read', 'write', 'fstat', 'ftruncate', 'fsync'];
+    for (const name of [...supportedSyncFd, ...supportedCallbackFd]) {
       assert.equal(typeof (fs as any)[name], 'function', `${name} 应当是函数`);
       assert.equal(typeof (hostFs as any)[name], 'function', `对照：宿主上 ${name} 也在`);
     }
     const stillStubbed = [
-      'open', 'close', 'read', 'write', 'fstat', 'ftruncate', 'fsync', 'fdatasync', 'fdatasyncSync',
-      'readv', 'readvSync', 'writev', 'writevSync',
+      'fdatasync', 'fdatasyncSync', 'readv', 'readvSync', 'writev', 'writevSync',
       'createReadStream', 'createWriteStream', 'watch', 'watchFile', 'unwatchFile',
       'symlinkSync', 'linkSync', 'readlinkSync', 'fchmodSync', 'chownSync', 'utimesSync',
       'opendirSync', 'statfsSync', 'cpSync', 'globSync', 'truncateSync',
@@ -582,6 +582,43 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
       capture(() => fs.fstatSync(3, { bigint: true }), DATA_DIR).code,
       'ERR_NOT_SUPPORTED_IN_SANDBOX',
     );
+  });
+
+  it('回调式 fd 面：与宿主同形（error-first、回调异步触发、写到同一文件）', async () => {
+    // 差分对象仍是宿主 Node：同一串回调操作喂两边，比**回调参数**与**文件结果**。
+    // 回调面在沙箱里由 queueMicrotask 派发（Node 是线程池）—— 两边都保证"回调不在同一 tick"。
+    const run = (f: typeof fs, dir: string) =>
+      new Promise<unknown>((resolve, reject) => {
+        const p = join(dir, 'cb-fd.txt');
+        const seen: string[] = [];
+        let sameTick = false;
+        f.open(p, 'w', (err: any, fd: any) => {
+          if (err) return reject(err);
+          seen.push('open:' + typeof fd);
+          if (!sameTick) seen.push('open-ASYNC');
+          f.write(fd, 'hello', (err2: any, written: any) => {
+            if (err2) return reject(err2);
+            seen.push('write:' + written);
+            f.close(fd, (err3: any) => {
+              if (err3) return reject(err3);
+              seen.push('close:' + (err3 === undefined || err3 === null));
+              // 关了再用 ⇒ error-first 回调拿 EBADF（而不是抛）
+              f.read(fd, Buffer.alloc(1), 0, 1, 0, (err4: any) => {
+                seen.push('read-closed:' + (err4 && err4.code) + '/' + (err4 && err4.syscall));
+                // 未知编号同理
+                f.close(999999, (err5: any) => {
+                  seen.push('close-unknown:' + (err5 && err5.code));
+                  resolve({ seen, text: f.readFileSync(p, 'utf8') });
+                });
+              });
+            });
+          });
+        });
+        sameTick = true; // 到这一行说明上面那个回调**不是**同步触发的（Node 的硬保证）
+      });
+    const ours = await run(fs, DATA_DIR);
+    const host = await run(hostFs as unknown as typeof fs, HOST_DIR);
+    assert.deepEqual(ours, host, `回调 fd 面与宿主不一致：${JSON.stringify({ ours, host })}`);
   });
 
   it('BigIntStats 与 readdir recursive 也抛错（不静默降级）', () => {

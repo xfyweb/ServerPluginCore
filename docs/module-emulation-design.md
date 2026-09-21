@@ -734,8 +734,15 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 目录 fd 能打开但 `readSync` ⇒ `EISDIR … read`；`offset+length` 越界 ⇒ `ERR_OUT_OF_RANGE`
 （文案 `... It must be <= -94. Received 1` —— 上界是 `buffer.length - offset`，照抄）。
 
-**仍未做**（一律明确抛 `ERR_NOT_SUPPORTED_IN_SANDBOX`）：回调式 fd 面（`fs.open`/`read`/`write`/…）、
-`readv`/`writev`、`fs.promises.open` 的 `FileHandle`、`fs.createReadStream`、`Dir`/`opendir`、`fs.watch`。
+**仍未做**（一律明确抛 `ERR_NOT_SUPPORTED_IN_SANDBOX`）：`readv`/`writev`、`fs.promises.open` 的 `FileHandle`、
+`fs.createReadStream`、`Dir`/`opendir`、`fdatasync`、`fs.watch`。
+
+**回调式 fd 面（2026-09-21 同批）**：`fs.open` / `close` / `read` / `write` / `fstat` / `ftruncate` / `fsync`
+（Node 的 error-first 约定：**参数校验同步抛、I/O 错误走回调**；回调由 `queueMicrotask` **异步触发**）。
+其中 `open`/`read`/`write` 走**真异步宿主方法**（`fs.fdOpen*Async` 用 `fs/promises.open` 拿 `FileHandle`；
+`fs.fdReadAsync`/`fdWriteAsync` 用 `fh.read`/`fh.write`）⇒ 那段时间**宿主事件循环真的不被阻塞**。
+⚠️ 一处**记账的退化**：`fs.openSync` 打开的 fd 没有 `FileHandle`（Node 没有"把裸 fd 包成 FileHandle"的公开 API），
+对这类 fd 的回调读写退回同步实现（**回调仍异步触发**，只是那次 I/O 占着宿主线程）。
 
 **两个实现坑（都写进注释了）**：① 姊妹 shim 的 `callBytes` 返回 **ArrayBuffer**（crypto 那份返回 Buffer），
 而 `TypedArray.set(ArrayBuffer)` 会**静默拷 0 字节**、`bytes.length` 是 undefined（表现为"读出来全是 0"）；
