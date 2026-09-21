@@ -1,5 +1,5 @@
 // 把 _audit/fs-tables.txt 的两张表填进 node-fs.js 的占位符（表是从 WSL 真值生成的，避免手抄出错）
-// 用法：node _audit/tools/truth/splice-fs-tables.mjs
+// 用法：node tools/truth/splice-fs-tables.mjs
 import { readFileSync, writeFileSync } from 'node:fs';
 import { TRUTH_DATA, SANDBOX_MODULES } from '../paths.mjs';
 

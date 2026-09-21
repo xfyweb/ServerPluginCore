@@ -1,5 +1,5 @@
 // 从 zlib 真值生成 node-zlib.js 要嵌入的 constants / codes 表（**固定 22.22.1 基线**）
-//   用法：node _audit/gen-zlib-tables.mjs > _audit/data/zlib-tables.txt
+//   用法：node _audit/gen-zlib-tables.mjs > tools/truth/data/zlib-tables.txt
 import { readFileSync, writeFileSync } from 'node:fs';
 import { TRUTH_DATA, SANDBOX_MODULES } from '../paths.mjs';
 

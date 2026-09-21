@@ -1,5 +1,5 @@
 // 采集"候选包到底用了 stream 的哪些面"——逐行列出调用点，作为 shim 的范围依据
-// 用法：node _audit/tools/truth/stream-surface.mjs
+// 用法：node tools/truth/stream-surface.mjs
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { SURVEY_DIR } from '../paths.mjs';

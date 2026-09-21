@@ -3,7 +3,7 @@
 // 用法：
 //   & $env:SPC_JUDGE_NODE  tools/truth/path-win32-cases-win.mjs
 //
-// 输入是 `_audit/tools/truth/path-win32-cases.mjs` 里的**同一组**用例；两边各跑一遍，再逐条比。
+// 输入是 `tools/truth/path-win32-cases.mjs` 里的**同一组**用例；两边各跑一遍，再逐条比。
 // cwd 依赖：为了让结果与机器无关，脚本把 cwd 固定成三个**真实存在**的目录再采样
 // （`path.win32.resolve` 无参/单相对参数时读 cwd，这一部分与 cwd 强相关，必须真跑）。
 import { writeFileSync } from 'node:fs';

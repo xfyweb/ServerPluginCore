@@ -1,5 +1,5 @@
 // 从 crypto 的两份真值生成 node-crypto.js 要嵌入的静态表（getHashes/getCiphers/getCurves/constants）
-//   用法：node _audit/tools/truth/gen-crypto-tables.mjs > _audit/data/crypto-tables.txt
+//   用法：node tools/truth/gen-crypto-tables.mjs > tools/truth/data/crypto-tables.txt
 // 取值取向：**固定 22.22.1 基线**（与 path=posix、constants=Linux、os 三分法一致）——
 // 这几个清单是宿主 OpenSSL 的真相，开发机与生产机可能不同，所以按仿真版本钉死。
 import { readFileSync } from 'node:fs';

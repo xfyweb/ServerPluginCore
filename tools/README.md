@@ -149,7 +149,7 @@ node tools/batteries/deep-cmp-battery.mjs
 node tools/batteries/events-battery.mjs
 ```
 
-这两个是**改动仿真层后必跑的**（见 `AGENTS.md` §4.1 的验收三件套）。
+这两个是**改动仿真层后必跑的**（见 `AGENTS.md` §4 的验收三件套）。
 
 ### `tools/truth/` —— 真值采集 / 生成 / 校验链
 

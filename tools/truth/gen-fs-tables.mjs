@@ -1,7 +1,7 @@
-// 从 _audit/data/fs-url-truth.json（WSL node v22.22.1 运行值）生成 node-fs.js 要嵌入的两张表：
+// 从 tools/truth/data/fs-url-truth.json（WSL node v22.22.1 运行值）生成 node-fs.js 要嵌入的两张表：
 //   ① errno：名字 → [Linux 正值, strerror 文案]（写 err.message 用；Node 的 err.errno 是它的相反数）
 //   ② fs.constants：键 → 值（照抄宿主，不自己编）
-// 用法：node _audit/tools/truth/gen-fs-tables.mjs
+// 用法：node tools/truth/gen-fs-tables.mjs
 import { readFileSync } from 'node:fs';
 
 const truth = JSON.parse(readFileSync(new URL('./fs-url-truth.json', import.meta.url), 'utf8'));

@@ -6,8 +6,10 @@
 // 因此删除了 protectionLevel（从未被判定逻辑读取）、Tier 与按档分档的 defaults。
 //
 // v4（docs/api-contract.md §6，P2 落地）：`scope` 退为"碰不碰宿主资源"的资源语义，
-// 新增 `grant: auto | install | explicit` 由判定链读取。**当前代码仍是
-// `scope = host ⇒ 未授予即拒绝`**——本文件只登记，档位切换随 P2 权限层一起做。
+// 新增 `grant: auto | install | explicit` 由判定链读取。判定链**已按 `grant` 分支**
+// （`core/permissions/check.ts` 的 `resolveGrant` / `matchDeclaration` / `grants.includes`）——
+// 即 `scope: self` + `grant: auto` 的点免声明免授予，`grant: install|explicit` 的点才要声明与授予。
+// 本文件只登记；**别再按"scope = host ⇒ 未授予即拒绝"理解它**（那是 v3 的口径，已作废）。
 import { SpcError } from '../errors';
 
 /**
