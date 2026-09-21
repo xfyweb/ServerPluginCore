@@ -360,6 +360,13 @@ const MAX_FD_HANDLES = 64;
 const MAX_FD_IO_BYTES = 8 * 1024 * 1024;
 
 /**
+ * `fh.readFile` 那条链的**读块大小**：一次 64 KiB。
+ * 为什么要分块：那是"读到 EOF"的循环，块太大就多要一块宿主内存、块太小就多几次系统调用。
+ * 上限（`MAX_READ_BYTES` = 1 MiB）与路径版 `fs.readFile` 逐条同源，所以块大小只在 1 MiB 以内起作用。
+ */
+const FD_READ_CHUNK = 64 * 1024;
+
+/**
  * fd 句柄背后的真资源。
  *
  * ⚠️ **存的是 `FileHandle` 而不是裸 fd**（2026-09-21 实测定的）：判卷人 v22.22.1 的 `node:fs/promises`
@@ -812,6 +819,89 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       throw err;
     }
     return { fd };
+  }
+
+  /**
+   * 从**当前偏移**读到 EOF（`fh.readFile` 的地基）。上限判据与 `fs.readBytes` 逐条同源：
+   * 1 MiB ⇒ `FILE_TOO_LARGE`（⇒ 插件面 EFBIG）。**读之前不看文件大小**（句柄背后可能是刚被写大/截断的
+   * 普通文件，也可能已经不在开头了）——所以边读边记账，超了就停（不会先把大文件整个读进宿主内存）。
+   */
+  function readAllSync(fd: FdResource): Buffer {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const buf = Buffer.alloc(FD_READ_CHUNK);
+      const n = readSync(syncFdOf(fd), buf, 0, buf.byteLength, null);
+      if (n === 0) break;
+      total += n;
+      if (total > MAX_READ_BYTES) {
+        throw new SpcError('FILE_TOO_LARGE', { bytes: String(total), limit: String(MAX_READ_BYTES) });
+      }
+      chunks.push(buf.subarray(0, n));
+    }
+    return Buffer.concat(chunks, total);
+  }
+
+  /** 同上，真异步（有 `fh` 走 `await fh.read`；同步开的 fd 退回同步读，形状与 `fs.fdReadAsync` 一致） */
+  async function readAllAsync(fd: FdResource): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const buf = Buffer.alloc(FD_READ_CHUNK);
+      const n =
+        fd.fh === undefined
+          ? readSync(syncFdOf(fd), buf, 0, buf.byteLength, null)
+          : (await fd.fh.read(buf, 0, buf.byteLength, null)).bytesRead;
+      if (n === 0) break;
+      total += n;
+      if (total > MAX_READ_BYTES) {
+        throw new SpcError('FILE_TOO_LARGE', { bytes: String(total), limit: String(MAX_READ_BYTES) });
+      }
+      chunks.push(buf.subarray(0, n));
+    }
+    return Buffer.concat(chunks, total);
+  }
+
+  /**
+   * 从**当前偏移**写完全部字节（`fh.writeFile`/`fh.appendFile` 的地基），返回真正写进去的字节数。
+   * 循环而不是一次写：短写（普通文件上罕见，但不许当成"全写完了"）。
+   * `n <= 0` 直接停下 —— 不能死循环，也**不谎报**成功（返回值就是实写字节数）。
+   */
+  function writeAllSync(fd: FdResource, bytes: Buffer): number {
+    let off = 0;
+    while (off < bytes.byteLength) {
+      const n = writeSync(syncFdOf(fd), bytes, off, bytes.byteLength - off, null);
+      if (n <= 0) break;
+      off += n;
+    }
+    return off;
+  }
+
+  /** 同上，真异步 */
+  async function writeAllAsync(fd: FdResource, bytes: Buffer): Promise<number> {
+    let off = 0;
+    while (off < bytes.byteLength) {
+      const n =
+        fd.fh === undefined
+          ? writeSync(syncFdOf(fd), bytes, off, bytes.byteLength - off, null)
+          : (await fd.fh.write(bytes, off, bytes.byteLength - off, null)).bytesWritten;
+      if (n <= 0) break;
+      off += n;
+    }
+    return off;
+  }
+
+  /**
+   * `fdWriteAll` 的数据：**字符串走宿主编码**（`encoding` 是仿真层校验过的编码名），字节原样。
+   * 为什么字符串不能由仿真层先编码：那要过 `bytes.encode` 权限点（见那组方法的注释）。
+   */
+  function asWriteAllBytes(data: HostArg, encoding: HostArg | undefined): Buffer {
+    if (typeof data === 'string') return Buffer.from(data, assertEncoding(encoding));
+    const bytes = asBuffer(data);
+    if (bytes.byteLength > MAX_FILE_BYTES) {
+      throw new SpcError('FILE_TOO_LARGE', { bytes: String(bytes.byteLength), limit: String(MAX_FILE_BYTES) });
+    }
+    return bytes;
   }
 
   return {
@@ -1548,6 +1638,65 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         }
         const { bytesWritten } = await fd.fh.write(bytes, 0, bytes.byteLength, position);
         return { bytesWritten };
+      },
+    },
+
+    // ---- FileHandle 的"整文件"面（`fh.readFile` / `fh.writeFile` / `fh.appendFile`）----
+    //
+    // 为什么做成**宿主原语**、而不是让仿真层自己循环 `fdReadAsync` 再拼：文本面（`{encoding}`）的
+    // 编解码必须在宿主做 —— 沙箱里 `buf.toString(enc)` / `Buffer.from(str, enc)` 会走
+    // `bytes.decode` / `bytes.encode` 权限点，而设计 §6 的映射表里"用 node:fs 读写文件"只该要
+    // `fs.read.data` / `fs.write.data`（与 `fs.readText`/`fs.writeText` 同一条取舍：
+    // **仿真模块不得引入新的权限语义**）。
+    //
+    // 语义全部照判卷人实测（`_audit/scratch/probe-filehandle.mjs`）：
+    //   · `fh.readFile()` **从当前偏移读到 EOF**（连续两次调用第二次给空 Buffer），**不关句柄**；
+    //   · `fh.writeFile(d)` 与 `fh.appendFile(d)` **都是"从当前偏移写"**，两者逐字节相同
+    //     （Node 的 `FileHandle.appendFile` 就是 `writeFile`；真正的追加来自句柄自己的 'a' 旗标）；
+    //   · 上限与路径版同源：读 1 MiB（`MAX_READ_BYTES` ⇒ EFBIG）、写 64 MiB（`MAX_FILE_BYTES`）。
+    'fs.fdReadAll': {
+      permission: 'fs.read.data',
+      binaryResult: true,
+      fn: (fdJson: HostArg | undefined) =>
+        readAllSync(requireFdById(handles, fdIdOf(fdJson))) as unknown as Uint8Array,
+    },
+    'fs.fdReadAllAsync': {
+      permission: 'fs.read.data',
+      binaryResult: true,
+      async: true,
+      fn: async (fdJson: HostArg | undefined) =>
+        (await readAllAsync(requireFdById(handles, fdIdOf(fdJson)))) as unknown as Uint8Array,
+    },
+    'fs.fdReadAllText': {
+      permission: 'fs.read.data',
+      fn: (fdJson: HostArg | undefined, encoding?: HostArg) => {
+        const enc = assertEncoding(encoding);
+        return { content: readAllSync(requireFdById(handles, fdIdOf(fdJson))).toString(enc) };
+      },
+    },
+    'fs.fdReadAllTextAsync': {
+      permission: 'fs.read.data',
+      async: true,
+      fn: async (fdJson: HostArg | undefined, encoding?: HostArg) => {
+        const enc = assertEncoding(encoding);
+        return { content: (await readAllAsync(requireFdById(handles, fdIdOf(fdJson)))).toString(enc) };
+      },
+    },
+    'fs.fdWriteAll': {
+      permission: 'fs.write.data',
+      fn: (fdJson: HostArg | undefined, data: HostArg, encoding?: HostArg) => {
+        const fd = requireFdById(handles, fdIdOf(fdJson));
+        const bytes = asWriteAllBytes(data, encoding);
+        return { bytesWritten: writeAllSync(fd, bytes) };
+      },
+    },
+    'fs.fdWriteAllAsync': {
+      permission: 'fs.write.data',
+      async: true,
+      fn: async (fdJson: HostArg | undefined, data: HostArg, encoding?: HostArg) => {
+        const fd = requireFdById(handles, fdIdOf(fdJson));
+        const bytes = asWriteAllBytes(data, encoding);
+        return { bytesWritten: await writeAllAsync(fd, bytes) };
       },
     },
 
