@@ -80,16 +80,7 @@ export class HandleTable<T = unknown> {
    * UUID 那套留给**不透明句柄**（如流式摘要）—— 那里没有"必须像 Node"的形状约束。
    */
   open(kind: string, resource: T, release: () => void, options?: { id?: string }): HandleRecord<T> {
-    const limit = this.maxPerKind[kind];
-    if (limit !== undefined && this.count(kind) >= limit) {
-      // fail-closed：到上限就拒（与 timers 的 TIMER_LIMIT_EXCEEDED 同一形状：码 + kind + limit）
-      this.onEvent?.({ type: 'limit', kind, id: '' });
-      throw new SpcError('HANDLE_LIMIT_EXCEEDED', {
-        pluginId: this.pluginId,
-        kind,
-        limit: String(limit),
-      });
-    }
+    this.ensureCapacity(kind);
     const id = options?.id ?? randomUUID();
     if (this.live.has(id)) {
       // 同 id 重复登记 = 调用方的 bug（fd 计数器回绕 / UUID 撞了）；宁可炸，也不要覆盖真资源
@@ -106,6 +97,27 @@ export class HandleTable<T = unknown> {
     this.live.set(record.id, record);
     this.onEvent?.({ type: 'open', kind, id: record.id });
     return record;
+  }
+
+  /**
+   * 上限预检（`open` 内部也走它）：**取真资源之前**先问一句"还装得下吗"。
+   *
+   * 为什么它得能单独调：fd 那一类是"**先**真开一个描述符、**后**登记"，等到 `open` 才发现超限，
+   * 那个真描述符已经开出来了 —— 调用方要么自己回滚（写了也几乎测不到），要么就泄漏 OS 句柄。
+   * 预检把"注定失败"挡在取资源之前（Node 在 OS 层超限时也不会把文件建出来，语义反而更近），
+   * 剩下只有 id 撞车那种不可达路径才靠调用方的 try/catch 回滚兜底。
+   */
+  ensureCapacity(kind: string): void {
+    const limit = this.maxPerKind[kind];
+    if (limit !== undefined && this.count(kind) >= limit) {
+      // fail-closed：到上限就拒（与 timers 的 TIMER_LIMIT_EXCEEDED 同一形状：码 + kind + limit）
+      this.onEvent?.({ type: 'limit', kind, id: '' });
+      throw new SpcError('HANDLE_LIMIT_EXCEEDED', {
+        pluginId: this.pluginId,
+        kind,
+        limit: String(limit),
+      });
+    }
   }
 
   /**

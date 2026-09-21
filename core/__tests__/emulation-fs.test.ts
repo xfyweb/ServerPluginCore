@@ -13,9 +13,10 @@
 // （参数按 VM 类型取、结果 JSON 化、失败回错误信封），宿主实现一行都不重写。
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as HOST_FS_CONSTANTS, symlinkSync } from 'node:fs';
 import * as hostFs from 'node:fs';
+import hostFsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -31,11 +32,11 @@ const { toErrorShape } = await import('../../core/errors.ts');
 
 // shim 的加载方式与既有对齐测试一致：逐字节拷到临时目录（ESM），再按 file: 导入。
 // 这样 TS 不会去检查纯 JS 的 shim，也能精确控制"哪些伴随文件在场"（node-fs.js 依赖
-// node-buffer.js 与 node-url.js，两个都得拷）。
+// node-buffer.js 与 node-url.js，`FileHandle` 还要 node-events.js，三个都得拷）。
 const SHIM_DIR = mkdtempSync(join(tmpdir(), 'spc-shims-fs-'));
 writeFileSync(join(SHIM_DIR, 'package.json'), '{"type":"module"}\n');
 const SHIM_SRC = join(process.cwd(), 'core', 'sandbox-modules');
-for (const f of ['node-fs.js', 'node-fs-promises.js', 'node-buffer.js', 'node-url.js']) {
+for (const f of ['node-fs.js', 'node-fs-promises.js', 'node-buffer.js', 'node-url.js', 'node-events.js']) {
   copyFileSync(join(SHIM_SRC, f), join(SHIM_DIR, f));
 }
 after(() => rmSync(SHIM_DIR, { recursive: true, force: true }));
@@ -486,6 +487,9 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
       assert.equal(typeof (fs as any)[name], 'function', `${name} 应当是函数`);
       assert.equal(typeof (hostFs as any)[name], 'function', `对照：宿主上 ${name} 也在`);
     }
+    // `fs.promises.open` 返回 FileHandle（不再抛错），但它的**流式/向量/元数据**那些方法仍在"明确抛错"名单里
+    assert.equal(typeof (fsPromises as any).open, 'function');
+    assert.equal(typeof (hostFsp as any).open, 'function', '对照：宿主上 fs/promises.open 也在');
     const stillStubbed = [
       'fdatasync', 'fdatasyncSync', 'readv', 'readvSync', 'writev', 'writevSync',
       'createReadStream', 'createWriteStream', 'watch', 'watchFile', 'unwatchFile',
@@ -619,6 +623,288 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     const ours = await run(fs, DATA_DIR);
     const host = await run(hostFs as unknown as typeof fs, HOST_DIR);
     assert.deepEqual(ours, host, `回调 fd 面与宿主不一致：${JSON.stringify({ ours, host })}`);
+  });
+
+  it('FileHandle（fs.promises.open）：与宿主同形（重载 / 位置语义 / 关闭语义 / 错误码）', async () => {
+    // 差分对象 = 宿主 Node 的 `fs/promises.open`。两边喂**同一串动作**，只比"可观察值"：
+    // 返回对象的形状（null 原型 / 键 / buffer 长度）、字节数、文件内容、错误的 code+syscall。
+    // ⚠️ 不比 fd 的**数值**（那是各自的编号空间）——只比类型与"关闭后是 -1"。
+    // ⚠️ 浮点 length 的用例**不能**放进来：Node 自己会 abort（见下面"有意不同"那条），这里只放两边都不崩的面。
+    const scenario = async (api: { fs: any; fsp: any }, dir: string) => {
+      const r: Record<string, unknown> = {};
+      const cap = async (fn: () => Promise<unknown>) => {
+        try {
+          await fn();
+          return 'NO-THROW';
+        } catch (e: any) {
+          return [e.code, e.syscall ?? '-'].join('/');
+        }
+      };
+      const capClosed = async (fn: () => Promise<unknown>) => {
+        try {
+          await fn();
+          return 'NO-THROW';
+        } catch (e: any) {
+          return [e.code, e.syscall ?? '-', e.message].join('/');
+        }
+      };
+      const res = (x: any) => ({
+        keys: Object.keys(x).sort(),
+        protoNull: Object.getPrototypeOf(x) === null,
+        bytesRead: x.bytesRead,
+        bytesWritten: x.bytesWritten,
+        bufferLen: x.buffer ? x.buffer.byteLength : null,
+        bufferType: typeof x.buffer,
+      });
+
+      // ── 读：三种重载 + 位置语义 ──
+      const p = join(dir, 'fh-a.txt');
+      api.fs.writeFileSync(p, '0123456789');
+      const fh = await api.fsp.open(p, 'r+');
+      r.fdType = typeof fh.fd;
+      r.ctor = fh.constructor.name;
+      r.ownKeys = Object.keys(fh).sort();
+      r.closeType = typeof fh.close;
+      r.extendable = (() => {
+        fh.tag = 1;
+        return fh.tag;
+      })();
+      const b8 = Buffer.alloc(8);
+      r.readPositional = { ...res(await fh.read(b8, 1, 5, 0)), text: b8.toString('latin1') };
+      r.readOptionsAlloc = res(await fh.read({ length: 3 }));
+      r.readBufferOptions = res(await fh.read(Buffer.alloc(6), { offset: 2, length: 3, position: 0 }));
+      r.readZeroLength = res(await fh.read(Buffer.alloc(4), 0, 0, 0));
+      r.readNoArgs = res(await fh.read());
+      r.readPastEof = res(await fh.read(Buffer.alloc(4), 0, 4, 999));
+      r.readOffsetOnly = res(await fh.read(Buffer.alloc(4), 2));
+      r.readInvalid = {
+        lenTooBig: await cap(() => fh.read(Buffer.alloc(4), 3, 4, 0)),
+        negOffset: await cap(() => fh.read(Buffer.alloc(4), -1, 1, 0)),
+        floatOffset: await cap(() => fh.read(Buffer.alloc(4), 0.5, 1, 0)),
+        stringOffset: await cap(() => fh.read(Buffer.alloc(4), '0', 2, 0)),
+        badPosition: await cap(() => fh.read(Buffer.alloc(4), 0, 2, -3)),
+        emptyBuffer: await cap(() => fh.read(Buffer.alloc(0), 0, 1)),
+        stringAsOptions: await cap(() => fh.read('x')),
+        badBufferInOptions: await cap(() => fh.read({ buffer: 'x' })),
+      };
+      await fh.close();
+
+      // ── 写：字符串 / 字节两族重载 + **显式位置不动文件偏移** ──
+      const pw = join(dir, 'fh-w.txt');
+      api.fs.writeFileSync(pw, '0123456789');
+      const fw = await api.fsp.open(pw, 'r+');
+      r.writeString = res(await fw.write('XY'));
+      r.afterWriteString = api.fs.readFileSync(pw, 'latin1');
+      r.writeStringAtPos = res(await fw.write('ab', 4));
+      r.afterWriteAtPos = api.fs.readFileSync(pw, 'latin1');
+      r.writeStringNoPos = res(await fw.write('cd'));
+      r.afterWriteNoPos = api.fs.readFileSync(pw, 'latin1');
+      const b4 = Buffer.alloc(4).fill(0x67);
+      r.writeBufferAtPos = res(await fw.write(Buffer.from('ef'), 0, 2, 8));
+      r.writeBufferOptions = res(await fw.write(b4, { offset: 1, length: 2, position: 0 }));
+      r.writeEmptyBuffer = res(await fw.write(Buffer.alloc(0)));
+      r.writeEmptyString = res(await fw.write(''));
+      r.afterAllWrites = api.fs.readFileSync(pw, 'latin1');
+      r.writeInvalid = {
+        number: await cap(() => fw.write(42)),
+        offsetTooBig: await cap(() => fw.write(Buffer.alloc(4), 5, 1, 0)),
+        lenTooBig: await cap(() => fw.write(Buffer.alloc(4), 0, 9, 0)),
+        negLength: await cap(() => fw.write(Buffer.alloc(4), 0, -1, 0)),
+        hexOdd: await cap(() => fw.write('abc', 0, 'hex')),
+      };
+      r.writeOnReadOnly = await cap(async () => {
+        const ro = await api.fsp.open(p, 'r');
+        try {
+          return await ro.write('x');
+        } finally {
+          await ro.close();
+        }
+      });
+      r.readOnWriteOnly = await cap(async () => {
+        const wo = await api.fsp.open(join(dir, 'fh-wo.txt'), 'w');
+        try {
+          return await wo.read(Buffer.alloc(2), 0, 2, 0);
+        } finally {
+          await wo.close();
+        }
+      });
+      await fw.close();
+
+      // ── stat / truncate / sync ──
+      const ps = join(dir, 'fh-s.txt');
+      api.fs.writeFileSync(ps, '0123456789');
+      const fsH = await api.fsp.open(ps, 'r+');
+      const st = await fsH.stat();
+      r.stat = { size: st.size, isFile: st.isFile(), ctor: st.constructor.name };
+      await fsH.truncate(4);
+      r.sizeAfterTruncate4 = api.fs.statSync(ps).size;
+      await fsH.truncate(-5); // Node：负数**截断成 0**，不报错
+      r.sizeAfterTruncateNeg = api.fs.statSync(ps).size;
+      r.truncateInvalid = { float: await cap(() => fsH.truncate(1.5)), string: await cap(() => fsH.truncate('x')) };
+      r.syncResult = String(await fsH.sync());
+      await fsH.close();
+
+      // ── 关闭语义（幂等 / 事件 / 关闭后一切操作）──
+      const pc = join(dir, 'fh-c.txt');
+      api.fs.writeFileSync(pc, 'abc');
+      const fc = await api.fsp.open(pc, 'r+');
+      const events: string[] = [];
+      fc.on('close', () => events.push('close'));
+      r.closeResult = String(await fc.close());
+      r.closeEvents = events.slice();
+      r.fdAfterClose = fc.fd;
+      r.secondClose = await cap(() => fc.close());
+      r.closeEventsAfterSecond = events.slice();
+      r.afterClose = {
+        read: await capClosed(() => fc.read(Buffer.alloc(2), 0, 2, 0)),
+        write: await capClosed(() => fc.write('x')),
+        stat: await capClosed(() => fc.stat()),
+        truncate: await capClosed(() => fc.truncate(1)),
+        sync: await capClosed(() => fc.sync()),
+      };
+
+      // ── open 的错误面 ──
+      r.openErrors = {
+        missing: await cap(() => api.fsp.open(join(dir, 'fh-nope.txt'), 'r')),
+        badFlags: await cap(() => api.fsp.open(pc, 'zzz')),
+        badMode: await cap(() => api.fsp.open(join(dir, 'fh-m.txt'), 'w', 'x')),
+        badModeNegative: await cap(() => api.fsp.open(join(dir, 'fh-m2.txt'), 'w', -1)),
+        badModeFloat: await cap(() => api.fsp.open(join(dir, 'fh-m3.txt'), 'w', 1.5)),
+        octalModeOk: await cap(async () => {
+          const h = await api.fsp.open(join(dir, 'fh-m4.txt'), 'w', '0600');
+          await h.close();
+        }),
+        badPathType: await cap(() => api.fsp.open(42, 'r')),
+        numericFlags: await cap(async () => {
+          const h = await api.fsp.open(pc, HOST_FS_CONSTANTS.O_RDONLY);
+          await h.close();
+        }),
+        noFlags: await cap(async () => {
+          const h = await api.fsp.open(pc);
+          await h.close();
+        }),
+      };
+      return r;
+    };
+
+    const ours = await scenario({ fs, fsp: fsPromises }, DATA_DIR);
+    const host = await scenario({ fs: hostFs, fsp: hostFsp }, HOST_DIR);
+    assert.deepEqual(ours, host, `FileHandle 与宿主不一致：${JSON.stringify({ ours, host }, null, 1)}`);
+  });
+
+  it('FileHandle：`fd` 只读、两次 open 是两个不同对象（身份与 Node 一致）', async () => {
+    const p = join(DATA_DIR, 'fh-id.txt');
+    writeFileSync(p, 'abcd');
+    const a = await fsPromises.open(p, 'r');
+    const b = await fsPromises.open(p, 'r');
+    assert.equal(a === b, false, '两次 open 必须是两个对象（Node 也如此：createReadStream/open 每次新对象）');
+    assert.equal(typeof a.fd, 'number');
+    assert.notEqual(a.fd, b.fd, '两个句柄必须是两个编号（每插件编号空间，关闭后不复用）');
+    // `fd` 是原型上的 getter（没有 setter）：严格模式（ESM）下赋值抛 TypeError —— 与 Node 的访问器形状一致
+    const before = a.fd;
+    assert.throws(() => {
+      (a as any).fd = 99;
+    }, TypeError);
+    assert.equal(a.fd, before);
+    await a.close();
+    await b.close();
+  });
+
+  it('FileHandle 的"有意不同"两处：浮点 length 不 abort、关闭后的错误文案照 Node', async () => {
+    const p = join(DATA_DIR, 'fh-diff.txt');
+    writeFileSync(p, 'abcdef');
+    const fh = await fsPromises.open(p, 'r+');
+
+    // ① 浮点 `length`：Node **自己会 abort 整个进程**（判卷人 v22.22.1 与宿主 v24 都是 exit 134，
+    //    `Assertion failed: args[3]->IsInt32()`，栈顶 `node::fs::Read` —— 见 probe-filehandle.mjs 的 capChild 段），
+    //    而**同步** `fs.readSync(fd, buf, 0, 2.5, 0)` 又不报错（读 2 字节）。同一件事两个面两种表现 ⇒
+    //    我们统一给一条明确的 ERR_OUT_OF_RANGE：**不 abort、也不静默截断**（fail-closed）。
+    await assert.rejects(
+      () => (fh as any).read(Buffer.alloc(4), 0, 2.5, 0),
+      (e: any) => e.code === 'ERR_OUT_OF_RANGE' && /must be an integer/.test(e.message),
+      '浮点 length 必须明确报错（Node 在这里会 abort，我们不能跟着崩）',
+    );
+
+    // ② 关闭后再用：**保留 Node 的原文** `EBADF` + `syscall=方法名` + `message='file closed'`
+    //   （Node 的 `fsCall` 就是这么造的，与 `fs.readSync` 那套 `bad file descriptor, read` 不是同一句）
+    await fh.close();
+    const after = await (async () => {
+      try {
+        await fh.read(Buffer.alloc(2), 0, 2, 0);
+        return null;
+      } catch (e: any) {
+        return e;
+      }
+    })();
+    assert.equal(after?.code, 'EBADF');
+    assert.equal(after?.syscall, 'read');
+    assert.equal(after?.message, 'file closed');
+  });
+
+  it('FileHandle 上仍未实现的方法**明确抛错**（流式 / 向量 / 全文件 / 元数据）', async () => {
+    const p = join(DATA_DIR, 'fh-stub.txt');
+    writeFileSync(p, 'abc');
+    const hp = join(HOST_DIR, 'fh-stub.txt');
+    writeFileSync(hp, 'abc');
+    const fh = await fsPromises.open(p, 'r+');
+    const hostFh = await hostFsp.open(hp, 'r+'); // 对照：宿主上这些方法都在（所以缺失是**有意**的）
+    // 形状照 Node 分工：这些在 Node 上返回 Promise ⇒ 我们**拒绝**（不是同步抛）
+    const asyncStubs = ['datasync', 'chmod', 'chown', 'utimes', 'readv', 'writev', 'readFile', 'writeFile', 'appendFile'];
+    // 这些在 Node 上就是同步方法 ⇒ 我们**同步抛**
+    const syncStubs = ['getAsyncId', 'createReadStream', 'createWriteStream', 'readableWebStream', 'readLines'];
+    for (const name of [...asyncStubs, ...syncStubs]) {
+      assert.equal(typeof (fh as any)[name], 'function', `FileHandle#${name} 应当是函数（不能是 undefined）`);
+      assert.equal(typeof (hostFh as any)[name], 'function', `对照：宿主上 FileHandle#${name} 也在`);
+    }
+    for (const name of asyncStubs) {
+      await assert.rejects(
+        () => Promise.resolve((fh as any)[name]()),
+        (e: any) => e.code === 'ERR_NOT_SUPPORTED_IN_SANDBOX',
+        `FileHandle#${name}（Node 里是异步方法）应当拒绝`,
+      );
+    }
+    for (const name of syncStubs) {
+      assert.throws(
+        () => (fh as any)[name](),
+        (e: any) => e.code === 'ERR_NOT_SUPPORTED_IN_SANDBOX',
+        `FileHandle#${name}（Node 里是同步方法）应当同步抛`,
+      );
+    }
+    await fh.close();
+    await hostFh.close();
+  });
+
+  it('fd 上限用满后**失败的 open 不碰真资源**（"拿到了却没登记上"必须挡在取资源之前）', async () => {
+    // 背景：`openFd`/`openFdAsync` 是"先真开、后登记"，`handles.open` 在上限用满时会抛 ——
+    // 少了收尾，那个真描述符就永久泄漏（Linux 上能数 /proc/self/fd，Windows 上几乎看不见：
+    // libuv 用 `FILE_SHARE_DELETE` 打开文件，"删掉占用的文件/删父目录"都照样成功 —— 本轮实测过，别拿它当判据）。
+    // 所以**可观察的判据换成"注定失败时压根不碰真资源"**：`HandleTable.ensureCapacity` 预检把
+    // "装不下"挡在 `openSync` 之前，于是 `'w'` 也不会把文件创建出来（Node 在 OS 层 EMFILE 时同样不创建）。
+    // 判别点：去掉 `ensureCapacity('fd')` 预检 ⇒ 文件被创建出来 ⇒ 这条红。
+    const dir = mkdtempSync(join(tmpdir(), 'spc-fd-leak-'));
+    const api = buildHostApi({ pluginId: '@test/fd-leak', dataDir: dir }) as any;
+    writeFileSync(join(dir, 'held.txt'), 'x');
+    try {
+      const held: number[] = [];
+      for (let i = 0; i < 64; i++) held.push(api['fs.fdOpenRead'].fn('held.txt', JSON.stringify('r')).fd);
+      assert.equal(held.length, 64);
+      // 第 65 个（读面）：仍然被拒
+      assert.throws(() => api['fs.fdOpenRead'].fn('held.txt', JSON.stringify('r')), (e: any) => e.code === 'HANDLE_LIMIT_EXCEEDED');
+      // 第 65 个（写面，'w' 会创建文件）：被拒之后那个文件**不许存在**
+      assert.throws(() => api['fs.fdOpenWrite'].fn('never-created.txt', JSON.stringify('w')), (e: any) => e.code === 'HANDLE_LIMIT_EXCEEDED');
+      assert.equal(existsSync(join(dir, 'never-created.txt')), false, '被上限拒绝的 open 不该把文件创建出来（说明真 open 根本没发生）');
+      // 异步面同一条：`fs.promises.open` 走的也是"先开、后登记"（异步方法 ⇒ 拒绝而不是同步抛）
+      await assert.rejects(
+        () => api['fs.fdOpenWriteAsync'].fn('never-created-2.txt', JSON.stringify('w')),
+        (e: any) => e.code === 'HANDLE_LIMIT_EXCEEDED',
+      );
+      assert.equal(existsSync(join(dir, 'never-created-2.txt')), false, '异步面的被拒 open 同样不该创建文件');
+      // 收尾：把 64 个真的关掉（临时目录才删得干净）
+      for (const fd of held) api['fs.fdClose'].fn(JSON.stringify(fd));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      assert.equal(existsSync(dir), false, '临时目录应当能删干净（说明没有描述符残留）');
+    }
   });
 
   it('BigIntStats 与 readdir recursive 也抛错（不静默降级）', () => {
@@ -841,6 +1127,93 @@ export function init() {
       .map((e) => e.method!);
     for (const expected of ['handles.open', 'handles.close', 'handles.limit', 'handles.forced-release']) {
       assert.ok(forced.includes(expected), `审计缺少 ${expected}（实际：${[...new Set(forced)].join(',')}）`);
+    }
+  });
+
+  it('FileHandle 在真沙箱里成立：await 走的真异步通道 / 关闭语义 / 上限 EMFILE / 卸载强回收', async () => {
+    // 这条必须走真沙箱：`fh.read`/`fh.write` 在宿主侧声明了 `async: true`，**挂起只在真 VM 里发生**
+    // （纯 Node 假桥复现不出 asyncify 的挂起，那边只验语义）。判别点：去掉 `fs.fdReadAsync` 的
+    // `async: true` ⇒ 宿主调用不再挂起、桥的同步守卫抛 `async-host-method-not-supported` ⇒ 这条必红。
+    const bridge: { releaseHandles?: () => void } = {};
+    const api = buildHostApi({ pluginId: '@spc-test/fh', dataDir: SMOKE_DIR, bridge });
+    writeFileSync(join(SMOKE_DIR, 'fh-many.txt'), 'x');
+    const sandbox = await createSandbox(api, {
+      pluginId: '@spc-test/fh',
+      permissions: ['fs.read.data', 'fs.write.data'],
+      bridge,
+      facts: { version: { code: 1, name: 'test' }, dataDir: SMOKE_DIR, manifest: {}, config: {} },
+    });
+    let releaseCalls = 0;
+    const origRelease = bridge.releaseHandles;
+    bridge.releaseHandles = () => {
+      releaseCalls++;
+      origRelease?.();
+    };
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        '@spc-test/fh',
+        `
+import fsp from 'node:fs/promises';
+export async function init() {
+  const fh = await fsp.open('fh.txt', 'w');
+  console.log('FD ' + (typeof fh.fd === 'number') + '/' + fh.constructor.name);
+  const w = await fh.write('abcdef');
+  console.log('W ' + w.bytesWritten + '/' + typeof w.buffer + '/' + (Object.getPrototypeOf(w) === null));
+  await fh.close();
+  // ⚠️ 用 'r+' 而不是 'r'：Windows 上对**只读**句柄做 fsync 是 EPERM（真语义，踩过一次）
+  const rh = await fsp.open('fh.txt', 'r+');
+  const b = Buffer.alloc(4);
+  const r = await rh.read(b, 0, 4, 2);
+  console.log('R ' + r.bytesRead + '/' + b.toString('latin1'));
+  // 位置缺省 = 当前偏移（NULL-POS-CONSUMES 指的是"缺省位置会推进偏移"）
+  const b2 = Buffer.alloc(2);
+  await rh.read(b2, 0, 2, null);
+  const st = await rh.stat();
+  const sync = await rh.sync();
+  await rh.truncate(5);
+  const size2 = (await rh.stat()).size;
+  console.log('S2 ' + st.size + '/' + String(sync) + '/' + size2);
+  const ev = [];
+  rh.on('close', () => ev.push('close'));
+  await rh.close();
+  const again = await rh.close();
+  console.log('CLOSE ' + rh.fd + '/' + ev.length + '/' + String(again));
+  try { await rh.read(Buffer.alloc(1), 0, 1, 0); } catch (e) { console.log('AFTER ' + e.code + '/' + e.syscall + '/' + e.message); }
+  // 上限：同时活着的句柄 64（每插件独立）⇒ 第 65 个必须被拒（fail-closed，对外 EMFILE）
+  const held = [];
+  let lim = 'none';
+  try { for (let i = 0; i < 65; i++) held.push(await fsp.open('fh-many.txt', 'r')); }
+  catch (e) { lim = e.code; }
+  console.log('LIMIT ' + held.length + ' ' + lim);
+}
+`,
+      );
+      await sandbox.callHook('init', 30_000);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    const out = logs.join('\n');
+    assert.match(out, /FD true\/FileHandle/, `实际日志：${out}`);
+    assert.match(out, /W 6\/string\/true/, `实际日志：${out}`);
+    assert.match(out, /R 4\/cdef/, `实际日志：${out}`);
+    assert.match(out, /S2 6\/undefined\/5/, `实际日志：${out}`);
+    assert.match(out, /CLOSE -1\/1\/undefined/, `实际日志：${out}`);
+    // 关闭后再用：**Node 的原文**（`fsCall` 造的 `EBADF` + 方法名 + 'file closed'）
+    assert.match(out, /AFTER EBADF\/read\/file closed/, `实际日志：${out}`);
+    assert.match(out, /LIMIT 64 EMFILE/, `实际日志：${out}`);
+    assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收');
+    const audit = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
+      .filter((e) => e.pluginId === '@spc-test/fh' && e.method?.startsWith('handles.'))
+      .map((e) => e.method!);
+    for (const expected of ['handles.open', 'handles.close', 'handles.limit', 'handles.forced-release']) {
+      assert.ok(audit.includes(expected), `审计缺少 ${expected}（实际：${[...new Set(audit)].join(',')}）`);
     }
   });
 

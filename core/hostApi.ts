@@ -771,14 +771,25 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
   /**
    * 打开一个真实 fd 并登记句柄（**同步面**：`openSync` 走这条，宿主用 `openSync`）。
    * 旗标**原样交给宿主 Node**（非法旗标由 Node 报 `ERR_INVALID_ARG_VALUE`）；路径先过作用域收敛。
+   *
+   * ⚠️ **真资源先于登记拿到，所以登记失败必须自己收尾**：`handles.open` 在上限用满
+   * （`HANDLE_LIMIT_EXCEEDED`）或 id 撞车时会抛，而那时**真描述符已经开出来了**——
+   * 不管它就是一个永久泄漏的 OS 句柄（Windows 上还会让该文件删不掉/改不了名）。
+   * 这类"拿到了却没登记上"的路径必须显式关掉再抛。
    */
   function openFd(p: string, flagsJson: HostArg | undefined, mode: 'read' | 'write'): { fd: number } {
     const { safe, flags } = fdOpenArgs(ctx.dataDir, p, flagsJson, mode);
+    handles.ensureCapacity('fd'); // 预检：注定装不下就别真开描述符（见 HandleTable.ensureCapacity）
     const realFd = openSync(safe, flags as never);
     const fd = nextFd++;
-    handles.open('fd', { realFd, path: safe } satisfies FdResource, () => releaseFd({ realFd, path: safe }), {
-      id: String(fd),
-    });
+    try {
+      handles.open('fd', { realFd, path: safe } satisfies FdResource, () => releaseFd({ realFd, path: safe }), {
+        id: String(fd),
+      });
+    } catch (err) {
+      releaseFd({ realFd, path: safe });
+      throw err;
+    }
     return { fd };
   }
 
@@ -786,13 +797,20 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
    * **异步面**的打开：走 `fs/promises.open` 拿 `FileHandle`（判卷人 v22.22.1 实测：
    * `fs/promises` **没有** `read`/`write`/`close`/`fsync`/`ftruncate`，也不收数字 fd
    * —— 真异步 fd I/O 只有 `FileHandle` 这一条路）。同一个真描述符同时供同步面用（`fh.fd`）。
+   * 登记失败时的收尾同上（`releaseFd` 会同步关描述符 + 收掉 `FileHandle`）。
    */
   async function openFdAsync(p: string, flagsJson: HostArg | undefined, mode: 'read' | 'write'): Promise<{ fd: number }> {
     const { safe, flags } = fdOpenArgs(ctx.dataDir, p, flagsJson, mode);
+    handles.ensureCapacity('fd'); // 预检同上
     const fh = await fspOpen(safe, flags as never);
     const fd = nextFd++;
     const resource: FdResource = { fh, realFd: fh.fd, path: safe };
-    handles.open('fd', resource, () => releaseFd(resource), { id: String(fd) });
+    try {
+      handles.open('fd', resource, () => releaseFd(resource), { id: String(fd) });
+    } catch (err) {
+      releaseFd(resource);
+      throw err;
+    }
     return { fd };
   }
 
