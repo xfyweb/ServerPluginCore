@@ -52,7 +52,7 @@ function auditLifecycle(
   method: string,
   result: 'ok' | 'error',
   started: number,
-  extra?: { cause?: string; paramsDigest?: string },
+  extra?: { cause?: string; paramsDigest?: string; suspendedMs?: number },
 ): void {
   audit({
     ts: Date.now(),
@@ -62,6 +62,8 @@ function auditLifecycle(
     paramsDigest: extra?.paramsDigest ?? digest(pluginId),
     result,
     error: result === 'error' ? { code: extra?.cause ?? 'PLUGIN_ERROR' } : undefined,
+    // 挂起时长与 durationMs 分列：插件"自己算了 3 秒"与"等宿主 I/O 3 秒"是两件事（见 AuditEntry.suspendedMs）
+    suspendedMs: extra?.suspendedMs,
     durationMs: Date.now() - started,
   });
 }
@@ -108,7 +110,7 @@ function bundleLoaderFor(entry: string): Loader {
   return 'js';
 }
 
-/** 调用钩子并记 lifecycle.<hook> 审计（result + durationMs） */
+/** 调用钩子并记 lifecycle.<hook> 审计（result + durationMs + suspendedMs） */
 async function runHook(
   sandbox: Sandbox,
   hook: 'init' | 'start' | 'stop',
@@ -118,10 +120,16 @@ async function runHook(
   const started = Date.now();
   try {
     await sandbox.callHook(hook, timeoutMs);
-    auditLifecycle(pluginId, `lifecycle.${hook}`, 'ok', started);
+    auditLifecycle(pluginId, `lifecycle.${hook}`, 'ok', started, {
+      suspendedMs: sandbox.lastSuspendedMs(),
+    });
   } catch (err) {
     const shape = toErrorShape(err);
-    auditLifecycle(pluginId, `lifecycle.${hook}`, 'error', started, { cause: shape?.code });
+    auditLifecycle(pluginId, `lifecycle.${hook}`, 'error', started, {
+      cause: shape?.code,
+      // 失败路径也要这笔账：**超时**恰恰是最需要知道"时间花在等宿主还是在跑插件"的场合
+      suspendedMs: sandbox.lastSuspendedMs(),
+    });
     throw err;
   }
 }

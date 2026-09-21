@@ -661,3 +661,54 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 
 > 顺带记一条纪律：**遇到"某个包在沙箱里怪死"，先看 QuickJS 侧栈**（`params.stack` 现在有了），
 > 别急着写探针——本轮为此写了 5 个诊断脚本才发现是诊断信息本身被丢了。
+
+### 14.9 同一个 shim 被求值两次 ⇒ 两份 `Buffer` 类（**值不对但不报错**）
+
+**症状**：沙箱里 `Buffer.isBuffer(crypto.createHash('sha256').update('a').digest())` 给 **false**，
+而 Node 给 true；`crypto.randomBytes(n)`、`fs.readFileSync(p)` 这些**跨桥回来的字节**全都一样，
+而沙箱里自己 `Buffer.from('ab')` 造的又是 true。（探针：`_audit/scratch/probe-buffer-identity.mts`。）
+
+**机制**：QuickJS 的模块缓存键 = **归一化后的模块名**。
+- 插件写 `import 'node:buffer'` ⇒ 键是 `node:buffer`（走 registry 的规范名）；
+- shim 之间是**相对引用**：`node-crypto.js` 里 `import { Buffer } from './node-buffer.js'`
+  （构建层要用 esbuild 把 shim 内联进插件产物，所以**只能**这么写，不能写 `node:*`）
+  ⇒ 键是解析出来的 `node-buffer.js`。
+
+同一个文件两个键 ⇒ **求值两次** ⇒ 两份 `Buffer` 类。`Buffer.isBuffer` 的实现就是 `b instanceof Buffer`，
+于是跨桥回来的那份（由 crypto 模块自己那份 Buffer 造出来）在插件那份类面前不是实例 —— 这一类
+"值不对但不报错"的差异最难查，属于本清单专收的那种。
+
+**修法**：`runtime.setModuleLoader(loader, normalizer)` 的**第二个参数**（`JSModuleNormalizer`）。
+`sandbox.ts` 的 `normalizeModuleName` 把"同一个 shim 的所有叫法"收敛到一个名字：
+①能认成规范名 ⇒ 归到它的文件名；②解析后名字的基名是个 shim 文件（`node-assert/node-assert.js`
+这种相对解析出来的怪名字）⇒ 同样归到文件名；③其余原样返回，白名单判定仍只在 `loader` 里。
+⚠️ 一旦给了归一化器，QuickJS 的**默认相对解析就不再发生**，所以 `resolveRelativeModuleName`
+把那条默认规则（父模块名的目录部分 + 请求名 + `..` 折叠）自己实现了一遍。
+
+**判据**：`core/__tests__/sandbox.test.ts` 的「模块名归一化：同一个 shim 只求值一次」（去掉第二个参数必红：
+`DIGEST=false/false`、`RANDOM=false`）。
+
+**为什么以前没发现**：差分电池跑在**纯 Node 假桥**上（只有一份 Buffer），而真沙箱用例只比了摘要的十六进制
+字符串——跨桥字节的 `instanceof` 一直没人断言。
+
+### 14.10 句柄面（对象身份）：流式摘要的三种收口
+
+`crypto.Hash`/`Hmac` 的状态从沙箱搬到了宿主（一条句柄 = 一个 OpenSSL EVP 上下文，见
+`core/plugin/handles.ts`），于是多了三条必须同时成立的收口，缺一条就是宿主内存的无底洞：
+
+| 收口 | 实现 | 判据 |
+|---|---|---|
+| 正常释放 | `digest()`/失败的 `digest()` 之后仿真层调 `crypto.hashRelease` ⇒ 表里移除 | 真沙箱用例里"开 300 次、每次 digest"必须全过（`CHURN 300`） |
+| 上限 fail-closed | 每 kind 256 条（`MAX_DIGEST_HANDLES`）⇒ `HANDLE_LIMIT_EXCEEDED` | 同一用例里"只开不关到 300"必须停在 **256** 并拿到该码 |
+| 卸载强回收 | `bridge.releaseHandles`（沙箱 `teardown()` 调）⇒ `HandleTable.releaseAll()` + 审计 | `handles.test.ts` 的 `releaseAll` 断言（各恰好释放一次、leaked 列表正确） |
+
+另外两条来自判卷人实测（v22.22.1）的保真细节，别想当然：
+- **`Hmac` 不是 `Hash` 的子类**：`hmac instanceof crypto.Hash === false`、`Hmac.prototype instanceof Hash === false`、
+  **`hm.copy` 不存在**（`TypeError: hm.copy is not a function`）。旧实现把它们别名成同一个类，三处都不对。
+- **终态语义不对称**：`Hash` 二次 `digest()` 抛 `ERR_CRYPTO_HASH_FINALIZED`；**`Hmac` 二次 `digest()` 返回空值**
+  （`'hex'` ⇒ `''`，不带编码 ⇒ 空 Buffer），而它的 `update()` 仍然抛同一个码。
+- **算法校验也不对称**：`createHash('nope')` **懒校验**（create 不抛、`digest()` 才抛 `Digest method not supported`，
+  而且那个错误**没有 code**）；`createHmac('nope', k)` **急切**抛 `ERR_CRYPTO_INVALID_DIGEST: Invalid digest: nope`。
+
+句柄 id 是**随机 UUID**（不是自增），而且**每个插件一张表** ⇒ 别家插件的 id 在本表里根本查不到，
+"借用/伪造句柄"这条攻击面是**结构上不可达**的，不靠校验挡。

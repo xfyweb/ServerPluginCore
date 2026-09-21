@@ -17,6 +17,7 @@ const { capabilities } = await import('../plugin/capabilities.ts');
 const { SpcError } = await import('../errors.ts');
 const { validatePluginConfig, loadPluginConfig, savePluginConfig } = await import('../plugin/config.ts');
 const { loadRecords, validateRecord } = await import('../plugin/records.ts');
+const { pluginDataDir } = await import('../config.ts');
 
 // ---------------- 夹具 ----------------
 
@@ -811,4 +812,41 @@ test('审计：生命周期条目按 lifecycle.init/start/stop/unload 落账（�
   );
   assert.equal(unload?.result, 'ok');
   assert.equal(typeof unload?.durationMs, 'number');
+});
+
+test('审计：lifecycle.<hook> 条目带 suspendedMs —— 钩子里等宿主 I/O 的时间要能单独看出来', async () => {
+  // 为什么要这条：`durationMs` 里同时含着"插件自己算的"与"等宿主 I/O 的"两段时间，而处置完全不同
+  // （前者调预算/改代码，后者看宿主实现）。挂起期间解释器没在跑 ⇒ 既不吃 CPU 预算也不落中断，
+  // 只有这个字段能把它单列出来（见 `AuditEntry.suspendedMs` 的注释）。
+  // 这里用的是**真异步宿主方法** `fs.readTextAsync`（`fs.promises.readFile` 那条真异步通道）。
+  const dir = makePlugin(
+    'suspended',
+    `import fsp from 'node:fs/promises';
+     export async function init() {
+       // 连读多次、且文件不小：让"等宿主"的累计量明显大于计时噪声
+       // （单次小文件读可能不到 1ms ⇒ 30 次的总和理论上仍可能取整成 0，那样断言就变成掷骰子）
+       for (let i = 0; i < 30; i++) await fsp.readFile('a.bin', 'utf8');
+     }
+     export function start() {}
+     export function stop() {}`,
+  );
+  // 数据目录是宿主建的（`pluginDataDir`），这里先自己建好并放一个文件：装载时会跑 init，读的就是它
+  const pluginData = pluginDataDir(id('suspended'));
+  mkdirSync(pluginData, { recursive: true });
+  writeFileSync(join(pluginData, 'a.bin'), 'x'.repeat(256 * 1024), 'utf8');
+  await manager.install(dir);
+  const init = auditEntries().find(
+    (e) => e.pluginId === id('suspended') && e.method === 'lifecycle.init',
+  );
+  assert.equal(init?.result, 'ok', `init 审计缺失或失败：${JSON.stringify(init)}`);
+  const suspended = init?.suspendedMs;
+  assert.equal(typeof suspended, 'number', `lifecycle.init 没记 suspendedMs：${JSON.stringify(init)}`);
+  assert.ok(
+    (suspended as number) > 0,
+    `30 次真异步读的挂起墙钟不该是 0（实际 ${String(suspended)}）`,
+  );
+  assert.ok(
+    (suspended as number) <= (init?.durationMs as number),
+    '挂起墙钟是阶段总时长的一部分，不该超过它',
+  );
 });

@@ -18,7 +18,7 @@
 //   · 栈超限：`JS_ThrowStackOverflow` → InternalError("stack overflow")（`vendor/quickjs/quickjs.c:7373-7376`）。
 //
 // 三者都表现为 InternalError + 不同的 message，因此宿主侧归类就是"看 name + message"。
-import { isFail, type QuickJSRuntime } from 'quickjs-emscripten';
+import { isFail, type ExecutePendingJobsResult, type QuickJSRuntime } from 'quickjs-emscripten';
 import type { PluginLimits } from '../config';
 
 /**
@@ -184,6 +184,58 @@ export function pumpJobs(runtime: QuickJSRuntime, deadline: number): PumpOutcome
   while (runtime.hasPendingJob()) {
     if (Date.now() > deadline) return { status: 'pending' };
     const res = runtime.executePendingJobs(JOB_BATCH);
+    if (isFail(res)) {
+      let dumped: unknown;
+      try {
+        dumped = res.error.context.dump(res.error);
+      } catch {
+        dumped = undefined;
+      } finally {
+        res.error.dispose();
+      }
+      return { status: 'failed', failure: classifyVmFailure(dumped) };
+    }
+  }
+  return { status: 'drained' };
+}
+
+/**
+ * 运行时**确实有**、但上游类型声明（`quickjs-emscripten-core/dist/index.d.mts`）里还没有的那条入口：
+ * `patches/quickjs-emscripten-core.patch` 只补了 dist 的 JS 正文，d.ts 没跟着生成。
+ * 按"最小必要面"自己声明一次——类型落后于运行时，不等于运行时没有（这条路径由
+ * `core/__tests__/sandbox.test.ts` 的"连续 await 两次 async 宿主方法"用例钉住）。
+ */
+interface AsyncJobPump {
+  executePendingJobsAsync(maxJobsToExecute?: number): Promise<ExecutePendingJobsResult>;
+}
+
+/**
+ * 泵 QuickJS 的 job 队列，**可挂起版**：用 `executePendingJobsAsync()` 驱动。钩子/装载两条路径都用它。
+ *
+ * 为什么非它不可（**实测**，不是推理）：宿主方法声明 `async: true` 时，guest 那次调用会在 asyncify 里
+ * **挂起**（WASM 栈 unwind，等宿主 Promise 落地）。同步的 `executePendingJobs()` 走的是 Emscripten 的
+ * 非 async 入口，**驱动不了挂起**——实测现象：钩子既不返回、也拿不到值，并且沙箱在 dispose 时命中
+ * `JS_FreeRuntime` 的 `assert(list_empty(&rt->gc_obj_list))`（`vendor/quickjs/quickjs.c:2036`）直接 Abort。
+ *
+ * ⚠️ 循环条件必须与同步版一致：**队列空时一次都不许调**。实测（不是推理）：本仓库 patch 过的
+ * `executePendingJobsAsync()` 少同步版开头那道 `ctxPtr === 0` 短路 —— 队列为空时 `ctxPtr` 是 0，
+ * 它会走 `contextMap.get(0) ?? newContext({ contextPointer: 0 })`，而 0 是 falsy ⇒ **真造一个
+ * 永不释放的新 context**（实测：同文件里那些跟异步毫无关系的用例，dispose 时统统命中
+ * `JS_FreeRuntime` 的 `assert(list_empty(&rt->gc_obj_list))` 而 Abort）。所以"驱动挂起"这件事
+ * 必须发生在**某个 job 内部**（钩子就是在 job 里被调起的，见 `core/sandbox.ts` 的 `__spcInvoke`），
+ * 而不是靠"空队列也去戳一下"。
+ *
+ * 限额语义与同步版一致（deadline 到点报 pending，由调用方转 PLUGIN_JOB_PENDING）。但要说清一条**盲区**：
+ * 挂起等宿主 Promise 时 `await` 让 deadline 管不着——那段时间解释器根本没在跑（与宿主里 `spawnSync`
+ * 阻塞同源）。这条由调用方的**墙钟事后校验**兜住（见 `core/sandbox.ts` 的 `invoke`）。
+ */
+export async function pumpJobsAsync(runtime: QuickJSRuntime, deadline: number): Promise<PumpOutcome> {
+  const pump = runtime as unknown as AsyncJobPump;
+  // 同步版 `pumpJobs` 留着不删：它的语义（不 await、不碰挂起）在"确定不会挂起"的场合仍是正确的那条，
+  // 也是这条异步版的对照实现。**当前两个调用方（钩子/定时器、装载）都用的是本函数**。
+  while (runtime.hasPendingJob()) {
+    if (Date.now() > deadline) return { status: 'pending' };
+    const res = await pump.executePendingJobsAsync(JOB_BATCH);
     if (isFail(res)) {
       let dumped: unknown;
       try {

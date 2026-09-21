@@ -4,14 +4,17 @@
 //   · **加密计算全在宿主**（`crypto.*` 宿主方法）：摘要/HMAC/随机/对称解密。理由不是"省事"，而是
 //     **正确性不可能靠复刻**——恒定时间比较、GCM 认证标签、填充与 OpenSSL 边角都不可自实现；
 //     而这些操作天生是"字节进、字节出"，正是桥最擅长的形状。
-//   · **沙箱里只有形状与状态**：`Hash`/`Hmac`/`Decipheriv` 的类、`update()` 的累积、编码参数归一化、
+//   · **沙箱里只有形状与状态**：`Hash`/`Hmac`/`Decipheriv` 的类、编码参数归一化、
 //     错误文案还原、静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`）。
+//     ⚠️ 2026-09-21 起：**`Hash`/`Hmac` 的累积状态也在宿主**（句柄表，见 `core/plugin/handles.ts`）——
+//     沙箱侧只留"终态语义"（`digest()` 之后再用怎么报），见下面边界 8。
 //
 // ══ 已知边界（写在这里，免得被当成 bug）══
 //  1. **非对称与密钥对象一律明确抛错**：`sign`/`verify`/`createSign`/`createVerify`/`generateKeyPair*`/
 //     `createPublicKey`/`createPrivateKey`/`createSecretKey`/`publicEncrypt`/`privateDecrypt`/`diffieHellman`/
 //     `createECDH`/`generatePrime*`/`checkPrime*`/`Certificate`/`X509Certificate`/`setEngine`。原因是
-//     **密钥对象要求对象身份**（桥没有，§3.2.1 阻断 1）；而且沙箱插件本来也不该拿宿主密钥。
+//     **密钥对象要求对象身份**，而本批之前沙箱侧确实没有它；现在句柄表已落地（`Hash`/`Hmac` 是第一个用户），
+//     这条边界**只等接线**，不再是能力缺口。
 //  2. **派生函数（pbkdf2/scrypt/hkdf）本批不做**（明确抛错）：宿主代工很容易，但没有实测需求；
 //     有真实依赖卡住再补（属"只增不改"的追加，不影响已发布的形状）。
 //  3. **`Hash`/`Hmac` 不是流**：Node 里它们是 `stream.Transform`（原型上有 `_transform`/`_flush`），
@@ -29,6 +32,10 @@
 //     （WSL 真值，`tools/truth/data/crypto-truth*.json` 生成），与 path=posix / constants=Linux / os 三分法同一取向：
 //     宿主 OpenSSL 的清单会随机器变，而插件不该在两种机器上看到不同的算法表。**计算**仍交宿主，
 //     宿主不支持某个算法时如实报错（不假装成功）。
+//  8. **句柄上限**（沙箱特有）：同时活着的 `hash`/`hmac` 句柄各 256 条（`MAX_DIGEST_HANDLES`），
+//     到顶 ⇒ `HANDLE_LIMIT_EXCEEDED`。Node 没有这个限制，但"只 createHash 不 digest"在宿主侧
+//     是真的占 native 内存，必须有闸（`core/plugin/handles.ts` 的三种收口：正常释放 / 上限 / 卸载强回收）。
+//     正常用法（一次摘要一个 `createHash`，`digest()` 后立即释放）永远碰不到它。
 //
 // 内联约束：静态、无占位符、不 import 任何 `node:*`；能力只在运行时从 `globalThis.__host` 取。
 
@@ -243,19 +250,53 @@ function toKeyMaterial(value, what, enc) {
 // ──────────────────────────── Hash / Hmac ────────────────────────────
 
 /**
- * `crypto.Hash` / `crypto.Hmac`：**状态在沙箱**（攒字节），`digest()` 时一次交宿主算。
+ * 终态误用的 Node 真值：`Digest already called` + `ERR_CRYPTO_HASH_FINALIZED`。
+ * 判卷人实测（v22.22.1，与宿主 v24 一致）：`digest()` 之后再 `digest()`/`update()`/`copy()` 三条路都是它。
+ */
+function hashFinalizedError() {
+  const e = new Error('Digest already called');
+  e.code = 'ERR_CRYPTO_HASH_FINALIZED';
+  return e;
+}
+
+/** 释放宿主侧句柄（幂等）。失败不抛：释放失败不该顶掉调用方**真正**要报的那个错。 */
+function releaseDigest(id) {
+  try {
+    callJson('crypto.hashRelease', id);
+  } catch {
+    // 交给卸载时的强制回收兜底（见 core/plugin/handles.ts）；这里静默
+  }
+}
+
+/**
+ * `crypto.Hash`：**状态在宿主**（一条句柄 = 一个 OpenSSL EVP 上下文），沙箱侧只有形状与终态语义。
  *
- * 为什么不保持宿主侧的状态机：那需要跨调用引用同一个宿主对象 = 对象身份（§3.2.1 阻断 1），
- * 要么用 HostRef（已验证可用但收尾纪律重），要么自建 id 表。而实测需求面里 hash 的载荷都很小
- * （配置指纹、etag、签名片段），攒字节的代价是"吃沙箱堆"，而堆本来就有 32 MiB 上限兜着。
+ * 为什么状态不放沙箱（本批改掉了原来的做法）：原来 `update()` 把字节攒在**沙箱堆**里，
+ * 给大文件算摘要就得先整块读进插件内存（32 MiB 上限）。现在 `update()` 直接把这一块交给宿主，
+ * 内存不随数据量增长 —— 这是句柄表（`core/plugin/handles.ts`）的第一个真实用户。
+ *
+ * 终态语义（`digest()` 之后再 update/digest/copy）**刻意在沙箱侧合成**，而不是"问宿主"：
+ * 宿主对象在 digest 后就被释放了（句柄表里不留墓碑），而且这样语义与宿主 Node 版本无关
+ * （v22/v24 实测一致，但没必要把保真押在它上面）。
  */
 class Hash extends EventEmitter {
-  constructor(algorithm, hmacKey) {
+  constructor(algorithm, existingId) {
     super();
     this._algorithm = assertAlgorithm(algorithm);
-    this._chunks = [];
+    if (existingId !== undefined) {
+      // `copy()` 走这条：宿主已经把状态复制好了，这里只接管新的句柄 id
+      this._id = existingId;
+    } else {
+      // Node 这里**不校验算法**（到 digest() 才报错），照抄：懒校验（宿主侧也懒，见 hostApi 的 hashOpen）
+      let opened;
+      try {
+        opened = callJson('crypto.hashOpen', this._algorithm);
+      } catch (err) {
+        throw toNodeCryptoError(err);
+      }
+      this._id = opened.id;
+    }
     this._finalized = false;
-    this._hmacKey = hmacKey === undefined ? null : hmacKey; // Buffer（Hmac 才有）
   }
 
   /** 兼容 Node 里 `Hash instanceof stream.Transform` 的那点表面（本批不是真流，见文件头边界 3） */
@@ -263,45 +304,108 @@ class Hash extends EventEmitter {
   _flush() {}
 
   update(data, encoding) {
-    if (this._finalized) {
-      const e = new Error('Digest already called');
-      e.code = 'ERR_CRYPTO_HASH_FINALIZED';
-      throw e;
+    if (this._finalized) throw hashFinalizedError();
+    const bytes = toHostData(data, encoding);
+    try {
+      callJson('crypto.hashUpdate', this._id, bytes);
+    } catch (err) {
+      throw toNodeCryptoError(err);
     }
-    this._chunks.push(toHostData(data, encoding));
     return this;
   }
 
   digest(encoding) {
-    if (this._finalized) {
-      const e = new Error('Digest already called');
-      e.code = 'ERR_CRYPTO_HASH_FINALIZED';
-      throw e;
-    }
+    if (this._finalized) throw hashFinalizedError();
     this._finalized = true;
-    const data = this._chunks.length === 0 ? Buffer.alloc(0) : Buffer.concat(this._chunks);
-    this._chunks = [];
     const enc = outputEncoding(encoding);
     try {
-      if (this._hmacKey) {
-        return enc === null
-          ? callBytes('crypto.hmacBytes', this._algorithm, this._hmacKey, data)
-          : callJson('crypto.hmacText', this._algorithm, this._hmacKey, data, enc);
-      }
-      return enc === null
-        ? callBytes('crypto.digestBytes', this._algorithm, data)
-        : callJson('crypto.digestText', this._algorithm, data, enc);
+      const out =
+        enc === null
+          ? callBytes('crypto.hashDigestBytes', this._id)
+          : callJson('crypto.hashDigestText', this._id, enc);
+      releaseDigest(this._id);
+      return out;
     } catch (err) {
+      // 失败也要释放：`createHash('nope').digest()` 这类"到 digest 才炸"的句柄否则会永远留在表里
+      releaseDigest(this._id);
       throw toNodeCryptoError(err);
     }
   }
 
   copy() {
-    // 复制一份**独立的状态**（Node 的 copy 之后两条链互不影响）；Buffer 不共享可变内容，直接共用引用
-    const cloned = new Hash(this._algorithm, this._hmacKey);
-    cloned._chunks = this._chunks.slice();
-    cloned._finalized = this._finalized;
-    return cloned;
+    if (this._finalized) throw hashFinalizedError();
+    let opened;
+    try {
+      opened = callJson('crypto.hashCopy', this._id);
+    } catch (err) {
+      throw toNodeCryptoError(err);
+    }
+    // 复制出**独立**的宿主状态（Node 的 copy 之后两条链互不影响）
+    return new Hash(this._algorithm, opened.id);
+  }
+}
+
+/**
+ * `crypto.Hmac`：**不是** `Hash` 的子类（判卷人实测：`hmac instanceof crypto.Hash === false`，
+ * `Hmac.prototype instanceof Hash === false`），而且**没有 `copy`**（`hm.copy is not a function`）。
+ * 所以这里是独立的类，不继承 Hash —— 之前那份实现把它别名成 `Hash`，三处都跟 Node 不一样。
+ *
+ * 终态差异（与 Hash **不同**，判卷人实测 v22.22.1 与宿主 v24 一致）：
+ * `digest()` 之后再 `digest()` **不抛**，返回**空值**（带编码 ⇒ `''`；不带编码 ⇒ 空 Buffer）；
+ * 而 `update()` 之后再 update 仍抛 `ERR_CRYPTO_HASH_FINALIZED`。
+ */
+class Hmac extends EventEmitter {
+  constructor(algorithm, keyBytes, existingId) {
+    super();
+    this._algorithm = assertAlgorithm(algorithm);
+    this._finalized = false;
+    if (existingId !== undefined) {
+      this._id = existingId;
+      return;
+    }
+    let opened;
+    try {
+      // Hmac 的算法校验是**急切**的（宿主 `createHmac` 当场抛 ERR_CRYPTO_INVALID_DIGEST）
+      opened = callJson('crypto.hmacOpen', this._algorithm, keyBytes);
+    } catch (err) {
+      throw toNodeCryptoError(err);
+    }
+    this._id = opened.id;
+  }
+
+  /** 同 Hash：兼容 `stream.Transform` 的表面（不是真流） */
+  _transform() {}
+  _flush() {}
+
+  update(data, encoding) {
+    if (this._finalized) throw hashFinalizedError();
+    const bytes = toHostData(data, encoding);
+    try {
+      callJson('crypto.hmacUpdate', this._id, bytes);
+    } catch (err) {
+      throw toNodeCryptoError(err);
+    }
+    return this;
+  }
+
+  digest(encoding) {
+    const enc = outputEncoding(encoding);
+    if (this._finalized) {
+      // Node 真值：二次 digest 给**空值**（不是错误）—— 见类注释
+      return enc === null ? Buffer.alloc(0) : '';
+    }
+    this._finalized = true;
+    try {
+      const out =
+        enc === null
+          ? callBytes('crypto.hmacDigestBytes', this._id)
+          : callJson('crypto.hmacDigestText', this._id, enc);
+      releaseDigest(this._id);
+      return out;
+    } catch (err) {
+      releaseDigest(this._id);
+      throw toNodeCryptoError(err);
+    }
   }
 }
 
@@ -399,13 +503,9 @@ function createHmac(algorithm, key, options) {
     );
   }
   const keyBytes = toKeyMaterial(key, 'key', options && options.encoding);
-  // Hmac 的算法校验是**急切**的（Node 实测：createHmac('nope', k) 当场抛 ERR_CRYPTO_INVALID_DIGEST）
-  try {
-    callJson('crypto.assertDigest', alg);
-  } catch (err) {
-    throw toNodeCryptoError(err);
-  }
-  return new Hash(alg, keyBytes);
+  // Hmac 的算法校验是**急切**的，由宿主 `crypto.hmacOpen` 当场抛（Node 实测：
+  // createHmac('nope', k) → ERR_CRYPTO_INVALID_DIGEST: Invalid digest: nope），构造函数里映射错误形状
+  return new Hmac(alg, keyBytes);
 }
 
 /** `crypto.hash(algorithm, data, outputEncoding)`（Node 21+ 的一次性摘要） */
@@ -826,7 +926,7 @@ class ECDH extends stub('crypto.ECDH', ASYM_WHY) {}
 const crypto = {
   // 类（形状，便于 instanceof / 类型判断）
   Hash,
-  Hmac: Hash, // Node 里 Hmac 是 Hash 的子类；这里同一份实现（构造时给 key）
+  Hmac, // **独立类**（Node 实测：`hmac instanceof crypto.Hash === false`，且 Hmac 没有 copy）
   Decipher,
   Decipheriv,
   Cipher,
@@ -908,6 +1008,7 @@ const crypto = {
 
 export {
   Hash,
+  Hmac,
   Decipheriv,
   createHash,
   createHmac,

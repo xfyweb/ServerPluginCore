@@ -7,14 +7,18 @@
 //      因此这里显式断言 dispose() 不崩。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { HostApi, SandboxBridge } from '../sandbox';
 
 // 审计写隔离目录：AUDIT_DIR 在模块加载时读取环境变量，故必须先设再动态导入
 const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-'));
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
+/** 仓库根（子进程用例要按绝对路径 import TS 源码） */
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 const { createSandbox } = await import('../sandbox.ts');
 const { SpcError } = await import('../errors.ts');
@@ -90,6 +94,398 @@ console.log('RAW=' + raw);
   assert.match(out, /INTERNAL/);
   assert.match(out, /async-host-method-not-supported/);
   assert.doesNotMatch(out, /RAW=\{\}/); // 旧行为：静默给空对象
+});
+
+test('钩子里连续 await 两次 async 宿主方法都拿到值（可挂起的异步 job 泵）', async () => {
+  // 判别性（这条用例的**全部意义**）：宿主方法声明 `async: true` 后，guest 侧那次调用会在 asyncify 里
+  // **挂起**（宿主 Promise 未落地 => WASM 栈 unwind），要接着往下跑得靠 MaybeAsync 那条入口
+  // （`executePendingJobsAsync()`）做 rewind。同步 `executePendingJobs()` 驱动不了它 ⇒ 这条用例在
+  // "泵还是同步" 时必红。**实测的红**：钩子拿不到值、状态停在 async，且 `dispose()` 时命中 QuickJS 的
+  // GC 断言 `JS_FreeRuntime: assert(list_empty(&rt->gc_obj_list))`（`vendor/quickjs/quickjs.c:2036`）
+  // 直接 Abort —— 换个说法：挂起把沙箱的宿主/guest 同步关系打断了，VM 也留在了不一致状态。
+  // 为什么要**连续 await 两次**：一次只证明"挂起能落地一次"，两次才证明泵是**循环**泵到静止，
+  // 而不是"等一次就收工"。
+  const api: HostApi = {
+    'test.slow': {
+      permission: 'fs.write.data', // self/auto 档，免声明免授予，且不碰真实文件
+      async: true,
+      async fn() {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return { ok: true };
+      },
+    },
+  };
+  const sandbox = await createSandbox(api, OPTIONS);
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+const H = globalThis.__host;
+export async function init() {
+  // 桥的协议不变：拿到的仍是 JSON 文本信封（异步只影响"桥内部怎么等"）
+  const ra = await H['test.slow']();
+  const rb = await H['test.slow']();
+  console.log('RAW=' + ra);
+  console.log('A=' + JSON.parse(ra).ok + ' B=' + JSON.parse(rb).ok);
+}
+`,
+    );
+    // 防挂死：泵等不到挂起落地时会**永久 await**（那正是判别点），所以自带超时兜底，
+    // 让"红"表现为一条明确的失败，而不是把整个测试进程挂住（挂住也算证据，但要能跑出结论）。
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        sandbox.callHook('init', 3_000),
+        new Promise((_resolve, reject) => {
+          guard = setTimeout(() => reject(new Error('HOOK_HUNG: callHook 5s 内没返回（挂起没被驱动）')), 5_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(guard);
+    }
+  } finally {
+    console.log = origLog;
+    sandbox.dispose();
+  }
+  const out = logs.join('\n');
+  // ① 拿到的是**真值**、不是 `{}`：`async: true` 的通道**必须**先 await 宿主 Promise 再序列化。
+  //    反例（本轮修掉的缺陷）：把 Promise 直接交给 `JSON.stringify` ⇒ 插件收到字符串 `"{}"`
+  //    （而且审计还记 `result: 'ok'`）—— 静默失败，所以这里把它钉住。
+  assert.match(out, /RAW=\{"ok":true\}/, `实际日志：${JSON.stringify(out)}`);
+  // ② 连续两次都拿到值：一次只证明"挂起能落地一次"，两次才证明泵是**循环**泵到静止。
+  assert.match(out, /A=true B=true/, `实际日志：${JSON.stringify(out)}`);
+});
+
+test('真沙箱：fs.promises.readFile 走真异步通道（挂起 + 真 I/O），同步面不受影响', async () => {
+  // 为什么这条必须落在**真沙箱**里：`fs.promises.readFile` 是第一个接上"真异步"的**插件可见** API ——
+  // 宿主侧 `fs.readTextAsync` / `fs.readBytesAsync` 声明了 `async: true`，guest 那次调用会在 asyncify 里
+  // 挂起、靠 MaybeAsync 的 job 泵 rewind；**这条链只在真 VM 里存在**（`emulation-fs.test.ts` 的纯 Node
+  // 假桥复现不出挂起，那边只验 fs/promises 的语义）。
+  // 判别点（本轮实测过）：把 `fs.readTextAsync` 的 `async: true` 去掉 ⇒ 宿主调用不再挂起、guest 拿到的是
+  // Promise 句柄，桥的同步守卫抛 `async-host-method-not-supported` ⇒ `readFile` 拒绝 ⇒ 这条必红；
+  // 把 job 泵换回同步 `executePendingJobs` ⇒ 这里表现为 HOOK_HUNG（挂起没被驱动）。
+  const { buildHostApi } = await import('../hostApi.ts');
+  const bridge: SandboxBridge = {};
+  const dataDir = mkdtempSync(join(tmpdir(), 'spc-async-fs-'));
+  const api = buildHostApi({ pluginId: '@xfy2412/sandbox-test', dataDir, bridge });
+  writeFileSync(join(dataDir, 'a.txt'), 'xy');
+  const sandbox = await createSandbox(api, {
+    pluginId: '@xfy2412/sandbox-test',
+    permissions: ['fs.read.data'],
+    grants: ['fs.read.data'],
+    bridge,
+  });
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import fsp from 'node:fs/promises';
+import fs from 'node:fs';
+export async function init() {
+  const a = await fsp.readFile('a.txt', 'utf8');
+  const b = await fsp.readFile('a.txt', 'utf8');
+  // 不带编码 → 走二进制通道：证明 async 与 binaryResult **两条属性一起**生效
+  const buf = await fsp.readFile('a.txt');
+  // 失败面照旧是**拒绝**（不是抛出），syscall 照宿主真值（读不存在 = open）
+  let code = 'NO-THROW';
+  let syscall = '-';
+  try { await fsp.readFile('nope.txt', 'utf8'); } catch (e) { code = e.code; syscall = e.syscall; }
+  // 同一次调用里同步面照跑：两条通道互不干扰（同步方法**不许**被挂起机制带偏）
+  const c = fs.readFileSync('a.txt', 'utf8');
+  console.log('A=' + a + ' B=' + b + ' N=' + buf.length + ' S=' + (buf.toString('utf8') === 'xy') + ' C=' + c);
+  console.log('ERR=' + code + '/' + syscall);
+}
+`,
+    );
+    // 防挂死：泵驱动不了挂起时会**永久 await**，那是判别点，但"红"必须是一条失败而不是挂住进程。
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        sandbox.callHook('init', 3_000),
+        new Promise((_resolve, reject) => {
+          guard = setTimeout(() => reject(new Error('HOOK_HUNG: callHook 5s 内没返回（真异步通道没被驱动）')), 5_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(guard);
+    }
+  } finally {
+    console.log = origLog;
+    sandbox.dispose();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+  const out = logs.join('\n');
+  // 连续两次都拿到内容（一次只证明"挂起落地一次"，两次才证明泵循环到静止），字节面与同步面同值。
+  assert.match(out, /A=xy B=xy N=2 S=true C=xy/, `实际日志：${JSON.stringify(out)}`);
+  assert.match(out, /ERR=ENOENT\/open/, `实际日志：${JSON.stringify(out)}`);
+});
+
+// ---- ⑤ 真异步通道的四条契约（2026-09-21，用户拍板：PLUGIN_BUSY / 延后拆 / 审计记 suspendedMs）----
+
+test('模块名归一化：同一个 shim 只求值一次（否则跨桥回来的字节 `instanceof Buffer` 是 false）', async () => {
+  // 判别点：把 `runtime.setModuleLoader(loader, normalizeModuleName)` 的第二个参数去掉 ⇒ 后两行变成
+  // `DIGEST false false` / `RANDOM false` ⇒ 必红。
+  // 机制（实测）：shim 之间是**相对引用**（`node-crypto.js` 里 `import { Buffer } from './node-buffer.js'`，
+  // 构建层要用 esbuild 内联所以只能这么写），而插件写 `import 'node:buffer'`；QuickJS 的模块缓存键是
+  // **解析后的名字** ⇒ 同一个文件以两个名字各求值一次 ⇒ **两份 Buffer 类**。后果是**静默错值**：
+  // `Buffer.isBuffer(摘要结果)` 在沙箱里是 false 而 Node 是 true —— 这种差异不报错，只能靠断言钉住。
+  const sandbox = await createSandbox(hostApi, OPTIONS);
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import crypto from 'node:crypto';
+import { Buffer as B } from 'node:buffer';
+export function init() {
+  console.log('SAME=' + (B === Buffer));
+  const d = crypto.createHash('sha256').update('a').digest();
+  console.log('DIGEST=' + Buffer.isBuffer(d) + '/' + (d instanceof Buffer));
+  console.log('RANDOM=' + Buffer.isBuffer(crypto.randomBytes(4)));
+}
+`,
+    );
+    await sandbox.callHook('init', 3_000);
+  } finally {
+    console.log = origLog;
+    sandbox.dispose();
+  }
+  const out = logs.join('\n');
+  assert.match(out, /SAME=true/, `实际日志：${JSON.stringify(out)}`);
+  assert.match(out, /DIGEST=true\/true/, `实际日志：${JSON.stringify(out)}`);
+  assert.match(out, /RANDOM=true/, `实际日志：${JSON.stringify(out)}`);
+});
+
+/** 慢宿主方法：`ms` 之后才落地（用来制造一个**真的挂起**） */
+function slowApi(ms: number): HostApi {
+  return {
+    'test.slow': {
+      permission: 'fs.write.data', // self/auto 档，免声明免授予，且不碰真实文件
+      async: true,
+      async fn() {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+        return { ok: true };
+      },
+    },
+  };
+}
+
+test('契约二：同一 VM 不许并发进 —— 阶段在飞时再调钩子 ⇒ PLUGIN_BUSY（报错，不排队）', async () => {
+  // 判别点：这道守卫是本轮新加的（`callHook` 此前**根本没查 busy**）。少了它，第二个钩子会与
+  // 第一个钩子叠在同一个 VM 上：两条 asyncify 挂起 + 两条 job 泵 + `deadline.setDeadline` 互相覆盖
+  // （前一个钩子的预算凭空变形）。所以这里断言的是**新码 PLUGIN_BUSY**，在没有守卫的代码上必红。
+  const sandbox = await createSandbox(slowApi(60), OPTIONS);
+  await sandbox.runModule(
+    '@xfy2412/sandbox-test',
+    `export async function init() { await globalThis.__host['test.slow'](); }
+     export function start() {}`,
+  );
+  const first = sandbox.callHook('init', 3_000);
+  try {
+    // 等它真的进到挂起（不靠 sleep 猜：轮询 isBusy，最多 1s）
+    for (let i = 0; i < 100 && !sandbox.isBusy(); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(sandbox.isBusy(), true, '钩子应当已在执行/挂起');
+    await assert.rejects(
+      () => sandbox.callHook('start', 3_000),
+      (err: unknown) => {
+        const e = err as { code?: string; params?: Record<string, string> };
+        assert.equal(e.code, 'PLUGIN_BUSY');
+        assert.equal(e.params?.busyWith, 'init', 'busyWith 要说明是谁在跑（排障靠它）');
+        return true;
+      },
+    );
+    await first; // 在飞的钩子照常跑完（守卫只拦后来者）
+    // 挂起结束后就放行了：这不是"插件坏了"，只是时序冲突
+    await sandbox.callHook('start', 3_000);
+  } finally {
+    sandbox.dispose();
+  }
+});
+
+test('契约三：挂起期间 dispose 是"延后拆" —— 不 Abort、卸载立刻生效、拆由阶段收尾接手', async () => {
+  // 判别点：`dispose()` 此前是无条件 `vm.dispose()`。挂起（asyncify unwind）期间拆 VM 等于在栈还摊开时
+  // 释放运行时 ⇒ 旧行为下这条用例**实测挂死**（进程停住；不是干净的错误，也不是每次都能看到
+  // `JS_FreeRuntime` 的 `assert(list_empty(&rt->gc_obj_list))` 那条 Abort）—— 所以本用例自带防挂死兜底，
+  // 让"红"表现为一条可读的失败。`vendor/quickjs/quickjs.c:2036` 是那条断言的出处（行号有冻结帧）。
+  const { buildHostApi } = await import('../hostApi.ts');
+  const bridge: SandboxBridge = {};
+  const dataDir = mkdtempSync(join(tmpdir(), 'spc-async-dispose-'));
+  const api = { ...buildHostApi({ pluginId: '@xfy2412/sandbox-test', dataDir, bridge }), ...slowApi(120) };
+  const sandbox = await createSandbox(api, {
+    pluginId: '@xfy2412/sandbox-test',
+    permissions: ['fs.write.data', 'timers.schedule'],
+    grants: ['fs.write.data', 'timers.schedule'],
+    bridge,
+  });
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '));
+  let first: Promise<void> | undefined;
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import { timers } from '@host/api';
+export async function init() {
+  const t = timers.every(1000, () => {});
+  console.log('TID=' + t.timerId);
+  await globalThis.__host['test.slow']();
+}
+`,
+    );
+    first = sandbox.callHook('init', 3_000);
+    for (let i = 0; i < 100 && !sandbox.isBusy(); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(sandbox.isBusy(), true, '钩子应当已挂在异步宿主调用上');
+    const timerId = /TID=(\S+)/.exec(logs.join('\n'))?.[1];
+    assert.ok(timerId, `没拿到 timerId：${logs.join('|')}`);
+    // ① 卸载本身不许崩、也不许卡：立刻返回（真正拆延后）
+    assert.doesNotThrow(() => sandbox.dispose());
+    // ② 行为上"已经卸载了"：后续调用一律明确报错
+    await assert.rejects(
+      () => sandbox.callHook('start', 100),
+      (err: unknown) => (err as { code?: string }).code === 'PLUGIN_DISPOSED',
+    );
+    // ③ 在飞的那个钩子照常收尾（挂起落地），随后拆才真正发生：宿主定时器此时才被摘掉
+    //    **带防挂死兜底**：这道守卫失效时实测的表现是"进程挂死"（不是 Abort）—— 挂死会让整个
+    //    `pnpm test` 一起停住、连失败都看不到，所以要把它变成一条可读的失败。
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        first,
+        new Promise((_resolve, reject) => {
+          guard = setTimeout(() => reject(new Error('PHASE_HUNG: 延后拆没接上（在飞阶段没收尾）')), 5_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(guard);
+    }
+    assert.equal(sandbox.isBusy(), false, '阶段应当已经收尾');
+    assert.equal(bridge.timers!.clear(timerId), false, '延后拆应当在阶段收尾后摘掉宿主定时器');
+    assert.doesNotThrow(() => sandbox.dispose(), 'dispose 仍然幂等');
+  } finally {
+    console.log = origLog;
+    if (first) await first.catch(() => {});
+    sandbox.dispose();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('契约四：挂起墙钟单独记账（lastSuspendedMs + 审计字段），与 durationMs 分列', async () => {
+  // 为什么这条重要：挂起期间解释器没在跑（既不吃 CPU 预算、也不落中断），但 `durationMs` 里含着它。
+  // 少了这个字段，事后审计看到"init 花了 40ms"时分不清"插件自己算的"与"等宿主 I/O 的"。
+  const { buildHostApi } = await import('../hostApi.ts');
+  const bridge: SandboxBridge = {};
+  const dataDir = mkdtempSync(join(tmpdir(), 'spc-async-audit-'));
+  const api = { ...buildHostApi({ pluginId: '@xfy2412/sandbox-test', dataDir, bridge }), ...slowApi(40) };
+  const sandbox = await createSandbox(api, {
+    pluginId: '@xfy2412/sandbox-test',
+    permissions: ['fs.write.data', 'timers.schedule'],
+    grants: ['fs.write.data', 'timers.schedule'],
+    bridge,
+  });
+  try {
+    await sandbox.runModule(
+      '@xfy2412/sandbox-test',
+      `
+import { timers } from '@host/api';
+export async function init() {
+  timers.every(100, async () => { await globalThis.__host['test.slow'](); });
+  await globalThis.__host['test.slow']();
+}
+`,
+    );
+    const started = Date.now();
+    await sandbox.callHook('init', 3_000);
+    const spent = sandbox.lastSuspendedMs();
+    assert.ok(spent >= 30, `钩子里的挂起墙钟没记上（${spent}ms，宿主睡了 40ms）`);
+    assert.ok(Date.now() - started >= spent - 5, '挂起墙钟不该超过阶段总时长');
+    // 定时器回调那条也走同一套记账，并且要**真落进审计**（sandbox 自己写 timers.tick 条目）
+    await new Promise((r) => setTimeout(r, 350));
+    const ticks = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { method?: string; pluginId?: string; suspendedMs?: number })
+      .filter((e) => e.method === 'timers.tick' && e.pluginId === '@xfy2412/sandbox-test');
+    assert.ok(ticks.length >= 1, '定时器回调没落审计');
+    assert.ok(
+      ticks.some((e) => typeof e.suspendedMs === 'number' && e.suspendedMs >= 30),
+      `timers.tick 条目没记 suspendedMs：${JSON.stringify(ticks)}`,
+    );
+  } finally {
+    sandbox.dispose();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * 子进程脚本源码（"宿主 Promise 永不落地"的负例）。
+ *
+ * ⚠️ 用**数组 join** 而不是模板字面量：这段代码本身要装进字符串，而里面还有一层插件源码字符串 ——
+ * 模板字面量方案一遇到反引号就提前终止，报错还指向别处（本仓库为此炸过 4 次，见 AGENTS.md §2.3）。
+ */
+const HANG_CHILD_SOURCE = [
+  "import { pathToFileURL } from 'node:url';",
+  "import { join } from 'node:path';",
+  '',
+  'const root = process.argv[2];',
+  "const { createSandbox } = await import(pathToFileURL(join(root, 'core', 'sandbox.ts')).href);",
+  '',
+  'const sandbox = await createSandbox(',
+  "  { 'test.never': { permission: 'fs.write.data', async: true, fn: () => new Promise(() => {}) } },",
+  "  { pluginId: '@xfy2412/sandbox-test', permissions: ['fs.write.data'], grants: ['fs.write.data'] },",
+  ');',
+  'await sandbox.runModule(',
+  "  '@xfy2412/sandbox-test',",
+  '  "export async function init() { await globalThis.__host[\'test.never\'](); }",',
+  ');',
+  'const t0 = Date.now();',
+  "let outcome = 'NO-THROW';",
+  'try {',
+  "  await sandbox.callHook('init', 400);",
+  '} catch (err) {',
+  "  outcome = err && err.code ? err.code : String(err);",
+  '}',
+  "console.log('OUTCOME=' + outcome + ' ELAPSED_MS=' + (Date.now() - t0));",
+  'sandbox.dispose();',
+  "console.log('DISPOSED-CLEAN');",
+].join('\n');
+
+test('契约一：宿主 Promise 永不落地也不挂住核心（子进程验：到点按 PLUGIN_INIT_TIMEOUT 收口）', () => {
+  // 为什么必须放**子进程**：这条用例验的正是"核心会不会挂死"。真出现挂死时，进程内跑会把整个
+  // `pnpm test` 一起挂住（连失败都看不到）—— 子进程 + 超时才能把"挂死"变成一条**可读的失败**。
+  // 判别点：去掉 `asyncHostCall` 里那道"宿主调用受阶段预算封顶"，子进程会永久卡在
+  // `await pump.executePendingJobsAsync(...)`（泵的 while 里那句 deadline 判断根本没机会再跑）。
+  // **实测的红**（把预算强行设成 Infinity 跑这条）：子进程 exit **13**，
+  // 原文 `Warning: Detected unsettled top-level await at .../hang-probe.mjs:18  await sandbox.callHook('init', 400);`
+  // —— 核心挂死、Node 判定"顶层 await 永不落地"后自尽；不封顶就没有任何东西会来收这个口。
+  const dir = mkdtempSync(join(tmpdir(), 'spc-async-hang-'));
+  const script = join(dir, 'hang-probe.mjs');
+  writeFileSync(script, HANG_CHILD_SOURCE, 'utf8');
+  try {
+    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs'), script, REPO_ROOT], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, SPC_AUDIT_DIR: dir },
+    });
+    const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+    assert.equal(res.error, undefined, `子进程没跑完（很可能就是挂死被 timeout 杀掉）：${out}`);
+    assert.equal(res.status, 0, `子进程退出码非 0：${out}`);
+    assert.match(out, /OUTCOME=PLUGIN_INIT_TIMEOUT/, `没按阶段超时收口：${out}`);
+    assert.match(out, /DISPOSED-CLEAN/, `卸载路径没走干净：${out}`);
+    const elapsed = Number(/ELAPSED_MS=(\d+)/.exec(out)?.[1] ?? 'NaN');
+    assert.ok(elapsed >= 300, `收口太快，不像"到点收口"（${elapsed}ms）`);
+    assert.ok(elapsed < 10_000, `收口太慢（${elapsed}ms）：预算只有 400ms`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('插件未捕获错误 → PLUGIN_LOAD_FAILED（带 cause），且 dispose 不崩（D1/D2 回归）', async () => {

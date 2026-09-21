@@ -188,6 +188,23 @@ VM 在等宿主 Promise 时处于 asyncify 挂起状态、**不执行代码**，
 > **契约（对宿主 API 作者）**：任何可能阻塞或依赖外部输入的宿主 API **必须自带超时**，且必须用
 > `bridge.remainingMs()` 把超时压到当前阶段的剩余预算之内（`exec.run` 的 `timeoutMs` 是第一个示例）。
 
+**兜底那道在核心侧（契约：宿主 Promise 永不落地也不能挂住核心）**：声明了 `async: true` 的宿主方法，
+其 Promise 会被 `core/sandbox.ts` 的 `asyncHostCall` 与**当前阶段的剩余预算**做一次 race；预算到点就
+把这次挂起**落地**成一个内部错误信封（`INTERNAL` + `reason: 'host-call-deadline'`）。这不是"新造一个超时"，
+而是**让解释器有机会醒过来**：挂起落地 → 泵恢复 job → 下一条 opcode 的中断轮询看到 deadline 已过 →
+`JS_ThrowInterrupted()`（不可捕获）→ 归类成既有的 `PLUGIN_<阶段>_TIMEOUT`。
+少了这一步，"宿主方法返回一个永不 settle 的 Promise"就是**核心级挂死**：泵里的 `await` 永不返回，
+`executePendingJobsAsync` 的循环条件根本没机会再判 deadline（实测过这条：只有把宿主调用本身封顶才收得住）。
+
+于是四条契约（2026-09-21 定，用户拍板）：
+
+| 契约 | 判据 |
+|---|---|
+| 挂起吃**墙钟不吃 CPU** | 挂起期间解释器没在跑 ⇒ 中断不触发、CPU 预算不动；时间由阶段 deadline 与事后墙钟校验收口 |
+| **并发先定 1（串行）** | 同一 VM 不许并发进：`busy` 时再调钩子/装载 ⇒ `PLUGIN_BUSY`（定时器回调仍是**静默跳过一次**，见 §4.4） |
+| **卸载 abort 挂起** | 挂起期间 `dispose()` ⇒ 先标记 `disposed`（后续调用一律 `PLUGIN_DISPOSED`），**真正拆 VM 延后**到在飞阶段收尾：在 WASM 栈还 unwind 着的时候拆 VM 会让收尾命中 `assert(list_empty(&rt->gc_obj_list))` |
+| 审计 `suspendedMs` | `lifecycle.<hook>` / `timers.tick` 条目带"本阶段等宿主 Promise 花掉的墙钟"，与 `durationMs` 分列（否则分不清"插件自己算得慢"与"宿主 I/O 慢"） |
+
 ### 4.4 job 泵（async 钩子能跑起来的前提）
 
 QuickJS 里 promise 的续体是 job，需要宿主驱动（`JS_ExecutePendingJob`，`vendor/quickjs/quickjs.c:1875`）：
@@ -259,7 +276,7 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 - **`stop` 抛错或超时都继续卸载**（只告警 + 审计）：绝不因一个插件卡住核心停机；
 - 卸载顺序固定：`stop` → 撤销能力登记 → `dispose`（Scope 顺序释放 handle）。
 
-**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_LOAD_FAILED`、`PLUGIN_LOAD_TIMEOUT`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_STACK_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。~~`PLUGIN_RESERVED`~~ 随 `reserved` 特性一并**退役**（v2，未发布过，不占契约位）。
+**错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_LOAD_FAILED`、`PLUGIN_LOAD_TIMEOUT`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_STACK_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_BUSY`（同一 VM 已有阶段在跑，`params.busyWith` 说明是谁）、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。~~`PLUGIN_RESERVED`~~ 随 `reserved` 特性一并**退役**（v2，未发布过，不占契约位）。
 
 > **装载失败也分"限额"与"缺陷"**：`runModule` 与钩子共用同一套归类（`classifyVmFailure` + `hookError`），
 > 于是装载期命中限额会得到 `PLUGIN_LOAD_TIMEOUT` / `PLUGIN_MEMORY_LIMIT` / `PLUGIN_STACK_LIMIT`，

@@ -54,6 +54,14 @@ export interface AuditEntry {
   error?: AuditError;
   /** 结果序列化字节数（exec 的命令输出量体现在这里；受模板 maxOutputBytes 约束） */
   resultBytes?: number;
+  /**
+   * 本阶段里**等宿主 Promise 花掉的墙钟**（挂起时长；只有钩子/定时器这类"可能挂起"的阶段才给）。
+   *
+   * 为什么要单独记：挂起期间解释器没在跑（`spawnSync` 那样），所以它**既不吃 CPU 预算、也不落中断**，
+   * `durationMs` 里却实实在在含着这段时间。少了这个字段，事后审计看到"init 花了 3 秒"时无法区分
+   * "插件自己算了 3 秒"与"宿主 I/O 等了 3 秒"——而这两件事的处置完全不同。
+   */
+  suspendedMs?: number;
   durationMs: number;
 }
 

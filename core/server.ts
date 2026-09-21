@@ -51,6 +51,7 @@ function httpStatusFor(code: string): number {
   if (
     code === 'PLUGIN_DISABLED' ||
     code === 'PLUGIN_ALREADY_RUNNING' ||
+    code === 'PLUGIN_BUSY' ||
     code === 'PLUGIN_EXPORT_INVALID'
   ) {
     return 409;

@@ -661,7 +661,11 @@ function toByteView(data) {
 
 // ──────────────────────────── 同步 API ────────────────────────────
 
-function readFileSync(path, options) {
+/**
+ * 读文件的**公共实现**：同步面与 promises 面只有"调哪对宿主方法"不同，
+ * 编码解析 / 路径形态 / 错误映射（syscall 照宿主真值）**逐条同源**——两条通道不许有不同的语义。
+ */
+function readFileCommon(textMethod, bytesMethod, path, options) {
   const enc = readFileOptions(options);
   const p = toPathString(path);
   let result;
@@ -669,7 +673,7 @@ function readFileSync(path, options) {
     // 带编码读 → 宿主一次做完"读 + 解码"（`fs.readText`）；不带编码 → 走二进制通道拿字节。
     // 为什么解码不在沙箱里做：那要过 `bytes.decode` 权限点，会让"用 node:fs 读文本"额外依赖 bytes 声明
     // ——设计 §6 的映射表写的是 `fs.readFile → fs.read.data`，仿真模块不得引入新的权限语义。
-    result = enc === null ? Buffer.from(callBytes('fs.readBytes', p)) : callJson('fs.readText', p, enc).content;
+    result = enc === null ? Buffer.from(callBytes(bytesMethod, p)) : callJson(textMethod, p, enc).content;
   } catch (err) {
     // syscall 照宿主真值：目标不存在时报的是 **open**；而"目标是目录"在 Node 上是读到一半才炸的
     // （syscall 是 **read**，文案 "illegal operation on a directory, read"）——两者都照抄。
@@ -677,6 +681,22 @@ function readFileSync(path, options) {
     throw toNodeError(err, code === 'EISDIR' ? 'read' : 'open', p);
   }
   return result;
+}
+
+function readFileSync(path, options) {
+  return readFileCommon('fs.readText', 'fs.readBytes', path, options);
+}
+
+/**
+ * `fs.promises.readFile` 的**真异步**实现：与 `readFileSync` 同一套（编码 / 错误映射 / 权限点 / 上限），
+ * 只把宿主调用换成 `fs.readTextAsync` / `fs.readBytesAsync` —— 那两条在宿主侧用 `await` 做真 I/O，
+ * 所以**不阻塞宿主事件循环**（文件头边界 3 说的"异步只是形状"在这一个方法上不再成立；其余 promises 方法仍是形状）。
+ *
+ * ⚠️ 这里"看起来没有 await"是对的，**别改**：asyncify 把挂起藏在了这次调用内部，返回值就是最终值；
+ * 自己再包一层 Promise 只是把形状叠一遍。
+ */
+async function readFileAsync(path, options) {
+  return readFileCommon('fs.readTextAsync', 'fs.readBytesAsync', path, options);
 }
 
 function writeImpl(file, data, options, defaultFlag) {
@@ -943,7 +963,8 @@ const promises = {
     return mkdtempSync(prefix, options);
   },
   async readFile(path, options) {
-    return readFileSync(path, options);
+    // 唯一一条**真异步**（宿主侧 await 真 I/O）：见 readFileAsync 的注释；其余方法仍是"形状异步"。
+    return readFileAsync(path, options);
   },
   async readdir(path, options) {
     return readdirSync(path, options);

@@ -11,7 +11,7 @@
 // authenticate data'` 分支（见 `dotenv/lib/main.js:350-360`，版本 17.4.2）。
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as hostCrypto from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -159,6 +159,72 @@ describe('仿真 node:crypto —— 与宿主 Node 差分对跑', () => {
     const clone = h.copy();
     return [h.update('b').digest('hex'), clone.update('c').digest('hex')].join('|');
   });
+
+  // ── 句柄的终态语义（判卷人真值；结构化状态现在在宿主，句柄表见 core/plugin/handles.ts）──
+  compare('Hash 终态：digest 二次 / update / copy 三条路都抛同一码', (c) => {
+    const h = c.createHash('sha256').update('a');
+    h.digest('hex');
+    const one = (fn: () => unknown) => {
+      try {
+        fn();
+        return 'no-throw';
+      } catch (e: any) {
+        return `${e.code}/${e.message}`;
+      }
+    };
+    return [one(() => h.digest('hex')), one(() => h.update('b')), one(() => h.copy())].join('|');
+  });
+  compare('createHash 未知算法：懒校验（create 不抛、digest 才抛，且**没有 code**）', (c) => {
+    const h = c.createHash('nope');
+    let created = 'ok';
+    try {
+      h.update('a');
+    } catch (e: any) {
+      created = `${e.code}/${e.message}`;
+    }
+    let digest: string;
+    try {
+      h.digest('hex');
+      digest = 'no-throw';
+    } catch (e: any) {
+      digest = `${String(e.code)}/${e.message}`;
+    }
+    return `${created}|${digest}`;
+  });
+  compare('Hmac 终态：二次 digest 给**空值**（不是错误），update 仍抛 ERR_CRYPTO_HASH_FINALIZED', (c) => {
+    const hm = c.createHmac('sha256', 'k').update('a');
+    hm.digest('hex');
+    let second: string;
+    try {
+      second = `len=${hm.digest('hex').length}`;
+    } catch (e: any) {
+      second = `${e.code}/${e.message}`;
+    }
+    let update: string;
+    try {
+      hm.update('b');
+      update = 'no-throw';
+    } catch (e: any) {
+      update = `${e.code}/${e.message}`;
+    }
+    return `${second}|${update}`;
+  });
+  compare('Hmac 二次 digest（不带编码）⇒ 空字节视图', (c) => {
+    const hm = c.createHmac('sha256', 'k').update('a');
+    hm.digest();
+    const again = hm.digest();
+    // ⚠️ 这里**不能**比 `Buffer.isBuffer`：那是**宿主**的 Buffer，而沙箱侧返回的是仿真 Buffer
+    // （跨界后以 Uint8Array/ArrayBuffer 的形态存在）。要比的是形状：字节视图 + 长度 0。
+    // "在沙箱里 `Buffer.isBuffer(...) === true`"由真沙箱用例保证（那边的 Buffer 是仿真那一份）。
+    return `isView=${ArrayBuffer.isView(again)} len=${again.length}`;
+  });
+  compare('Hmac 没有 copy（Node：hm.copy is not a function）', (c) => typeof (c.createHmac('sha256', 'k') as any).copy);
+  compare('Hmac 不是 Hash 的实例（Node：独立类，没有继承关系）', (c) => {
+    const hm = c.createHmac('sha256', 'k');
+    return `instanceofHash=${hm instanceof c.Hash} ctor=${hm.constructor.name}`;
+  });
+  compare('Hmac 未 update 直接 digest（空键/空数据也是合法输入）', (c) => c.createHmac('sha256', 'k').digest('hex'));
+
   compare('一次性 hash()', (c) => [c.hash('sha256', 'abc', 'hex'), c.hash('md5', 'abc', 'base64')].join('|'));
   compare('一次性 hash() 未知算法', (c) => c.hash('nope', 'abc', 'hex'));
 
@@ -377,10 +443,14 @@ describe('仿真 node:crypto —— 真实 QuickJS 沙箱里跑通', async () =>
   after(() => rmSync(SMOKE_DIR, { recursive: true, force: true }));
 
   async function runInSandbox(code: string, permissions: string[]): Promise<string> {
-    const api = buildHostApi({ pluginId: '@spc-test/crypto', dataDir: SMOKE_DIR });
+    // 桥要真的传进去（与装载器同一条路）：句柄的**卸载强回收**（`bridge.releaseHandles`）与
+    // kv 的阶段落盘都挂在桥上，不给桥就等于这两条在生产路径上没被覆盖。
+    const bridge: { releaseHandles?: () => void } = {};
+    const api = buildHostApi({ pluginId: '@spc-test/crypto', dataDir: SMOKE_DIR, bridge });
     const sandbox = await createSandbox(api, {
       pluginId: '@spc-test/crypto',
       permissions,
+      bridge,
       facts: { version: { code: 1, name: 'test' }, dataDir: SMOKE_DIR, manifest: {}, config: {} },
     });
     const logs: string[] = [];
@@ -431,6 +501,78 @@ export function init() {
     // 「RangeError + Invalid key length」这一对是 dotenv 的判据，必须逐字成立
     assert.equal(lines[8], 'BADKEY true/Invalid key length/ERR_CRYPTO_INVALID_KEYLEN');
     assert.equal(lines[9], 'REFUSE ERR_NOT_SUPPORTED_IN_SANDBOX');
+  });
+
+  it('句柄面在真沙箱里成立：分片摘要 + 终态语义 + Hmac 三处差异 + 上限', async () => {
+    // 这条走真沙箱的理由：句柄要过**真桥**（字符串 id + JSON/字节通道），而终态语义里有两条
+    // 只能在沙箱里验 —— `Buffer.isBuffer()` 用的是**仿真**那一份 Buffer（宿主差分比不了），
+    // 上限那条要看到 `HANDLE_LIMIT_EXCEEDED` 从宿主经信封穿到插件。
+    const out = await runInSandbox(
+      `
+import crypto from 'node:crypto';
+export function init() {
+  // ① 身份通道：同一条句柄连续 update，等价于一次 update
+  const h = crypto.createHash('sha256');
+  h.update('a'); h.update('bc');
+  console.log('SPLIT ' + h.digest('hex'));
+  // ② 终态：digest 之后三条路都是 ERR_CRYPTO_HASH_FINALIZED
+  const bad = (fn) => { try { fn(); return 'no-throw'; } catch (e) { return e.code; } };
+  console.log('FINAL ' + [bad(() => h.digest('hex')), bad(() => h.update('x')), bad(() => h.copy())].join('/'));
+  // ③ copy 独立
+  const base = crypto.createHash('sha256').update('a');
+  const clone = base.copy();
+  console.log('COPY ' + (base.update('b').digest('hex') !== clone.update('c').digest('hex')));
+  // ④ Hmac：二次 digest 给空值（且**是** Buffer）、update 仍抛、没有 copy
+  const hm = crypto.createHmac('sha256', 'k').update('a');
+  hm.digest('hex');
+  const again = hm.digest();
+  console.log('HMAC2 isBuffer=' + Buffer.isBuffer(again) + ' len=' + again.length + ' hex=' + JSON.stringify(hm.digest('hex')));
+  console.log('HMACU ' + bad(() => hm.update('b')));
+  console.log('HMACC ' + typeof hm.copy + ' INST ' + (hm instanceof crypto.Hash) + ' ' + hm.constructor.name);
+  // ⑤ 正常用法永远碰不到上限：开 300 次、每次用完就 digest（digest 之后句柄立即释放）
+  let ok = 0;
+  for (let i = 0; i < 300; i++) { crypto.createHash('sha256').update('x').digest('hex'); ok++; }
+  console.log('CHURN ' + ok);
+  // ⑥ 句柄上限：只开不关到 256 条必须 fail-closed（不是把宿主内存耗光）。
+  //    ⚠️ 这一步必须放在 churn **之后**：它会把表占满（这 256 条要等卸载时的强制回收才释放），
+  //    放在前面的话后面任何 createHash 都会一起被顶住。
+  let opened = 0;
+  let code = 'none';
+  try { for (let i = 0; i < 300; i++) { crypto.createHash('sha256'); opened++; } }
+  catch (e) { code = e.code; }
+  console.log('LIMIT ' + opened + ' ' + code);
+}
+`,
+      ['crypto.hash', 'bytes.encode'],
+    );
+    const lines = out.split('\n');
+    assert.equal(lines[0], 'SPLIT ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    assert.equal(
+      lines[1],
+      'FINAL ERR_CRYPTO_HASH_FINALIZED/ERR_CRYPTO_HASH_FINALIZED/ERR_CRYPTO_HASH_FINALIZED',
+    );
+    assert.equal(lines[2], 'COPY true');
+    assert.equal(lines[3], 'HMAC2 isBuffer=true len=0 hex=""');
+    assert.equal(lines[4], 'HMACU ERR_CRYPTO_HASH_FINALIZED');
+    assert.equal(lines[5], 'HMACC undefined INST false Hmac');
+    assert.equal(lines[6], 'CHURN 300', 'digest 之后句柄必须立即释放，正常用法碰不到上限');
+    assert.equal(lines[7], 'LIMIT 256 HANDLE_LIMIT_EXCEEDED');
+
+    // ⑦ 审计：句柄的 open/close/强回收都要落账（§5.3 的"审计 open/close/leak"）。
+    //    `handles.forced-release` 这条特别有意义：上一步留下的 256 条**没人释放**，
+    //    卸载时必须被强制回收并留痕 —— 这正是不给桥就测不到的那条路径。
+    const handleMethods = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
+      .filter((e) => e.pluginId === '@spc-test/crypto' && e.method?.startsWith('handles.'))
+      .map((e) => e.method!);
+    for (const expected of ['handles.open', 'handles.close', 'handles.forced-release']) {
+      assert.ok(
+        handleMethods.includes(expected),
+        `审计缺少 ${expected}（实际：${[...new Set(handleMethods)].join(',')}）`,
+      );
+    }
   });
 
   it('`crypto.*` 是 **self/auto 档：不声明也能用**（v4 免声明；以前这条断言的是 EACCES）', async () => {

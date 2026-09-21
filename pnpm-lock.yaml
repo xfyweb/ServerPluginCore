@@ -163,7 +163,8 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  quickjs-emscripten-core: 586b7a0ec1caacf403ad60d451c70d6fdab1433535e584d4dfcaef4aabe8284f
+  '@jitl/quickjs-wasmfile-release-asyncify': 2a0041ab92ce2602a66e88f34963f8cf9932f8e98379b378489dfeb9886adf2b
+  quickjs-emscripten-core: 20370ba59764f0c406e7f65fc0435de7207dddf68f314e036be2c137971cc43b
 
 importers:
 
@@ -501,7 +502,7 @@ snapshots:
     dependencies:
       '@jitl/quickjs-ffi-types': 0.32.0
 
-  '@jitl/quickjs-wasmfile-release-asyncify@0.32.0':
+  '@jitl/quickjs-wasmfile-release-asyncify@0.32.0(patch_hash=2a0041ab92ce2602a66e88f34963f8cf9932f8e98379b378489dfeb9886adf2b)':
     dependencies:
       '@jitl/quickjs-ffi-types': 0.32.0
 
@@ -558,7 +559,7 @@ snapshots:
 
   json-schema-traverse@1.0.0: {}
 
-  quickjs-emscripten-core@0.32.0(patch_hash=586b7a0ec1caacf403ad60d451c70d6fdab1433535e584d4dfcaef4aabe8284f):
+  quickjs-emscripten-core@0.32.0(patch_hash=20370ba59764f0c406e7f65fc0435de7207dddf68f314e036be2c137971cc43b):
     dependencies:
       '@jitl/quickjs-ffi-types': 0.32.0
 
@@ -566,9 +567,9 @@ snapshots:
     dependencies:
       '@jitl/quickjs-wasmfile-debug-asyncify': 0.32.0
       '@jitl/quickjs-wasmfile-debug-sync': 0.32.0
-      '@jitl/quickjs-wasmfile-release-asyncify': 0.32.0
+      '@jitl/quickjs-wasmfile-release-asyncify': 0.32.0(patch_hash=2a0041ab92ce2602a66e88f34963f8cf9932f8e98379b378489dfeb9886adf2b)
       '@jitl/quickjs-wasmfile-release-sync': 0.32.0
-      quickjs-emscripten-core: 0.32.0(patch_hash=586b7a0ec1caacf403ad60d451c70d6fdab1433535e584d4dfcaef4aabe8284f)
+      quickjs-emscripten-core: 0.32.0(patch_hash=20370ba59764f0c406e7f65fc0435de7207dddf68f314e036be2c137971cc43b)
 
   require-from-string@2.0.2: {}
 

@@ -139,6 +139,8 @@
   "err.PLUGIN_TIMER_TIMEOUT": "Plugin timer callback timed out ({pluginId}): interrupted",
   "err.PLUGIN_DISABLED": "Plugin is disabled: {pluginId}",
   "err.PLUGIN_ALREADY_RUNNING": "Plugin is already running: {pluginId}",
+  "err.PLUGIN_BUSY": "Plugin sandbox is busy (no concurrent entry into the same VM): {pluginId} (running {busyWith})",
+  "err.HANDLE_LIMIT_EXCEEDED": "Plugin holds too many {kind} handles at once (limit {limit}) — release them instead of opening and forgetting: {pluginId}",
   "err.PLUGIN_DISPOSED": "Plugin sandbox already disposed: {pluginId}",
   "err.PLUGIN_CONFIG_INVALID": "Invalid plugin config: {pluginId} ({reason})",
 

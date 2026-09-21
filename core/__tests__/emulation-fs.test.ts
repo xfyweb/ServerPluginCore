@@ -60,6 +60,39 @@ after(() => {
  * 权限点这里不做判定（真桥的权限判定由后面那条真沙箱用例覆盖），但**方法名必须真的存在**——
  * 写错方法名要在这一步就炸，而不是静默走 undefined。
  */
+/**
+ * 假桥要调的**宿主方法** —— 并把"声明了 `async: true`"的那一类接到**同步孪生**上。
+ *
+ * 为什么不能直接调 `method.fn`：真桥里 asyncify 让这类方法对 guest **看起来仍是同步的**
+ * （"the VM's stack will be unwound while waiting … then restored"，见 `quickjs-emscripten-core` 的
+ * `QuickJSAsyncContext.newAsyncifiedFunction` —— 插件拿到的就是**最终值**，不是 Promise），
+ * 而纯 Node 的假桥复现不出那次挂起。所以这类方法在假桥里接到孪生方法（`fs.readTextAsync` → `fs.readText`）：
+ * 本文件验的是 fs/promises 的**语义**（编码 / 错误映射 / 上限 / 与同步面一致），
+ * 而"挂起能被驱动、真 I/O 不阻塞宿主"由真沙箱用例覆盖（`sandbox.test.ts` 里 fs.promises 那条）。
+ *
+ * ⚠️ 别顺手把 Promise 交出去：`JSON.stringify(Promise)` 是 `"{}"` ⇒ 插件读出来是 `undefined`
+ * ——**静默错值**（本轮就踩了这条：`fsPromises.readFile` 返回 undefined，而 hostApi 侧一切正常）。
+ *
+ * 顺带守住"异步通道不许是绕过权限点的第二条路"：两条通道的 permission 与结果形状必须逐条相同。
+ */
+function fakeTarget(api: Record<string, any>, name: string): { name: string; method: any } {
+  const method = api[name];
+  if (!method) throw new Error(`假桥收到未知宿主方法：${name}`);
+  if (method.async !== true) return { name, method };
+  const twinName = name.replace(/Async$/, '');
+  const twin = api[twinName];
+  if (!twin) {
+    throw new Error(`假桥：异步宿主方法 ${name} 没有同步孪生 ${twinName}，纯 Node 的假桥仿真不了它的挂起`);
+  }
+  if (twin.permission !== method.permission) {
+    throw new Error(`假桥：${name} 与 ${twinName} 的权限点不同（${method.permission} vs ${twin.permission}）`);
+  }
+  if ((twin.binaryResult === true) !== (method.binaryResult === true)) {
+    throw new Error(`假桥：${name} 与 ${twinName} 的结果形状不同（binaryResult 不一致）`);
+  }
+  return { name: twinName, method: twin };
+}
+
 function installBridge(dataDir: string): void {
   const api = buildHostApi({ pluginId: '@test/fs', dataDir });
   (globalThis as any).__spcEnv = JSON.stringify(buildEnvFacts(dataDir));
@@ -67,8 +100,7 @@ function installBridge(dataDir: string): void {
     {},
     {
       get: (_t, name: string) => (...rawArgs: unknown[]) => {
-        const method = (api as any)[name];
-        if (!method) throw new Error(`假桥收到未知宿主方法：${name}`);
+        const { method } = fakeTarget(api as any, name);
         const args = rawArgs.map((a) => {
           if (typeof a === 'string') return a;
           if (a instanceof Uint8Array) return Uint8Array.from(a);

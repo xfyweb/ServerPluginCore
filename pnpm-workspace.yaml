@@ -1,4 +1,5 @@
 allowBuilds:
   esbuild: true
 patchedDependencies:
+  '@jitl/quickjs-wasmfile-release-asyncify': patches/jitl-quickjs-wasmfile-release-asyncify.patch
   quickjs-emscripten-core: patches/quickjs-emscripten-core.patch

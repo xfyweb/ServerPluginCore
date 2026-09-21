@@ -139,6 +139,8 @@
   "err.PLUGIN_TIMER_TIMEOUT": "插件定时器回调超时（{pluginId}）：已强制中断",
   "err.PLUGIN_DISABLED": "插件已禁用：{pluginId}",
   "err.PLUGIN_ALREADY_RUNNING": "插件已在运行：{pluginId}",
+  "err.PLUGIN_BUSY": "插件沙箱正忙（同一 VM 不许并发进）：{pluginId}（正在执行 {busyWith}）",
+  "err.HANDLE_LIMIT_EXCEEDED": "插件同时持有的 {kind} 句柄到上限（{limit}）——用完了要释放，别只开不关：{pluginId}",
   "err.PLUGIN_DISPOSED": "插件沙箱已释放：{pluginId}",
   "err.PLUGIN_CONFIG_INVALID": "插件配置非法：{pluginId}（{reason}）",
 
