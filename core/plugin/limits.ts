@@ -23,10 +23,15 @@ import type { PluginLimits } from '../config';
 
 /**
  * 会被计时的阶段。
- * `load` = **模块求值**（`runModule`），`timer` = 定时器回调（见 hostApi 的 timers.every）。
+ * `load` = **模块求值**（`runModule`），`timer` = 定时器回调，`watch` = 文件监视回调
+ * （见 hostApi 的 `timers.every` 与 `fs.watchOpen`）。
  * load 与 init 单列：顶层代码同样是插件代码，不能借 init 的预算。
+ *
+ * `watch` 与 `timer` **共用同一个限额**（`timerTimeoutMs`）但**各有各的错误码**：
+ * 两者是同一类东西（无人值守的回调阶段），没必要多一个配置旋钮；
+ * 而排障时必须分得开——"定时器超时"与"文件监视回调超时"是两条完全不同的线索。
  */
-export type HookName = 'load' | 'init' | 'start' | 'stop' | 'timer';
+export type HookName = 'load' | 'init' | 'start' | 'stop' | 'timer' | 'watch';
 
 /** VM 侧失败的归类：限额命中 vs 插件自己的错误 */
 export interface VmFailure {
@@ -84,6 +89,7 @@ export function timeoutMsFor(hook: HookName, limits: PluginLimits): number {
     case 'stop':
       return limits.stopTimeoutMs;
     case 'timer':
+    case 'watch':
       return limits.timerTimeoutMs;
   }
 }
@@ -101,6 +107,8 @@ export function timeoutCodeFor(hook: HookName): string {
       return 'PLUGIN_STOP_TIMEOUT';
     case 'timer':
       return 'PLUGIN_TIMER_TIMEOUT';
+    case 'watch':
+      return 'PLUGIN_WATCH_TIMEOUT';
   }
 }
 
@@ -117,6 +125,8 @@ export function failureCodeFor(hook: HookName): string {
       return 'PLUGIN_STOP_FAILED';
     case 'timer':
       return 'PLUGIN_TIMER_FAILED';
+    case 'watch':
+      return 'PLUGIN_WATCH_FAILED';
   }
 }
 

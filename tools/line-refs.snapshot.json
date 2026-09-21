@@ -1,8 +1,8 @@
 {
- "at": "2026-09-20T05:58:54.236Z",
+ "at": "2026-09-21T13:58:03.711Z",
  "baselines": {
   "vendor": {
-   "forkCommit": "7b7af98",
+   "forkCommit": "4f5ad7c",
    "forkBranch": "spc",
    "engineVersion": "2025-09-13"
   },
@@ -10,7 +10,7 @@
    "commit": "edc61b14de8"
   },
   "pkgs": {
-   "lockSha": "c129ccfd25e3"
+   "lockSha": "fd363c23f7f4"
   }
  },
  "note": "行号引用快照：正确性靠人核一次，此后由 check-line-refs.mjs 守住\"别再悄悄变\"。baselines 记的是**这份快照是对着哪个修订建的**——换修订后必须重新核一遍再 --update。",
@@ -103,6 +103,12 @@
      "ref": "vendor/quickjs/quickjs.c:7373-7376",
      "num": 7373,
      "sha": "e904c5083fd1",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:2036",
+     "num": 2036,
+     "sha": "0cd89642d446",
      "gone": false
     }
    ]
@@ -760,9 +766,21 @@
      "gone": false
     },
     {
+     "ref": "vendor/quickjs/quickjs.c:2036",
+     "num": 2036,
+     "sha": "0cd89642d446",
+     "gone": false
+    },
+    {
      "ref": "vendor/quickjs/quickjs.c:23205",
      "num": 23205,
      "sha": "1d339d0cb758",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:2036",
+     "num": 2036,
+     "sha": "0cd89642d446",
      "gone": false
     }
    ]
@@ -862,6 +880,23 @@
      "ref": "comparisons.js:409-412",
      "num": 409,
      "sha": "b617687ac3f6",
+     "gone": false
+    }
+   ]
+  },
+  "core\\__tests__\\sandbox.test.ts|vendor/quickjs/quickjs.c": {
+   "file": "quickjs-emscripten-spc/vendor/quickjs/quickjs.c",
+   "refs": [
+    {
+     "ref": "vendor/quickjs/quickjs.c:2036",
+     "num": 2036,
+     "sha": "0cd89642d446",
+     "gone": false
+    },
+    {
+     "ref": "vendor/quickjs/quickjs.c:2036",
+     "num": 2036,
+     "sha": "0cd89642d446",
      "gone": false
     }
    ]

@@ -478,7 +478,7 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     fs.unlinkSync(join(DATA_DIR, 'big.bin'));
   });
 
-  it('**同步 fd 面已支持**；回调 / 向量 / 流 / watch / 元数据面仍**响亮抛错**', () => {
+  it('**fd 面 / 向量面 / 文件监视 / 目录句柄已支持**；流与软链那些仍**响亮抛错**', () => {
     // 2026-09-21：同步 fd 面接上了真 OS 资源（句柄模型），所以它**不在**"抛错"名单里了。
     // 这条用例同时钉住两半：支持的那半是**函数且真的能用**（下面单独验），不支持的那半必须明确抛错。
     const supportedSyncFd = ['openSync', 'closeSync', 'readSync', 'writeSync', 'fstatSync', 'ftruncateSync', 'fsyncSync'];
@@ -487,14 +487,20 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
       assert.equal(typeof (fs as any)[name], 'function', `${name} 应当是函数`);
       assert.equal(typeof (hostFs as any)[name], 'function', `对照：宿主上 ${name} 也在`);
     }
-    // `fs.promises.open` 返回 FileHandle（不再抛错），但它的**流式/向量/元数据**那些方法仍在"明确抛错"名单里
+    // `fs.promises.open` 返回 FileHandle（不再抛错），但它的**流式**那些方法仍在"明确抛错"名单里
     assert.equal(typeof (fsPromises as any).open, 'function');
     assert.equal(typeof (hostFsp as any).open, 'function', '对照：宿主上 fs/promises.open 也在');
+    // 文件监视：`fs.watch`/`watchFile`/`unwatchFile` 现在是真实现（形状见"文件监视"那组用例）
+    for (const name of ['watch', 'watchFile', 'unwatchFile']) {
+      assert.equal(typeof (fs as any)[name], 'function');
+      assert.equal(typeof (hostFs as any)[name], 'function', `对照：宿主上 ${name} 也在`);
+    }
+    // 唯一仍然明确"做不了"的监视入口：异步迭代器（需要无界阶段）
+    assert.equal(capture(() => (fsPromises as any).watch('x'), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
     const stillStubbed = [
-      'fdatasync', 'fdatasyncSync', 'readv', 'readvSync', 'writev', 'writevSync',
-      'createReadStream', 'createWriteStream', 'watch', 'watchFile', 'unwatchFile',
+      'createReadStream', 'createWriteStream',
       'symlinkSync', 'linkSync', 'readlinkSync', 'fchmodSync', 'chownSync', 'utimesSync',
-      'opendirSync', 'statfsSync', 'cpSync', 'globSync', 'truncateSync',
+      'statfsSync', 'cpSync', 'globSync',
     ];
     for (const name of stillStubbed) {
       assert.equal(typeof (fs as any)[name], 'function', `${name} 应当是函数（不能是 undefined）`);
@@ -889,7 +895,7 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     const fh = await fsPromises.open(p, 'r+');
 
     // ① 浮点 `length`：Node **自己会 abort 整个进程**（判卷人 v22.22.1 与宿主 v24 都是 exit 134，
-    //    `Assertion failed: args[3]->IsInt32()`，栈顶 `node::fs::Read` —— 见 probe-filehandle.mjs 的 capChild 段），
+    //    `Assertion failed: args[3]->IsInt32()`，栈顶 `node::fs::Read` —— 子进程里各跑一遍就能复现），
     //    而**同步** `fs.readSync(fd, buf, 0, 2.5, 0)` 又不报错（读 2 字节）。同一件事两个面两种表现 ⇒
     //    我们统一给一条明确的 ERR_OUT_OF_RANGE：**不 abort、也不静默截断**（fail-closed）。
     await assert.rejects(
@@ -932,7 +938,7 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     const fh = await fsPromises.open(p, 'r+');
     const hostFh = await hostFsp.open(hp, 'r+'); // 对照：宿主上这些方法都在（所以缺失是**有意**的）
     // 形状照 Node 分工：这些在 Node 上返回 Promise ⇒ 我们**拒绝**（不是同步抛）
-    const asyncStubs = ['datasync', 'chmod', 'chown', 'utimes', 'readv', 'writev'];
+    const asyncStubs = ['datasync', 'chmod', 'chown', 'utimes'];
     // 这些在 Node 上就是同步方法 ⇒ 我们**同步抛**
     const syncStubs = ['getAsyncId', 'createReadStream', 'createWriteStream', 'readableWebStream', 'readLines'];
     for (const name of [...asyncStubs, ...syncStubs]) {
@@ -990,9 +996,268 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     }
   });
 
+  it('向量面（readv/writev）：与宿主同形（贪心填充 / 空数组不对称 / 三参回调）', async () => {
+    // 差分对象仍是宿主 Node。判别点：向量读是"一次读回总长再按顺序切"（沙箱里没有 iovec 系统调用），
+    // 所以**边界**必须逐条对：EOF 处贪心填、空数组读报 EINVAL 而写返回 0、回调第三个参数是同一个数组。
+    const scenario = async (api: { fs: any; fsp: any }, dir: string) => {
+      const r: Record<string, unknown> = {};
+      const cap = (fn: () => unknown) => {
+        try {
+          return { ok: true, v: fn() };
+        } catch (e: any) {
+          return { ok: false, code: e.code, syscall: e.syscall ?? null };
+        }
+      };
+      const capA = async (fn: () => Promise<unknown>) => {
+        try {
+          return { ok: true, v: await fn() };
+        } catch (e: any) {
+          return { ok: false, code: e.code, syscall: e.syscall ?? null };
+        }
+      };
+      const texts = (bufs: any[]) => bufs.map((b: any) => Buffer.from(b).toString('latin1'));
+      const p = join(dir, 'vec.txt');
+      api.fs.writeFileSync(p, 'ABCDEFGHIJ');
+      const fd = api.fs.openSync(p, 'r+');
+
+      r.readvSync = cap(() => {
+        const bufs = [Buffer.alloc(3), Buffer.alloc(2)];
+        const n = api.fs.readvSync(fd, bufs, 0);
+        return { n, type: typeof n, bufs: texts(bufs) };
+      });
+      r.readvSyncSeq = cap(() => {
+        const bufs = [Buffer.alloc(2), Buffer.alloc(2)];
+        const n = api.fs.readvSync(fd, bufs); // 缺省位置 = 当前偏移（上一条已推到 2）
+        return { n, bufs: texts(bufs) };
+      });
+      r.readvSyncEmpty = cap(() => api.fs.readvSync(fd, [])); // uv 不接受 0 个 iovec ⇒ EINVAL
+      r.readvSyncZeroLen = cap(() => api.fs.readvSync(fd, [Buffer.alloc(0), Buffer.alloc(0)]));
+      r.readvSyncPastEof = cap(() => {
+        const bufs = [Buffer.alloc(3), Buffer.alloc(3)];
+        const n = api.fs.readvSync(fd, bufs, 100);
+        return { n, bufs: texts(bufs) };
+      });
+      r.readvSyncPartialAtEof = cap(() => {
+        const bufs = [Buffer.alloc(3), Buffer.alloc(3)];
+        const n = api.fs.readvSync(fd, bufs, 8); // 只剩 2 字节：贪心填满第一个视图
+        return { n, bufs: texts(bufs) };
+      });
+      r.readvSyncMixedViews = cap(() => {
+        const a = new Uint8Array(1);
+        const dv = new DataView(new ArrayBuffer(1));
+        const n = api.fs.readvSync(fd, [a, dv], 0);
+        return { n, a: Buffer.from(a).toString('latin1'), dv: dv.getUint8(0) };
+      });
+      r.readvSyncInvalid = {
+        stringElem: cap(() => api.fs.readvSync(fd, ['x'])),
+        notArray: cap(() => api.fs.readvSync(fd, 'x')),
+        numberElem: cap(() => api.fs.readvSync(fd, [42])),
+        arrayBufferElem: cap(() => api.fs.readvSync(fd, [Buffer.alloc(2).buffer])),
+        missing: cap(() => api.fs.readvSync(fd)),
+        badFd: cap(() => api.fs.readvSync('3', [Buffer.alloc(1)])),
+      };
+
+      r.writevSync = cap(() => {
+        const n = api.fs.writevSync(fd, [Buffer.from('11'), Buffer.from('22'), Buffer.alloc(0)], 0);
+        return { n, content: api.fs.readFileSync(p, 'latin1') };
+      });
+      r.writevSyncAtPos = cap(() => {
+        const n = api.fs.writevSync(fd, [Buffer.from('XY')], 1);
+        return { n, content: api.fs.readFileSync(p, 'latin1') };
+      });
+      r.writevSyncEmpty = cap(() => api.fs.writevSync(fd, [])); // 写这一侧是 0，不报 EINVAL
+      r.writevSyncInvalid = {
+        stringElem: cap(() => api.fs.writevSync(fd, ['x'])),
+        notArray: cap(() => api.fs.writevSync(fd, 'x')),
+      };
+      api.fs.closeSync(fd);
+
+      // 回调面：`(err, n, buffers)`，第三个参数就是调用方那个数组
+      r.readvCallback = await new Promise((resolve) => {
+        const fd2 = api.fs.openSync(p, 'r');
+        const bufs = [Buffer.alloc(2), Buffer.alloc(3)];
+        api.fs.readv(fd2, bufs, 0, (...args: any[]) => {
+          const out = { argc: args.length, err: args[0] === null ? 'null' : String(args[0]), n: args[1], same: args[2] === bufs, bufs: texts(bufs) };
+          api.fs.closeSync(fd2);
+          resolve(out);
+        });
+      });
+      r.writevCallback = await new Promise((resolve) => {
+        const fd3 = api.fs.openSync(p, 'r+');
+        const bufs = [Buffer.from('ZZ')];
+        api.fs.writev(fd3, bufs, 5, (...args: any[]) => {
+          const out = { argc: args.length, err: args[0] === null ? 'null' : String(args[0]), n: args[1], same: args[2] === bufs };
+          api.fs.closeSync(fd3);
+          resolve(out);
+        });
+      });
+      r.afterWritevCallback = api.fs.readFileSync(p, 'latin1');
+
+      // FileHandle 面（真异步 + null 原型返回）
+      const fh = await api.fsp.open(p, 'r+');
+      r.fhReadv = await capA(async () => {
+        const bufs = [Buffer.alloc(2), Buffer.alloc(3)];
+        const res = await fh.readv(bufs, 0);
+        return {
+          keys: Object.keys(res).sort(),
+          protoNull: Object.getPrototypeOf(res) === null,
+          bytesRead: res.bytesRead,
+          sameArray: res.buffers === bufs,
+          bufs: texts(bufs),
+        };
+      });
+      r.fhReadvEmpty = await capA(() => fh.readv([], 0));
+      r.fhWritev = await capA(async () => {
+        const bufs = [Buffer.from('QQ'), Buffer.alloc(0)];
+        const res = await fh.writev(bufs, 8);
+        return { keys: Object.keys(res).sort(), protoNull: Object.getPrototypeOf(res) === null, bytesWritten: res.bytesWritten, sameArray: res.buffers === bufs };
+      });
+      r.fhWritevEmpty = await capA(async () => {
+        const res = await fh.writev([], 0);
+        return { bytesWritten: res.bytesWritten, keys: Object.keys(res).sort() };
+      });
+      r.fhVectorInvalid = { stringElem: await capA(() => fh.readv(['x'], 0)), noArgs: await capA(() => fh.readv()) };
+      await fh.close();
+      r.finalContent = api.fs.readFileSync(p, 'latin1');
+      return r;
+    };
+
+    const ours = await scenario({ fs, fsp: fsPromises }, DATA_DIR);
+    const host = await scenario({ fs: hostFs, fsp: hostFsp }, HOST_DIR);
+    const differing = Object.keys({ ...ours, ...host }).filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
+    assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], '向量面与宿主不一致的键（[键, 我们, 宿主]）');
+  });
+
+  it('尾巴：truncate / fdatasync / opendir+Dir 与宿主同形', async () => {
+    const scenario = async (api: { fs: any; fsp: any }, dir: string) => {
+      const r: Record<string, unknown> = {};
+      const cap = (fn: () => unknown) => {
+        try {
+          return { ok: true, v: fn() };
+        } catch (e: any) {
+          return { ok: false, code: e.code, syscall: e.syscall ?? null };
+        }
+      };
+      const capA = async (fn: () => Promise<unknown>) => {
+        try {
+          return { ok: true, v: await fn() };
+        } catch (e: any) {
+          return { ok: false, code: e.code, syscall: e.syscall ?? null };
+        }
+      };
+
+      // ── truncate（路径形态；错误面照 Node：缺失报 open、目录报 ftruncate）──
+      const p = join(dir, 'tr.txt');
+      api.fs.writeFileSync(p, '0123456789');
+      r.truncateSync4 = cap(() => {
+        api.fs.truncateSync(p, 4);
+        return api.fs.statSync(p).size;
+      });
+      r.truncateSyncDefault = cap(() => {
+        api.fs.truncateSync(p);
+        return api.fs.statSync(p).size;
+      });
+      r.truncateSyncNegative = cap(() => {
+        api.fs.truncateSync(p, -5);
+        return api.fs.statSync(p).size;
+      });
+      r.truncateSyncMissing = cap(() => api.fs.truncateSync(join(dir, 'tr-nope.txt'), 1));
+      r.truncateSyncDir = cap(() => api.fs.truncateSync(dir, 1));
+      r.truncatePromise = await capA(async () => {
+        await api.fsp.truncate(p, 2);
+        return api.fs.statSync(p).size;
+      });
+      r.truncateCallback = await new Promise((resolve) => {
+        api.fs.truncate(p, 1, (err: any) => resolve({ err: err ? err.code : null, size: api.fs.statSync(p).size }));
+      });
+
+      // ── fdatasync ──
+      const sp = join(dir, 'sd.txt');
+      const wfd = api.fs.openSync(sp, 'w');
+      api.fs.writeSync(wfd, 'x');
+      r.fdatasyncSyncOk = cap(() => {
+        api.fs.fdatasyncSync(wfd);
+        return 'ok';
+      });
+      r.fdatasyncCallback = await new Promise((resolve) => {
+        api.fs.fdatasync(wfd, (err: any) => resolve(err ? err.code : 'ok'));
+      });
+      api.fs.closeSync(wfd);
+      const rfd = api.fs.openSync(sp, 'r');
+      r.fdatasyncSyncReadOnly = cap(() => {
+        api.fs.fdatasyncSync(rfd);
+        return 'ok';
+      });
+      api.fs.closeSync(rfd);
+      r.fdatasyncBadFd = cap(() => api.fs.fdatasyncSync(999999));
+
+      // ── opendir / Dir ──（用**专用子目录**：两个根的顶层被前面几十条用例写花了，不能直接比目录内容）
+      const dd = join(dir, 'dirtest');
+      api.fs.mkdirSync(join(dd, 'dsub'), { recursive: true });
+      api.fs.writeFileSync(join(dd, 'da.txt'), 'a');
+      api.fs.writeFileSync(join(dd, 'dsub', 'db.txt'), 'b');
+      const d = api.fs.opendirSync(dd);
+      r.dirShape = {
+        ctor: d.constructor.name,
+        pathIsInput: d.path === dd,
+        asyncIterable: typeof d[Symbol.asyncIterator],
+        syncIterable: typeof d[Symbol.iterator],
+        readSyncType: typeof d.readSync,
+      };
+      r.dirEntries = cap(() => {
+        const names: string[] = [];
+        let e;
+        while ((e = d.readSync()) !== null) names.push(e.name + ':' + e.isDirectory());
+        return { names: names.sort(), afterEnd: d.readSync() };
+      });
+      r.dirCloseSync = cap(() => {
+        d.closeSync();
+        return 'ok';
+      });
+      r.dirCloseTwice = cap(() => {
+        d.closeSync();
+        return 'ok';
+      });
+      r.dirReadAfterClose = cap(() => d.readSync());
+
+      const d2 = api.fs.opendirSync(dd);
+      r.dirIterate = await capA(async () => {
+        const seen: string[] = [];
+        for await (const e of d2) seen.push(e.name);
+        return seen.sort();
+      });
+      r.dirReadAfterIterate = await capA(async () => (await d2.read()) === null);
+      r.dirPromise = await capA(async () => {
+        const pd = await api.fsp.opendir(dd);
+        const e = await pd.read();
+        await pd.close();
+        return { ctor: pd.constructor.name, first: e ? e.name : null, pathIsInput: pd.path === dd };
+      });
+      r.dirErrors = {
+        missing: cap(() => api.fs.opendirSync(join(dir, 'd-nope'))),
+        file: cap(() => api.fs.opendirSync(join(dd, 'da.txt'))),
+        // ⚠️ `{recursive:true}` **不放进差分**：宿主是实现的，我们明确抛"没实现"（见"有意不同"那组）
+      };
+      r.dirEncodingBuffer = cap(() => {
+        const dd2 = api.fs.opendirSync(dd, { encoding: 'buffer' });
+        const e = dd2.readSync();
+        return { isBuffer: e.name instanceof Uint8Array, ctor: e.name.constructor.name };
+      });
+      return r;
+    };
+
+    const ours = await scenario({ fs, fsp: fsPromises }, DATA_DIR);
+    const host = await scenario({ fs: hostFs, fsp: hostFsp }, HOST_DIR);
+    const differing = Object.keys({ ...ours, ...host }).filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
+    assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], '尾巴三件套与宿主不一致（[键, 我们, 宿主]）');
+  });
+
   it('BigIntStats 与 readdir recursive 也抛错（不静默降级）', () => {
     assert.equal(capture(() => fs.statSync(join(DATA_DIR, 'a.txt'), { bigint: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
     assert.equal(capture(() => fs.readdirSync(DATA_DIR, { recursive: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
+    // `opendir({recursive:true})` 同样明确抛错（宿主两个都支持 —— 这是**有意**的缺失，不是抄漏）
+    assert.equal(capture(() => fs.opendirSync(DATA_DIR, { recursive: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
+    assert.ok(hostFs.opendirSync(HOST_DIR, { recursive: true }));
     // 对照：宿主两个都支持
     assert.equal(typeof hostFs.statSync(join(HOST_DIR, 'a.txt'), { bigint: true }).mode, 'bigint');
     assert.ok(Array.isArray(hostFs.readdirSync(HOST_DIR, { recursive: true })));
@@ -1239,6 +1504,7 @@ export function init() {
       await sandbox.runModule(
         '@spc-test/fh',
         `
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 export async function init() {
   const fh = await fsp.open('fh.txt', 'w');
@@ -1254,6 +1520,13 @@ export async function init() {
   // 位置缺省 = 当前偏移（NULL-POS-CONSUMES 指的是"缺省位置会推进偏移"）
   const b2 = Buffer.alloc(2);
   await rh.read(b2, 0, 2, null);
+  // 向量面：一次读进两个视图（贪心填）/ 一次写两个块（顺序落盘），两条都走真异步宿主方法
+  const v1 = Buffer.alloc(2);
+  const v2 = Buffer.alloc(3);
+  const rv = await rh.readv([v1, v2], 0);
+  console.log('VEC ' + rv.bytesRead + '/' + v1.toString('latin1') + v2.toString('latin1') + '/' + (rv.buffers === undefined ? 'x' : 'array'));
+  const wv = await rh.writev([Buffer.from('PQ'), Buffer.from('RS')], 0);
+  console.log('WVEC ' + wv.bytesWritten + '/' + fs.readFileSync('fh.txt', 'latin1'));
   const st = await rh.stat();
   const sync = await rh.sync();
   await rh.truncate(5);
@@ -1283,6 +1556,9 @@ export async function init() {
     assert.match(out, /FD true\/FileHandle/, `实际日志：${out}`);
     assert.match(out, /W 6\/string\/true/, `实际日志：${out}`);
     assert.match(out, /R 4\/cdef/, `实际日志：${out}`);
+    // 向量面：文件此刻是 'abcdef' ⇒ 读 5 字节贪心填成 'ab'+'cde'；写 'PQ'+'RS' 到位置 0 ⇒ 'PQRSef'
+    assert.match(out, /VEC 5\/abcde\/array/, `实际日志：${out}`);
+    assert.match(out, /WVEC 4\/PQRSef/, `实际日志：${out}`);
     assert.match(out, /S2 6\/undefined\/5/, `实际日志：${out}`);
     assert.match(out, /CLOSE -1\/1\/undefined/, `实际日志：${out}`);
     // 关闭后再用：**Node 的原文**（`fsCall` 造的 `EBADF` + 方法名 + 'file closed'）
@@ -1298,6 +1574,105 @@ export async function init() {
     for (const expected of ['handles.open', 'handles.close', 'handles.limit', 'handles.forced-release']) {
       assert.ok(audit.includes(expected), `审计缺少 ${expected}（实际：${[...new Set(audit)].join(',')}）`);
     }
+  });
+
+  it('文件监视：宿主事件经投递链回到插件（watch / watchFile / close 真的停 / 卸载强回收）', async () => {
+    // 这条**只能**在真沙箱里验：事件通道是"宿主排队 → bridge.deliver 起一个 watch 阶段 → 插件回执取走"，
+    // 纯 Node 的假桥既没有阶段也没有投递。判别点：
+    //   · 去掉 `bridge.deliver` ⇒ 事件永远送不进来（`EV` 一行都不会有）；
+    //   · 把 watcher 的 close 去掉（或 releaseWatcher 不关真 watcher）⇒ "关掉后不再有事件"必红；
+    //   · 去掉卸载强回收 ⇒ `handles.forced-release` 缺失。
+    const dir = mkdtempSync(join(tmpdir(), 'spc-watch-smoke-'));
+    const bridge: { releaseHandles?: () => void } = {};
+    const api = buildHostApi({ pluginId: '@spc-test/watch', dataDir: dir, bridge });
+    writeFileSync(join(dir, 'watched.txt'), 'aaaa');
+    const sandbox = await createSandbox(api, {
+      pluginId: '@spc-test/watch',
+      permissions: ['fs.read.data', 'fs.write.data'],
+      bridge,
+      facts: { version: { code: 1, name: 'test' }, dataDir: dir, manifest: {}, config: {} },
+    });
+    let releaseCalls = 0;
+    const origRelease = bridge.releaseHandles;
+    bridge.releaseHandles = () => {
+      releaseCalls++;
+      origRelease?.();
+    };
+    /** 有界等待（等一条永不到来的日志会把整个测试挂死，所以永远带超时） */
+    const waitFor = async (pred: () => boolean, ms: number) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until) {
+        if (pred()) return true;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return pred();
+    };
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        '@spc-test/watch',
+        `
+import fs from 'node:fs';
+let watcher;
+let leaked;
+export function init() {
+  watcher = fs.watch('.', (eventType, filename) => console.log('EV ' + eventType + ' ' + filename));
+  // 第二个 watcher **故意不关**：留给卸载强回收（那才是真资源收口的那条路）
+  leaked = fs.watch('.', () => {});
+  fs.watchFile('watched.txt', { interval: 60 }, (curr, prev) => {
+    console.log('STAT ' + curr.size + '/' + prev.size + '/' + curr.isFile() + '/' + (prev instanceof Object));
+  });
+  console.log('READY ' + watcher.constructor.name + '/' + typeof watcher.close + '/' + (leaked.constructor === watcher.constructor));
+}
+export function stop() {
+  watcher.close();
+  fs.unwatchFile('watched.txt');
+  console.log('STOPPED');
+}
+`,
+      );
+      await sandbox.callHook('init', 10_000);
+      assert.match(logs.join('\n'), /READY FSWatcher\/function\/true/, `实际日志：${logs.join(' | ')}`);
+
+      // ① 目录里新建文件 ⇒ rename + change（filename 是相对名）
+      writeFileSync(join(dir, 'brand-new.txt'), 'x');
+      const gotDir = await waitFor(() => logs.some((l) => l.includes('brand-new.txt')), 8_000);
+      assert.ok(gotDir, `目录事件没送到：${logs.join(' | ')}`);
+      assert.ok(logs.some((l) => /^EV rename brand-new\.txt$/.test(l)), `事件负载不对：${logs.join(' | ')}`);
+
+      // ② 改被监视的文件 ⇒ watchFile 的轮询回调（真 Stats：size 变了）
+      writeFileSync(join(dir, 'watched.txt'), 'aaaaaa');
+      const gotStat = await waitFor(() => logs.some((l) => l.startsWith('STAT ')), 8_000);
+      assert.ok(gotStat, `watchFile 回调没到：${logs.join(' | ')}`);
+      assert.ok(logs.some((l) => /^STAT 6\/4\/true\/true$/.test(l)), `Stats 不对：${logs.join(' | ')}`);
+
+      // ③ close 之后**真的**不再有事件（不止是插件侧标记）
+      await sandbox.callHook('stop', 5_000);
+      assert.ok(logs.includes('STOPPED'));
+      const before = logs.length;
+      writeFileSync(join(dir, 'after-close.txt'), 'y');
+      await new Promise((r) => setTimeout(r, 600));
+      assert.equal(logs.length, before, `close 之后不该再有事件：${logs.slice(before).join(' | ')}`);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    // 卸载：`leaked` 那个 watcher 从没关过 ⇒ 走强制回收，并留一条审计
+    assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收');
+    const audit = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string; target?: string })
+      .filter((e) => e.pluginId === '@spc-test/watch');
+    const methods = audit.map((e) => e.method!);
+    assert.ok(methods.includes('handles.open'), `审计缺少 handles.open（实际：${[...new Set(methods)].join(',')}）`);
+    assert.ok(methods.includes('handles.close'), `审计缺少 handles.close（实际：${[...new Set(methods)].join(',')}）`);
+    assert.ok(methods.includes('handles.forced-release'), `审计缺少 handles.forced-release（实际：${[...new Set(methods)].join(',')}）`);
+    // 事件投递有自己的审计方法名（别和 timers.tick 混在一起）
+    assert.ok(methods.includes('watch.event'), `审计缺少 watch.event（实际：${[...new Set(methods)].join(',')}）`);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('写入/读取/列目录/stat/promises/清理全链路在沙箱里成立', async () => {
@@ -1321,7 +1696,12 @@ export async function init() {
   console.log('ASYNC ' + st.size + '/' + (await fsp.readFile('data/x.txt', 'utf8')));
   try { fs.readFileSync('../escape.txt'); } catch (e) { console.log('ESC ' + e.code + '/' + e.spcCode); }
   try { fs.readFileSync('nope.txt'); } catch (e) { console.log('ENO ' + e.code + '/' + e.errno + '/' + e.syscall); }
-  try { fs.watch('data', () => {}); } catch (e) { console.log('WATCH ' + e.code); }
+  // 监视面：能建、能关（真事件的往返由下面"文件监视"那组用例覆盖；这里只证明它不再是 stub）
+  const w = fs.watch('data', () => {});
+  console.log('WATCH ' + w.constructor.name + '/' + typeof w.close + '/' + (w.close() === undefined));
+  const sw = fs.watchFile('data/x.txt', { interval: 100 }, () => {});
+  console.log('WATCHFILE ' + sw.constructor.name);
+  fs.unwatchFile('data/x.txt');
   fs.rmSync('data', { recursive: true });
   console.log('RM ' + fs.existsSync('data'));
 }
@@ -1340,8 +1720,9 @@ export async function init() {
     assert.equal(lines[7], 'ESC EACCES/PATH_OUT_OF_SCOPE');
     // Linux 真值的 errno（-2）与 syscall（open）在**沙箱里**也成立
     assert.equal(lines[8], 'ENO ENOENT/-2/open');
-    assert.equal(lines[9], 'WATCH ERR_NOT_SUPPORTED_IN_SANDBOX');
-    assert.equal(lines[10], 'RM false');
+    assert.equal(lines[9], 'WATCH FSWatcher/function/true');
+    assert.equal(lines[10], 'WATCHFILE StatWatcher');
+    assert.equal(lines[11], 'RM false');
   });
 
   it('`fs.*.data` 是 **self/auto：未声明也能读**（v4 免声明）；越界仍然被路径收敛拦住', async () => {

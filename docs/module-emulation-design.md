@@ -632,7 +632,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 查 `graceful-fs` 装载失败花了大半轮，**卡点不是它，而是诊断链**：`classifyVmFailure` 原本把
 QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for property` —— 连"哪一行"都看不到。
-**已修**：`params.stack`（截断 1200 字）。下面这张表是拿真沙箱逐条试出来的（`tools/probes/probe-dump-keys.mts`）：
+**已修**：`params.stack`（截断 1200 字）。下面这张表是拿真沙箱逐条试出来的：
 
 | 写法 | QuickJS 的行为 | 消息 |
 |---|---|---|
@@ -666,7 +666,7 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 
 **症状**：沙箱里 `Buffer.isBuffer(crypto.createHash('sha256').update('a').digest())` 给 **false**，
 而 Node 给 true；`crypto.randomBytes(n)`、`fs.readFileSync(p)` 这些**跨桥回来的字节**全都一样，
-而沙箱里自己 `Buffer.from('ab')` 造的又是 true。（探针：`_audit/scratch/probe-buffer-identity.mts`。）
+而沙箱里自己 `Buffer.from('ab')` 造的又是 true（实测：两份类各自的 `isBuffer` 都只认自己那份）。
 
 **机制**：QuickJS 的模块缓存键 = **归一化后的模块名**。
 - 插件写 `import 'node:buffer'` ⇒ 键是 `node:buffer`（走 registry 的规范名）；
@@ -729,7 +729,7 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 | 旗标合法性 | **原样交宿主 Node 判**（非法 ⇒ `ERR_INVALID_ARG_VALUE`） | 不复刻 Node 的旗标表（那份在 `node/lib/internal/fs/utils.js`，抄就会漂） |
 | 单次读写 | 每次 ≤ **8 MiB**（`MAX_FD_IO_BYTES`，超了用循环读） | 一次要整块过桥；fd 面的意义正是"不必整块进沙箱堆"，但单次仍要有闸 |
 
-**判卷人真值**（`_audit/scratch/probe-fd-face.mjs`，v22.22.1 与宿主 v24 逐条一致）：
+**判卷人真值**（官方 node v22.22.1，与宿主 v24 逐条一致）：
 `closeSync` 二次 ⇒ `EBADF … close`；只读 fd 上写 / 只写 fd 上读 ⇒ `EBADF … write|read`；
 目录 fd 能打开但 `readSync` ⇒ `EISDIR … read`；`offset+length` 越界 ⇒ `ERR_OUT_OF_RANGE`
 （文案 `... It must be <= -94. Received 1` —— 上界是 `buffer.length - offset`，照抄）。

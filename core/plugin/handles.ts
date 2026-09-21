@@ -1,7 +1,6 @@
 // 每插件的句柄表（对象身份的**唯一真相**）：随机 UUID + per-plugin 表
 //
-// 【2026-09-20 拍板，见 `_audit/docs/hostref-design-notes.md` §4/§8】句柄统一为「随机 UUID + per-plugin 表」，
-// **不用**引擎那边的 `HostRef`（`newHostRef`）：
+// 【2026-09-20 拍板】句柄统一为「随机 UUID + per-plugin 表」，**不用**引擎那边的 `HostRef`（`newHostRef`）：
 //   · **没有 dup ⇒ 没有"漏 dup 就 abort 进程"**这类失效模式（HostRef 的收尾纪律是重成本）；
 //   · 随机串同样拿到"不可伪造"；**刻意不用自增整数** —— 将来若允许跨插件交接句柄，
 //     自增 id 等于把"猜得到的能力"送出去（能力泄漏），随机串不会；

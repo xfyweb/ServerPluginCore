@@ -466,8 +466,11 @@ test('契约一：宿主 Promise 永不落地也不挂住核心（子进程验�
   // 判别点：去掉 `asyncHostCall` 里那道"宿主调用受阶段预算封顶"，子进程会永久卡在
   // `await pump.executePendingJobsAsync(...)`（泵的 while 里那句 deadline 判断根本没机会再跑）。
   // **实测的红**（把预算强行设成 Infinity 跑这条）：子进程 exit **13**，
-  // 原文 `Warning: Detected unsettled top-level await at .../hang-probe.mjs:18  await sandbox.callHook('init', 400);`
-  // —— 核心挂死、Node 判定"顶层 await 永不落地"后自尽；不封顶就没有任何东西会来收这个口。
+  // 原文 `Warning: Detected unsettled top-level await at ...` 后面跟着 `hang-probe.mjs` 与行号 18
+  // （那是 Node 打印的**运行时消息**，句尾还带着 `await sandbox.callHook('init', 400);`）——
+  // 核心挂死、Node 判定"顶层 await 永不落地"后自尽；不封顶就没有任何东西会来收这个口。
+  // ⚠️ 这里刻意**不写成"文件名:行号"那种形式**：那是运行时消息的**引文**，不是指向仓库文件的引用，
+  // 而 `tools/check-line-refs.mjs` 会把它当成引用去查（查不到 ⇒ 每轮体检都报一条假阳性）。
   const dir = mkdtempSync(join(tmpdir(), 'spc-async-hang-'));
   const script = join(dir, 'hang-probe.mjs');
   writeFileSync(script, HANG_CHILD_SOURCE, 'utf8');

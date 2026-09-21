@@ -11,6 +11,7 @@ import {
   constants as FS_CONSTANTS,
   existsSync,
   fstatSync,
+  fdatasyncSync,
   fsyncSync,
   ftruncateSync,
   lstatSync,
@@ -25,10 +26,13 @@ import {
   rmdirSync,
   chmodSync,
   statSync,
+  unwatchFile as fsUnwatchFile,
+  watch as fsWatch,
+  watchFile as fsWatchFile,
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import type { Dirent, Stats } from 'node:fs';
+import type { FSWatcher, StatWatcher, Dirent, Stats } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { open as fspOpen, readFile as readFileAsync, type FileHandle } from 'node:fs/promises';
 import * as crypto from 'node:crypto';
@@ -367,6 +371,53 @@ const MAX_FD_IO_BYTES = 8 * 1024 * 1024;
 const FD_READ_CHUNK = 64 * 1024;
 
 /**
+ * 每个插件同时活着的**文件监视句柄**上限（`fs.watch` 与 `fs.watchFile` 两个 kind 共用 `watch`）。
+ *
+ * 为什么是 8：一个 watcher 在宿主侧占一个 OS 监视句柄，在 Linux 上还吃 **全局**的
+ * `fs.inotify.max_user_watches`（多个插件一起耗同一份配额），而插件对"同时盯几个地方"的
+ * 真实需求通常是一两个；给 8 够用，同时把最坏占用钉死（到顶 fail-closed：`HANDLE_LIMIT_EXCEEDED`）。
+ */
+const MAX_WATCH_HANDLES = 8;
+
+/**
+ * 事件投递**退避**间隔（毫秒）：沙箱正在跑别的阶段时进不去 VM（`bridge.deliver` 返回 false），
+ * 事件仍在宿主队列里等着 —— 25ms 后再试一次。选这么小的理由：文件事件的价值在"近实时"，
+ * 而每次重试只是一次 attempt（拿不到就再排一次），成本可以忽略。
+ */
+const WATCH_RETRY_MS = 25;
+
+/** 一次投递循环最多连续跑多少轮（防止"回执取不走事件"时无限自旋） */
+const WATCH_DELIVER_MAX_ROUNDS = 64;
+
+/**
+ * Windows 上的**长路径归一化**（不是洁癖，是真的会崩）：
+ * 宿主是 v24 / libuv 1.52.1 时，用**短路径**（8.3 形式，如 `C:\Users\ADMINI~1\…`）`fs.watch` 一个目录，
+ * **第一个事件到达时**会命中 libuv 的原生断言
+ * `Assertion failed: !_wcsnicmp(filename, dir, dirlen), file src\win\fs-event.c, line 72`
+ * ⇒ 整个核心进程 abort（实测退出码 0xC0000409；判卷人 v22 / libuv 1.51 不复现 —— 见
+ * 四组子进程对照（探针在仓库外的开发工作区，随时可重跑）：短路径 abort、`realpathSync.native`
+ * 之后正常收到事件）。所以进 `fs.watch` 之前一律换成长路径。
+ *
+ * ⚠️ 顺带把软链解析成目标 —— 与"路径收敛把软链解析成目标"（F2/F5）是同一个取向，不是新语义。
+ */
+function canonicalWatchPath(p: string): string {
+  const real = realpathSync.native(p);
+  // uv 在 Windows 上给的是 `\\?\` 前缀形式：剥掉（`\\?\UNC\server\share` 另有形状）
+  if (real.startsWith('\\\\?\\UNC\\')) return '\\\\' + real.slice(8);
+  if (real.startsWith('\\\\?\\')) return real.slice(4);
+  return real;
+}
+
+/** `fs.watchFile` 允许目标不存在（轮询到它会给出全零 Stats）⇒ realpath 失败就用原路径 */
+function canonicalWatchPathSoft(p: string): string {
+  try {
+    return canonicalWatchPath(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
  * fd 句柄背后的真资源。
  *
  * ⚠️ **存的是 `FileHandle` 而不是裸 fd**（2026-09-21 实测定的）：判卷人 v22.22.1 的 `node:fs/promises`
@@ -382,8 +433,32 @@ interface FdResource {
   path: string;
 }
 
-/** 句柄表里可能出现的宿主对象（按 kind 区分：摘要状态 / 真实 fd） */
-type HostHandleResource = DigestState | FdResource;
+/**
+ * 一个**监视句柄**背后的真资源：Node 的 watcher + 事件队列 + 投递退避。
+ *
+ * 为什么事件要**排队**（而不是像 Node 那样在 uv 回调里直接 emit）：沙箱不许并发进同一个 VM
+ * （见 `sandbox.ts` 的重入保护），宿主事件到达时插件可能正在跑别的阶段。于是分工是：
+ * **队列在宿主**（事件一个不丢）→ `bridge.deliver` 只负责"叫插件一声" → 插件在自己的 `watch` 阶段里
+ * 用 `fs.watchTake` 一次性取走。忙时被跳过的是**投递**，不是事件。
+ */
+interface WatchResource {
+  kind: 'watch' | 'watchFile';
+  /** 插件侧注册的回调 id（`globalThis.__spcTimerCallbacks` 里那个键；宿主只当不透明串用） */
+  callbackId: string;
+  /** 句柄 id（审计 target 用） */
+  handleId: string;
+  /** 正在监视的**宿主路径**（已长路径归一化） */
+  watchPath: string;
+  watcher: FSWatcher | StatWatcher;
+  /** 待投递的事件（由 `fs.watchTake` / `fs.watchFileTake` 取走） */
+  queue: unknown[];
+  delivering: boolean;
+  retry: NodeJS.Timeout | undefined;
+  closed: boolean;
+}
+
+/** 句柄表里可能出现的宿主对象（按 kind 区分：摘要状态 / 真实 fd / 文件监视器） */
+type HostHandleResource = DigestState | FdResource | WatchResource;
 
 /** 收窄到摘要状态（kind 已由 `require` 校验过，这里的 cast 只给 TS 看） */
 function digestOf(record: { resource: HostHandleResource }): DigestState {
@@ -738,7 +813,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
   // 256 条对真实用法（一次摘要一个 createHash）绰绰有余，同时把"只开不关"的最坏占用钉死。
   const handles = new HandleTable<HostHandleResource>({
     pluginId: ctx.pluginId,
-    maxPerKind: { hash: MAX_DIGEST_HANDLES, hmac: MAX_DIGEST_HANDLES, fd: MAX_FD_HANDLES },
+    maxPerKind: { hash: MAX_DIGEST_HANDLES, hmac: MAX_DIGEST_HANDLES, fd: MAX_FD_HANDLES, watch: MAX_WATCH_HANDLES },
     // 审计 open/close/limit/release 四类事件（`durationMs: 0`：句柄事件没有"耗时"可言）
     onEvent: (event) =>
       audit({
@@ -902,6 +977,105 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       throw new SpcError('FILE_TOO_LARGE', { bytes: String(bytes.byteLength), limit: String(MAX_FILE_BYTES) });
     }
     return bytes;
+  }
+
+  /**
+   * 把队列里的事件投递给插件：`false`（忙/已拆）⇒ 退避重试，事件不会丢
+   */
+  function kickWatch(res: WatchResource): void {
+    if (res.delivering || res.closed) return;
+    res.delivering = true;
+    void (async () => {
+      let rounds = 0;
+      try {
+        while (res.queue.length > 0 && !res.closed) {
+          if (++rounds > WATCH_DELIVER_MAX_ROUNDS) return scheduleWatchRetry(res);
+          const before = res.queue.length;
+          const ok = await ctx.bridge?.deliver?.('watch', res.callbackId, res.handleId);
+          if (ok !== true) return scheduleWatchRetry(res);
+          // 回执没取走任何事件（例如插件那边 watcher 已经关了）⇒ 别自旋，退避后再试
+          if (res.queue.length >= before) return scheduleWatchRetry(res);
+        }
+      } finally {
+        res.delivering = false;
+      }
+    })();
+  }
+
+  function scheduleWatchRetry(res: WatchResource): void {
+    if (res.retry !== undefined || res.closed) return;
+    res.retry = setTimeout(() => {
+      res.retry = undefined;
+      if (!res.closed && res.queue.length > 0) kickWatch(res);
+    }, WATCH_RETRY_MS);
+    // unref：插件的监视器不许让**核心进程**为了它活着（同 timers 的 unref 取舍）
+    res.retry.unref?.();
+  }
+
+  /** 关掉一个监视句柄：watcher 关掉 + 摘掉退避定时器（由句柄表经 `closeById`/`releaseAll` 调） */
+  function releaseWatcher(res: WatchResource): void {
+    res.closed = true;
+    if (res.retry !== undefined) {
+      clearTimeout(res.retry);
+      res.retry = undefined;
+    }
+    try {
+      if (res.kind === 'watch') (res.watcher as FSWatcher).close();
+      else (res.watcher as StatWatcher).removeAllListeners();
+    } catch {
+      // 已经关过 / watcher 自己没了：卸载路径不该被它带崩（同 releaseFd 的取舍）
+    }
+    res.queue.length = 0;
+  }
+
+  /** `fs.watch` 的宿主 options（只要宿主真正需要的字段；`encoding` 那条边界在仿真层挡掉了） */
+  function watchOptions(json: HostArg | undefined): { recursive: boolean } {
+    const v = json === undefined ? undefined : parseJsonArg(json, 'watch-options');
+    const o = v !== null && typeof v === 'object' ? (v as { recursive?: unknown }) : {};
+    return { recursive: o.recursive === true };
+  }
+
+  /** `fs.watchFile` 的宿主 options：只要 `interval`（Node 的默认 5007ms 由仿真层补齐） */
+  function watchFileOptions(json: HostArg | undefined): { interval: number } {
+    const v = json === undefined ? undefined : parseJsonArg(json, 'watch-file-options');
+    const o = v !== null && typeof v === 'object' ? (v as { interval?: unknown }) : {};
+    const interval = typeof o.interval === 'number' && Number.isFinite(o.interval) && o.interval > 0 ? o.interval : 5007;
+    return { interval };
+  }
+
+  /**
+   * 建 watcher 并登记句柄（`fs.watch` / `fs.watchFile` 共用）。
+   * `persistent: false` 是**有意**的：Node 的 `persistent: true` 会让 watcher 拖住宿主事件循环，
+   * 而"核心进程活多久"不该由插件的监视器决定（同 timers 的 `unref` 取舍）。
+   */
+  function registerWatcher(kind: 'watch' | 'watchFile', onOpen: (res: WatchResource) => FSWatcher | StatWatcher): { id: string } {
+    handles.ensureCapacity('watch'); // 预检：注定装不下就别真建 watcher（同 fd 的取舍）
+    const res: WatchResource = {
+      kind,
+      callbackId: '',
+      handleId: '',
+      watchPath: '',
+      watcher: undefined as unknown as FSWatcher,
+      queue: [],
+      delivering: false,
+      retry: undefined,
+      closed: false,
+    };
+    res.watcher = onOpen(res);
+    try {
+      const record = handles.open('watch', res, () => releaseWatcher(res));
+      res.handleId = record.id;
+    } catch (err) {
+      releaseWatcher(res);
+      throw err;
+    }
+    return { id: res.handleId };
+  }
+
+  /** 取一个监视句柄的资源（查不到 ⇒ 参数错；与 fd 的 EBADF 不同：这里是插件自己的不透明 id） */
+  function watchResource(idJson: HostArg | undefined): WatchResource {
+    const record = handles.require('watch', parseJsonArg(idJson, 'watch-id'));
+    return record.resource as WatchResource;
   }
 
   return {
@@ -1501,7 +1675,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     // 而 `fs.readFileSync` 那条路必须把整个文件搬进 32 MiB 的沙箱堆。fd 面让插件**流式**处理大文件，
     // 也让句柄表的四种收口（正常释放 / 上限 / 卸载强回收 / 审计）第一次管到**真的会泄漏的 OS 资源**。
     //
-    // 契约（判卷人 v22.22.1 与宿主 v24 实测一致，见 `_audit/scratch/probe-fd-face.mjs`）：
+    // 契约（官方 node v22.22.1 与宿主 v24 逐条实测一致）：
     //   · `openSync` 返回**数字**；非法旗标 ⇒ `ERR_INVALID_ARG_VALUE`（TypeError，由**宿主 Node 自己**报出，
     //     我们只把旗标原样转交 —— 不自己复刻 Node 的旗标表）；
     //   · `closeSync` 两次 / 读写方向不符 / 目录 fd 上 `read` ⇒ `EBADF`(close|read|write) / `EISDIR`(read)；
@@ -1566,6 +1740,19 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         const fd = requireFdById(handles, fdIdOf(fdJson));
         return withFdSyscall('fsync', () => {
           fsyncSync(syncFdOf(fd));
+          return { ok: true };
+        });
+      },
+    },
+    // `fdatasync`：与 fsync 的差别只在"元数据要不要一起刷"（POSIX 语义），Node 暴露的就是这个系统调用。
+    // 用**同步**实现（`fdatasyncSync(realFd)`）：`FileHandle` 虽然有 `datasync()`，但那是异步的，
+    // 而这一步与 `fsyncSync`/`ftruncateSync` 同类（轻量、本来就要等它返回），没必要多一条挂起路径。
+    'fs.fdDatasync': {
+      permission: 'fs.write.data',
+      fn: (fdJson: HostArg | undefined) => {
+        const fd = requireFdById(handles, fdIdOf(fdJson));
+        return withFdSyscall('fdatasync', () => {
+          fdatasyncSync(syncFdOf(fd));
           return { ok: true };
         });
       },
@@ -1641,6 +1828,90 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       },
     },
 
+    // ---- 文件监视（`fs.watch` / `fs.watchFile` / `fs.unwatchFile`）----
+    //
+    // 分工与 fd 面一致：**真监视在宿主**（Node 的 `fs.watch` / `fs.watchFile`），形状与错误语义在沙箱。
+    // 事件通道复用定时器那条投递链（`bridge.deliver` ⇒ 沙箱起一个 `watch` 阶段），
+    // 但**事件本身排在宿主队列里**（`*-Take` 取走）：忙时被跳过的是投递，不是事件。
+    //
+    // 两条实测出来的硬约束：
+    //   ① **路径必须先归一化成长路径**（Windows 短路径会让 libuv 1.52 原生 abort，见 `canonicalWatchPath`）；
+    //   ② `persistent: false`：插件的监视器不许拖住核心进程（同 timers 的 unref）。
+    'fs.watchOpen': {
+      permission: 'fs.read.data',
+      fn: (p: string, optionsJson: HostArg | undefined, callbackId: HostArg) => {
+        const safe = resolveReadTarget(ctx.dataDir, p);
+        const opts = watchOptions(optionsJson);
+        const cbId = asText(callbackId);
+        return registerWatcher('watch', (res) => {
+          res.callbackId = cbId;
+          // 短路径会 abort（见 canonicalWatchPath）：这里让它**抛**（ENOENT 等也照 Node 抛），
+          // 由仿真层用 `withSyscall('watch', …)` 补成 Node 的形状。
+          res.watchPath = canonicalWatchPath(safe);
+          const watcher = fsWatch(res.watchPath, { recursive: opts.recursive, persistent: false });
+          watcher.on('change', (eventType: string, filename: string | Buffer | null) => {
+            // 默认编码是 utf8 ⇒ filename 是 string 或 null（`{encoding:'buffer'}` 由仿真层明确拒绝）
+            res.queue.push([eventType, typeof filename === 'string' ? filename : filename === null ? null : String(filename)]);
+            kickWatch(res);
+          });
+          watcher.on('error', (err: Error) => {
+            res.queue.push(['error', String(err?.message ?? err)]);
+            kickWatch(res);
+          });
+          return watcher;
+        });
+      },
+    },
+    'fs.watchTake': {
+      permission: 'fs.read.data',
+      fn: (idJson: HostArg | undefined) => {
+        const res = watchResource(idJson);
+        return { events: res.queue.splice(0, res.queue.length) };
+      },
+    },
+    'fs.watchClose': {
+      permission: 'fs.read.data',
+      fn: (idJson: HostArg | undefined) => {
+        const id = parseJsonArg(idJson, 'watch-id');
+        const closed = typeof id === 'string' ? handles.closeById(id) : false;
+        return { closed };
+      },
+    },
+    'fs.watchFileOpen': {
+      permission: 'fs.read.data',
+      fn: (p: string, optionsJson: HostArg | undefined, callbackId: HostArg) => {
+        const safe = resolveReadTarget(ctx.dataDir, p);
+        const opts = watchFileOptions(optionsJson);
+        const cbId = asText(callbackId);
+        return registerWatcher('watchFile', (res) => {
+          res.callbackId = cbId;
+          // watchFile **允许目标不存在**（轮询到它会给出全零 Stats）⇒ realpath 失败就用原路径
+          res.watchPath = canonicalWatchPathSoft(safe);
+          const listener = (curr: Stats, prev: Stats) => {
+            res.queue.push([statFields(curr), statFields(prev)]);
+            kickWatch(res);
+          };
+          fsWatchFile(res.watchPath, { interval: opts.interval, persistent: false }, listener);
+          return { removeAllListeners: () => fsUnwatchFile(res.watchPath, listener) } as unknown as StatWatcher;
+        });
+      },
+    },
+    'fs.watchFileTake': {
+      permission: 'fs.read.data',
+      fn: (idJson: HostArg | undefined) => {
+        const res = watchResource(idJson);
+        return { calls: res.queue.splice(0, res.queue.length) };
+      },
+    },
+    'fs.watchFileClose': {
+      permission: 'fs.read.data',
+      fn: (idJson: HostArg | undefined) => {
+        const id = parseJsonArg(idJson, 'watch-id');
+        const closed = typeof id === 'string' ? handles.closeById(id) : false;
+        return { closed };
+      },
+    },
+
     // ---- FileHandle 的"整文件"面（`fh.readFile` / `fh.writeFile` / `fh.appendFile`）----
     //
     // 为什么做成**宿主原语**、而不是让仿真层自己循环 `fdReadAsync` 再拼：文本面（`{encoding}`）的
@@ -1649,7 +1920,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     // `fs.read.data` / `fs.write.data`（与 `fs.readText`/`fs.writeText` 同一条取舍：
     // **仿真模块不得引入新的权限语义**）。
     //
-    // 语义全部照判卷人实测（`_audit/scratch/probe-filehandle.mjs`）：
+    // 语义全部照判卷人实测（官方 node v22.22.1；与宿主 v24 逐条一致）：
     //   · `fh.readFile()` **从当前偏移读到 EOF**（连续两次调用第二次给空 Buffer），**不关句柄**；
     //   · `fh.writeFile(d)` 与 `fh.appendFile(d)` **都是"从当前偏移写"**，两者逐字节相同
     //     （Node 的 `FileHandle.appendFile` 就是 `writeFile`；真正的追加来自句柄自己的 'a' 旗标）；

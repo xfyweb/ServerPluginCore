@@ -375,6 +375,17 @@ export interface SandboxBridge {
    */
   flush?: () => void;
   /**
+   * 宿主 → guest 的**通用回调投递**（hostApi 用；定时器与 `fs.watch` 一族共用这条通道）。
+   *
+   * 为什么要有它：宿主侧拿到"该叫插件一声"的事件（定时器到点 / 文件变了）时，**不能**直接进 VM ——
+   * 只有沙箱知道现在是不是有一个阶段在飞。这条通道就是那个唯一的门：
+   *   · 空闲 ⇒ 起一个自己的阶段（`kind` 就是阶段名）把回调排进 job、由 `pumpJobsAsync` 驱动；
+   *   · **忙或已拆 ⇒ 返回 `false`**（不并发进同一 VM、不排队）——调用方自己决定怎么办：
+   *     定时器是"下一拍还会来"所以静默跳过；`fs.watch` 是"事件已经在宿主排好队"所以退避重试。
+   * 审计分别记 `timers.tick` / `watch.event`（方法名带 kind，别把两件事混进同一条日志）。
+   */
+  deliver?: (kind: 'timer' | 'watch', callbackId: string, targetId: string) => Promise<boolean>;
+  /**
    * **强制回收宿主侧句柄**（`core/plugin/handles.ts` 的表）。沙箱在 `teardown()` 里调一次。
    *
    * 为什么句柄的收口要由沙箱来触发：表是 hostApi 的（它得在调用期解析句柄），而"卸载"这件事
@@ -1168,13 +1179,13 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
    * → **异步**泵 job（插件代码实际在这里跑，含 asyncify 的挂起/rewind）→ 读归一化状态 → 归类失败。
    */
   async function invoke(
-    kind: 'hook' | 'timer',
+    kind: 'hook' | 'timer' | 'watch',
     name: string,
     hook: HookName,
     timeoutMs: number,
   ): Promise<void> {
-    // 阶段名给 `PLUGIN_BUSY` 用：定时器用统一名（callbackId 是摘要，对排障没意义）
-    beginPhase(kind === 'timer' ? 'timer' : name);
+    // 阶段名给 `PLUGIN_BUSY` 用：回调类（定时器/监视）用统一名（callbackId 是摘要，对排障没意义）
+    beginPhase(kind === 'hook' ? name : kind);
     const started = Date.now();
     const dl = started + timeoutMs;
     deadline.setDeadline(dl);
@@ -1252,20 +1263,28 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     }
   }
 
-  /** 定时器回调：与钩子同样的限额；失败只落审计，不改变插件状态（由 manager 决定策略） */
-  async function runTimer(callbackId: string, timerId: string): Promise<void> {
+  /**
+   * 宿主触发的**非钩子回调**（定时器 / 文件监视）：与钩子同样的限额；失败只落审计，不改变插件状态
+   * （由 manager 决定策略）。
+   *
+   * `kind` 决定阶段名与审计方法名（`timers.tick` / `watch.event`）：两条通道共用一份实现，
+   * 但日志里必须分得开——"定时器跳了一拍"与"文件变了没送到"是两种完全不同的排障线索。
+   */
+  async function runGuestCallback(kind: 'timer' | 'watch', callbackId: string, targetId: string): Promise<void> {
     // 重入保护：正在执行插件代码就**跳过一次**，绝不并发进同一 VM。
     // 这里与钩子那条（`PLUGIN_BUSY`）有意不同：定时器是**周期性**的，把"这一拍错过"报成错误
     // 只会让插件因为一次正常的避让被判失败；下一拍还会来，静默跳过才是它该有的语义。
+    // （`fs.watch` 那边把跳过变成"稍后重试"：事件已经排在宿主队列里，跳过的是**投递**不是事件。）
     if (busy || disposed) return;
     const started = Date.now();
+    const auditMethod = kind === 'timer' ? 'timers.tick' : 'watch.event';
     try {
-      await invoke('timer', callbackId, 'timer', limits.timerTimeoutMs);
+      await invoke(kind, callbackId, kind, limits.timerTimeoutMs);
       audit({
         ts: Date.now(),
         pluginId: options.pluginId,
-        method: 'timers.tick',
-        target: timerId,
+        method: auditMethod,
+        target: targetId,
         paramsDigest: digest(callbackId),
         result: 'ok',
         // 阶段已由 `invoke` 的 endPhase 收尾 ⇒ 累计值已挪到 lastSuspendedMs（现场那个恒为 0）
@@ -1277,8 +1296,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       audit({
         ts: Date.now(),
         pluginId: options.pluginId,
-        method: 'timers.tick',
-        target: timerId,
+        method: auditMethod,
+        target: targetId,
         paramsDigest: digest(callbackId),
         result: 'error',
         error: { code: shape.code, paramsDigest: digestParams(shape.params) },
@@ -1288,10 +1307,21 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     }
   }
 
+  /** 定时器回调（保留原名字：`timers` 那条路的第一调用方，语义与审计方法名都不变） */
+  async function runTimer(callbackId: string, timerId: string): Promise<void> {
+    await runGuestCallback('timer', callbackId, timerId);
+  }
+
   // 回填桥：hostApi 的 timers.* 转发到这里（此时 VM 已就绪）
   if (options.bridge) {
     // 预算余额给宿主方法（exec 用它给自己的 spawnSync 超时封顶）；无阶段在跑时是 Infinity
     options.bridge.remainingMs = () => deadline.remainingMs();
+    // 通用回调投递（定时器 / fs.watch）：`false` = 现在进不去 VM（忙或已拆），调用方稍后重试
+    options.bridge.deliver = async (kind, callbackId, targetId) => {
+      if (busy || disposed) return false;
+      await runGuestCallback(kind, callbackId, targetId);
+      return true;
+    };
     options.bridge.timers = {
       every(intervalMs: number, callbackId: string) {
         if (!Number.isSafeInteger(intervalMs) || intervalMs < 100 || intervalMs > 86_400_000) {
