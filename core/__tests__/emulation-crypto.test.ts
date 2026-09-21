@@ -458,7 +458,12 @@ describe('仿真 node:crypto —— 真实 QuickJS 沙箱里跑通', async () =>
     console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
     try {
       await sandbox.runModule('@spc-test/crypto', code);
-      await sandbox.callHook('init', 5_000);
+      // 钩子预算给足 30s：**这是特性用例，不是超时用例**。
+      // 为什么原来 5s 不够（2026-09-21 实测的红）：句柄那条用例里插件要做 ~1450 次宿主调用
+      // （300 次 churn × 4 次调用 + 257 次 createHash），而**每次宿主调用都会同步 append 一行审计**
+      // ⇒ 机器一忙（并发跑别的命令、后台有负载）总耗时就顶到 5s 之上，被 `invoke` 的**墙钟事后校验**
+      // 判成 PLUGIN_INIT_TIMEOUT（实测 overrunMs=76）。判定没错，是测试给自己的预算太小。
+      await sandbox.callHook('init', 30_000);
     } finally {
       console.log = orig;
       sandbox.dispose();

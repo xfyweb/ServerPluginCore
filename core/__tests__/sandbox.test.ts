@@ -290,9 +290,10 @@ test('契约二：同一 VM 不许并发进 —— 阶段在飞时再调钩子 �
   );
   const first = sandbox.callHook('init', 3_000);
   try {
-    // 等它真的进到挂起（不靠 sleep 猜：轮询 isBusy，最多 1s）
-    for (let i = 0; i < 100 && !sandbox.isBusy(); i++) await new Promise((r) => setTimeout(r, 10));
-    assert.equal(sandbox.isBusy(), true, '钩子应当已在执行/挂起');
+    // 等它真的进到挂起（不靠 sleep 猜：轮询 isBusy）。⚠️ 等 5s 不是 1s：机器一忙（并发跑命令 /
+    // 后台有负载）"进到挂起"这一步本身会被拖慢，1s 会变成偶发红灯（2026-09-21 追偶发失败时收紧这条）。
+    for (let i = 0; i < 500 && !sandbox.isBusy(); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(sandbox.isBusy(), true, '钩子应当已在执行/挂起（已等 5s）');
     await assert.rejects(
       () => sandbox.callHook('start', 3_000),
       (err: unknown) => {
@@ -342,8 +343,9 @@ export async function init() {
 `,
     );
     first = sandbox.callHook('init', 3_000);
-    for (let i = 0; i < 100 && !sandbox.isBusy(); i++) await new Promise((r) => setTimeout(r, 10));
-    assert.equal(sandbox.isBusy(), true, '钩子应当已挂在异步宿主调用上');
+    // 同上：等 5s（不是 1s），免得机器一忙就把"还没轮到它"误判成缺陷
+    for (let i = 0; i < 500 && !sandbox.isBusy(); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(sandbox.isBusy(), true, '钩子应当已挂在异步宿主调用上（已等 5s）');
     const timerId = /TID=(\S+)/.exec(logs.join('\n'))?.[1];
     assert.ok(timerId, `没拿到 timerId：${logs.join('|')}`);
     // ① 卸载本身不许崩、也不许卡：立刻返回（真正拆延后）
