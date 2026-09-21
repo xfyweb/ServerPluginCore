@@ -712,3 +712,31 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 
 句柄 id 是**随机 UUID**（不是自增），而且**每个插件一张表** ⇒ 别家插件的 id 在本表里根本查不到，
 "借用/伪造句柄"这条攻击面是**结构上不可达**的，不靠校验挡。
+
+### 14.11 fd 面（句柄模型接上**真 OS 资源** —— 真会泄漏的那一类）
+
+2026-09-21 落地：`node:fs` 的**同步 fd 面**接上真描述符 —— `openSync` / `closeSync` / `readSync` /
+`writeSync` / `fstatSync` / `ftruncateSync` / `fsyncSync`（`fs.statSync(数字)` 照 Node 走 `fstat`）。
+宿主方法 `fs.fdOpen(Read|Write)` / `fdRead` / `fdWrite` / `fdStat` / `fdFsync` / `fdFtruncate` / `fdClose`，
+登记在**同一张 per-plugin 句柄表**里（`kind: 'fd'`）。
+
+| 项 | 定下来的做法 | 为什么 |
+|---|---|---|
+| 插件可见编号 | **数字**（从 3 起，每插件独立空间，**关闭后不复用**） | Node 契约：`openSync` 返回 number，插件会拿它比较/算术（`fs.readSync('3', …)` 在 Node 上报 `ERR_INVALID_ARG_TYPE`）。**不复用**是为了确定性 `EBADF` —— Node 自己会复用数字（实测：关掉后再 `readSync` 竟返回 1，等于悄悄操作到**另一个文件**） |
+| 上限 | **每插件 64 个**（`MAX_FD_HANDLES`）；到顶 ⇒ 对内 `HANDLE_LIMIT_EXCEEDED`、**对外 `EMFILE`**（`too many open files`，Node 对同类情形的码） | fd 是 OS 资源，"只 open 不 close" 真能把宿主描述符吃光。`EMFILE` 映射写在仿真层的**手写覆盖表**里（生成的 `HOST_CODE_TO_ERRNO` 不动，它是 `tools/truth/` 的产物） |
+| 权限点 | 旗标分类**保守**：只有 `'r'`/`'rs'` 走 `fs.read.data`，其余（含数字旗标）一律走 `fs.write.data` | 不引入新权限语义；分类错也只是"多要一个权限"，fail-closed |
+| 路径收敛 | 读走 `resolveReadTarget`、写走 `resolveWriteTarget`（与 `readFileSync`/`writeFileSync` 同一条链） | fd 面**不许**成为绕开作用域的第二条路 |
+| 旗标合法性 | **原样交宿主 Node 判**（非法 ⇒ `ERR_INVALID_ARG_VALUE`） | 不复刻 Node 的旗标表（那份在 `node/lib/internal/fs/utils.js`，抄就会漂） |
+| 单次读写 | 每次 ≤ **8 MiB**（`MAX_FD_IO_BYTES`，超了用循环读） | 一次要整块过桥；fd 面的意义正是"不必整块进沙箱堆"，但单次仍要有闸 |
+
+**判卷人真值**（`_audit/scratch/probe-fd-face.mjs`，v22.22.1 与宿主 v24 逐条一致）：
+`closeSync` 二次 ⇒ `EBADF … close`；只读 fd 上写 / 只写 fd 上读 ⇒ `EBADF … write|read`；
+目录 fd 能打开但 `readSync` ⇒ `EISDIR … read`；`offset+length` 越界 ⇒ `ERR_OUT_OF_RANGE`
+（文案 `... It must be <= -94. Received 1` —— 上界是 `buffer.length - offset`，照抄）。
+
+**仍未做**（一律明确抛 `ERR_NOT_SUPPORTED_IN_SANDBOX`）：回调式 fd 面（`fs.open`/`read`/`write`/…）、
+`readv`/`writev`、`fs.promises.open` 的 `FileHandle`、`fs.createReadStream`、`Dir`/`opendir`、`fs.watch`。
+
+**两个实现坑（都写进注释了）**：① 姊妹 shim 的 `callBytes` 返回 **ArrayBuffer**（crypto 那份返回 Buffer），
+而 `TypedArray.set(ArrayBuffer)` 会**静默拷 0 字节**、`bytes.length` 是 undefined（表现为"读出来全是 0"）；
+② "fd 查不到句柄"必须报 `EBADF` 而**不是**通用 `INVALID_ARGS`（否则插件看到 `EINVAL`，与 Node 不一致）。

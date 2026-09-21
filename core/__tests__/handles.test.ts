@@ -94,6 +94,28 @@ test('closeById 幂等：真资源恰好释放一次，重复 close 返回 false
   assert.throws(() => table.require('hash', record.id), /INVALID_ARGS/);
 });
 
+test('显式 id（fd 面用）：数字编号可用、重复登记会炸、隔离仍按插件', () => {
+  const released: string[] = [];
+  const table = new HandleTable<string>({ pluginId: '@xfy2412/handles-test' });
+  // fd 面必须交出**数字**（Node 契约），所以允许显式 id；但同一个 id 重复登记是调用方的 bug
+  const rec = table.open('fd', 'r1', () => released.push('r1'), { id: '3' });
+  assert.equal(rec.id, '3');
+  assert.throws(
+    () => table.open('fd', 'r2', () => released.push('r2'), { id: '3' }),
+    (err: unknown) => (err as SpcError).params.reason === 'handle-id-collision',
+  );
+  // 关掉之后**编号不复用**（fd 面的纪律：确定性 EBADF，而不是像 Node 那样可能悄悄换个文件）
+  assert.equal(table.closeById('3'), true);
+  assert.equal(table.peek('fd', '3'), undefined);
+  assert.equal(table.closeById('3'), false);
+  assert.deepEqual(released, ['r1']);
+  // 隔离：别家插件的同一编号在别家的表里
+  const other = new HandleTable<string>({ pluginId: '@xfy2412/other' });
+  other.open('fd', 'x', () => {}, { id: '3' });
+  assert.equal(other.peek('fd', '3')?.resource, 'x');
+  assert.equal(new HandleTable<string>({ pluginId: '@xfy2412/third' }).peek('fd', '3'), undefined);
+});
+
 test('releaseAll（卸载强回收）：返回没被释放的句柄，且各自恰好释放一次', () => {
   const { table, released, events, open } = makeTable();
   const a = open('hash', 'H1');

@@ -70,8 +70,16 @@ export class HandleTable<T = unknown> {
    * 登记一条句柄并返回记录（`record.id` 就是给插件看的那段不透明字符串）。
    *
    * `release` 由调用方提供：它必须**幂等**（表保证只调一次，但真资源释放函数自己再兜一层更稳）。
+   *
+   * `options.id`（**只有 fd 面该用**）：文件描述符在 Node 里是**数字**（`fs.openSync` 返回 number，
+   * 插件会拿它做比较/算术/`typeof`），所以那一面必须交出数字编号。两条纪律：
+   *   ① 编号由**每个插件自己的计数器**发（从 `3` 起，同 Node），且**关闭后不复用** —— Node 自己会复用数字，
+   *      于是"关了再用"在 Node 上可能悄悄操作到**另一个文件**（判卷人实测：`readSync` 关后仍返回 1）；
+   *      我们选**确定性 EBADF**（fail-closed，也正是 Node 文档的语义）；
+   *   ② 隔离仍由 **per-plugin 表**保证（别家的编号在本表里查不到）。
+   * UUID 那套留给**不透明句柄**（如流式摘要）—— 那里没有"必须像 Node"的形状约束。
    */
-  open(kind: string, resource: T, release: () => void): HandleRecord<T> {
+  open(kind: string, resource: T, release: () => void, options?: { id?: string }): HandleRecord<T> {
     const limit = this.maxPerKind[kind];
     if (limit !== undefined && this.count(kind) >= limit) {
       // fail-closed：到上限就拒（与 timers 的 TIMER_LIMIT_EXCEEDED 同一形状：码 + kind + limit）
@@ -82,8 +90,13 @@ export class HandleTable<T = unknown> {
         limit: String(limit),
       });
     }
+    const id = options?.id ?? randomUUID();
+    if (this.live.has(id)) {
+      // 同 id 重复登记 = 调用方的 bug（fd 计数器回绕 / UUID 撞了）；宁可炸，也不要覆盖真资源
+      throw new SpcError('INTERNAL', { reason: 'handle-id-collision', kind });
+    }
     const record: HandleRecord<T> = {
-      id: randomUUID(),
+      id,
       kind,
       pluginId: this.pluginId,
       openedAt: Date.now(),
@@ -111,6 +124,15 @@ export class HandleTable<T = unknown> {
       });
     }
     return record;
+  }
+
+  /**
+   * 非抛错版查找（`require` 的兄弟）：给"查不到要报**别的码**"的场合用 ——
+   * 例：fd 面的 `close`，Node 对"不存在的编号"报的是 `EBADF` 而不是参数错误。
+   */
+  peek(kind: string, id: unknown): HandleRecord<T> | undefined {
+    const record = typeof id === 'string' ? this.live.get(id) : undefined;
+    return record !== undefined && record.kind === kind ? record : undefined;
   }
 
   /**

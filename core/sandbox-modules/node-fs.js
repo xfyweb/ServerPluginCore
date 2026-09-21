@@ -24,6 +24,9 @@
 //     不是吝啬：读到的内容会变成沙箱堆里的字节，32 MiB 的堆撑不住更大的文件，
 //     而那时报出来的是 PLUGIN_MEMORY_LIMIT（误导，所以宁可在宿主侧按"能安全进 VM"的尺寸拒绝）。
 //  5. 不支持 `{ bigint: true }`（BigIntStats）与 `readdirSync(…, { recursive: true })`：**抛错**不降级。
+//     **fd 面已支持同步那一半**（2026-09-21：`openSync`/`closeSync`/`readSync`/`writeSync`/`fstatSync`/
+//     `ftruncateSync`/`fsyncSync`，真 OS 资源 + 每插件编号空间，见文件内"fd 面（同步）"一节）；
+//     回调式 / `readv`/`writev` / `fs.promises.open` 的 `FileHandle` / 流式入口**仍未支持**（明确抛错）。
 //  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`tools/truth/fs-url-truth.mjs` 在 WSL node v22.22.1
 //     上取的运行值，生成脚本 `tools/truth/gen-fs-tables.mjs`），与 `node-path.js` 固定 posix、
 //     `node-constants.js` 取 Linux 是同一个取向。
@@ -274,7 +277,19 @@ const HOST_CODE_TO_ERRNO = {
   INVALID_ARGS: 'EINVAL',
 };
 
+/**
+ * 宿主码 → errno 的**少量手写覆盖**。
+ * ⚠️ 别往 `HOST_CODE_TO_ERRNO` 里塞：那张表是 `tools/truth/gen-fs-tables.mjs` 的**生成物**（勿手改）。
+ * 这里只放"生成表之外的特例"：
+ *   · `HANDLE_LIMIT_EXCEEDED` ⇒ **`EMFILE`** —— 插件的 fd 上限用满时，Node 对同类情形报的就是
+ *     `EMFILE: too many open files`（宿主码仍留在 `err.spcCode` 里，排障不丢信息）。
+ */
+const HOST_CODE_ERRNO_OVERRIDE = { HANDLE_LIMIT_EXCEEDED: 'EMFILE' };
+
 function errnoName(hostCode) {
+  if (Object.prototype.hasOwnProperty.call(HOST_CODE_ERRNO_OVERRIDE, hostCode)) {
+    return HOST_CODE_ERRNO_OVERRIDE[hostCode];
+  }
   if (Object.prototype.hasOwnProperty.call(HOST_CODE_TO_ERRNO, hostCode)) {
     return HOST_CODE_TO_ERRNO[hostCode];
   }
@@ -383,8 +398,9 @@ function stub(name, why) {
 
 /**
  * 路径参数归一化：Node 接受 string / Buffer / URL。
- * ⚠️ **数字不被当作 fd**（Node 会把数字当文件描述符用）：fd 面本批不支持，照类型错误报，
- * 这样插件立刻知道是自己传错了，而不是拿到一个"看起来能用"的 fd。
+ * ⚠️ **数字不当路径**：Node 的 `fs.statSync(3)` 会把数字当 fd 用（走 `fstat`），
+ * 所以 `statSync`/`stat` 那一族在**入口**就把数字分流到 `fstatSync`（见 `statImpl` 的注释），
+ * 其余路径类 API 仍按类型错误报 —— 插件立刻知道是自己传错了。
  */
 function toPathString(p, name) {
   if (typeof p === 'string') return p;
@@ -727,6 +743,12 @@ function statImpl(path, options, follow, syscall) {
   if (opts && opts.bigint === true) {
     throw unsupported('fs.' + syscall + 'Sync', 'BigIntStats ({ bigint: true }) is not implemented');
   }
+  // Node：`fs.statSync(fd)` 传数字时走的是 **fstat**（同一份 Stats，syscall 仍是 'fstat'）——
+  // 现在 fd 面已支持，这里如实分流，别再把数字当"错误路径"报类型错。
+  if (typeof path === 'number') {
+    if (follow === false) throw invalidArgType('path', ['string', 'Buffer', 'URL'], path);
+    return fstatSync(path, options);
+  }
   const p = toPathString(path);
   try {
     const f = callJson('fs.statFull', p, follow ? 'true' : 'false');
@@ -743,6 +765,186 @@ function statSync(path, options) {
 
 function lstatSync(path, options) {
   return statImpl(path, options, false, 'lstat');
+}
+
+// ──────────────────────────── fd 面（同步）────────────────────────────
+
+/**
+ * 文件描述符（同步面）：**真 OS 资源**，也是句柄模型的第二个真实用户
+ * （宿主侧 = 每插件编号空间 + per-plugin 句柄表，见 `core/plugin/handles.ts`）。
+ *
+ * 为什么要有它：`readFileSync` 必须把整个文件搬进 32 MiB 的沙箱堆；fd 面让插件**按位置流式**读写。
+ *
+ * 契约（判卷人 v22.22.1 与宿主 v24 实测一致，脚本 `_audit/scratch/probe-fd-face.mjs`）：
+ *   · `openSync` 返回 **number**；**旗标原样交宿主 Node 校验**（非法 ⇒ `ERR_INVALID_ARG_VALUE`，
+ *     我们不复刻 Node 的旗标表）；
+ *   · `closeSync` 二次 ⇒ `EBADF: bad file descriptor, close`；读写方向不符 ⇒ `EBADF …, read|write`；
+ *   · 目录 fd **能**打开，但 `readSync` ⇒ `EISDIR: illegal operation on a directory, read`；
+ *   · `position` 传 `null` ⇒ 用当前文件偏移；`offset/length` 越界 ⇒ `ERR_OUT_OF_RANGE`。
+ * ⚠️ **与 Node 的有意不同（一处）**：编号**关闭后不复用** ⇒ "关了再用"永远是 `EBADF`。
+ *   Node 自己会复用数字（实测：关掉后再 `readSync` 竟返回 1，等于悄悄操作到**另一个文件**）——
+ *   我们要确定性的 fail-closed，而不是"看运气"。
+ */
+
+/** `ERR_OUT_OF_RANGE`（Node 的文案形状：`The value of "x" is out of range. It must be <= -94. Received 1`） */
+function outOfRange(name, description, value) {
+  const e = new RangeError(
+    'The value of "' + name + '" is out of range. It must be ' + description + '. Received ' + String(value),
+  );
+  e.code = 'ERR_OUT_OF_RANGE';
+  return e;
+}
+
+/** fd 必须是数字（Node：`fs.readSync('3', …)` 报 ERR_INVALID_ARG_TYPE） */
+function assertFd(fd) {
+  if (typeof fd !== 'number' || !Number.isSafeInteger(fd)) {
+    throw invalidArgType('fd', ['number'], fd);
+  }
+  return fd;
+}
+
+/**
+ * 旗标分类：**只有 `'r'`（与 `'rs'`）算只读**，其余一律按"要写权限"走（**保守 = fail-closed**）。
+ * 分类只决定用哪条宿主方法/权限点（`fs.fdOpenRead` 走 `fs.read.data`，写走 `fs.write.data`）；
+ * 旗标本身仍由宿主 Node 判合法性。数字旗标一律当写（读不出位，宁可多要一个权限）。
+ */
+function flagsNeedWrite(flags) {
+  return !(flags === 'r' || flags === 'rs');
+}
+
+function openFdImpl(p, flags, needWrite, syscall) {
+  const raw = flags === undefined ? 'r' : flags;
+  if (typeof raw !== 'string' && typeof raw !== 'number') {
+    throw invalidArgType('flags', ['string', 'number'], flags);
+  }
+  // 数字/字符串都 JSON 化过桥（`marshalArg` 的约定：数字会被 JSON 化成文本，宿主侧解析回来）
+  const res = withSyscall(syscall, p, undefined, () =>
+    callJson(needWrite ? 'fs.fdOpenWrite' : 'fs.fdOpenRead', p, JSON.stringify(raw)),
+  );
+  return res.fd;
+}
+
+function openSync(path, flags, mode) {
+  void mode; // mode 只在"创建文件"时生效；宿主侧用默认权限位（与 fs.writeText 的取舍一致）
+  const f = flags === undefined ? 'r' : flags;
+  const p = toPathString(path);
+  return openFdImpl(p, f, flagsNeedWrite(f), 'open');
+}
+
+function closeSync(fd) {
+  const n = assertFd(fd);
+  // Node 对 fd 的错误**不带路径**（实测 `EBADF: bad file descriptor, close`）⇒ path 传 undefined
+  withSyscall('close', undefined, undefined, () => callJson('fs.fdClose', JSON.stringify(n)));
+}
+
+/** 位置参数：数字 = 绝对偏移；`null`/`undefined` = 用当前文件偏移（Node 语义） */
+function fdPositionArg(position) {
+  if (position === undefined || position === null) return undefined;
+  if (typeof position !== 'number' || !Number.isSafeInteger(position) || position < 0) {
+    throw outOfRange('position', '>= 0', position);
+  }
+  return position;
+}
+
+/**
+ * `offset/length` 的共用校验（Node 用 `ERR_OUT_OF_RANGE`；上界文案是 `buffer.length - offset`，
+ * 连负数都照原样打 —— 实测 `... It must be <= -94. Received 1`，照抄）。
+ */
+function assertOffsetLength(buffer, offset, length) {
+  if (!ArrayBuffer.isView(buffer)) {
+    throw invalidArgType('buffer', ['Buffer', 'TypedArray', 'DataView'], buffer);
+  }
+  if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
+    throw outOfRange('offset', '>= 0', offset);
+  }
+  if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) {
+    throw outOfRange('length', '>= 0', length);
+  }
+  if (offset + length > buffer.byteLength) {
+    throw outOfRange('length', '<= ' + (buffer.byteLength - offset), length);
+  }
+  return { offset, length };
+}
+
+/**
+ * `readSync(fd, buffer[, offset[, length[, position]]])`：
+ * 宿主只回"读到的字节"，**拷贝进调用方的 buffer** 这一步在沙箱里做（Node 也是原地改 buffer）。
+ */
+function readSync(fd, buffer, offset, length, position) {
+  const n = assertFd(fd);
+  const off = offset === undefined ? 0 : offset;
+  const len = length === undefined ? (ArrayBuffer.isView(buffer) ? buffer.byteLength - (typeof off === 'number' ? off : 0) : 0) : length;
+  const view = assertOffsetLength(buffer, off, len);
+  const pos = fdPositionArg(position);
+  // ⚠️ 本文件的 `callBytes` 回的是 **ArrayBuffer**（不是 Buffer）——`bytes.length` 会是 undefined，
+  // 而 `TypedArray.set(ArrayBuffer)` 会**静默拷 0 字节**（踩过：读出来全是 0 且返回值 undefined）。
+  // 既有写法就是 `Buffer.from(callBytes(...))`，照它来。
+  const bytes = Buffer.from(
+    withSyscall('read', undefined, undefined, () =>
+      callBytes(
+        'fs.fdRead',
+        JSON.stringify(n),
+        JSON.stringify(view.length),
+        pos === undefined ? undefined : JSON.stringify(pos),
+      ),
+    ),
+  );
+  // 拷进调用方的视图（`buffer` 可以是 Buffer / TypedArray / DataView）
+  new Uint8Array(buffer.buffer, buffer.byteOffset + view.offset, bytes.length).set(bytes);
+  return bytes.length;
+}
+
+/**
+ * `writeSync` 的两种重载（Node）：
+ *   writeSync(fd, buffer[, offset[, length[, position]]])
+ *   writeSync(fd, string[, position[, encoding]])
+ * 返回**写入字节数**。
+ */
+function writeSync(fd, data, offsetOrPosition, lengthOrEncoding, position) {
+  const n = assertFd(fd);
+  let bytes;
+  let pos;
+  if (typeof data === 'string') {
+    // 字符串重载：第 3 参是 position、第 4 参是 encoding（默认 utf8；非法编码照 assertEncoding 报）
+    pos = fdPositionArg(offsetOrPosition);
+    const enc = lengthOrEncoding === undefined ? 'utf8' : lengthOrEncoding;
+    assertEncoding(enc);
+    bytes = Buffer.from(data, enc);
+  } else {
+    const off = offsetOrPosition === undefined ? 0 : offsetOrPosition;
+    const len = lengthOrEncoding === undefined ? (ArrayBuffer.isView(data) ? data.byteLength - (typeof off === 'number' ? off : 0) : 0) : lengthOrEncoding;
+    const view = assertOffsetLength(data, off, len);
+    bytes = Buffer.from(data.buffer, data.byteOffset + view.offset, view.length);
+    pos = fdPositionArg(position);
+  }
+  const res = withSyscall('write', undefined, undefined, () =>
+    callJson('fs.fdWrite', JSON.stringify(n), bytes, pos === undefined ? undefined : JSON.stringify(pos)),
+  );
+  return res.bytesWritten;
+}
+
+function fstatSync(fd, options) {
+  const n = assertFd(fd);
+  const opts = options !== undefined && options !== null && typeof options === 'object' ? options : undefined;
+  if (opts && opts.bigint === true) {
+    throw unsupported('fs.fstatSync', 'BigIntStats ({ bigint: true }) is not implemented');
+  }
+  const f = withSyscall('fstat', undefined, undefined, () => callJson('fs.fdStat', JSON.stringify(n)));
+  return new Stats(f);
+}
+
+function fsyncSync(fd) {
+  const n = assertFd(fd);
+  withSyscall('fsync', undefined, undefined, () => callJson('fs.fdFsync', JSON.stringify(n)));
+}
+
+function ftruncateSync(fd, len) {
+  const n = assertFd(fd);
+  const l = len === undefined ? 0 : len;
+  if (typeof l !== 'number' || !Number.isSafeInteger(l) || l < 0) {
+    throw outOfRange('len', '>= 0', l);
+  }
+  withSyscall('ftruncate', undefined, undefined, () => callJson('fs.fdFtruncate', JSON.stringify(n), JSON.stringify(l)));
 }
 
 function readdirSync(path, options) {
@@ -1015,30 +1217,29 @@ const promises = {
 
 // ──────────────────────────── 明确不支持的能力 ────────────────────────────
 
-const FD_WHY = 'file descriptors are not exposed to plugins';
+/**
+ * ⚠️ 2026-09-21 起**同步 fd 面已支持**（`openSync`/`closeSync`/`readSync`/`writeSync`/`fstatSync`/
+ * `ftruncateSync`/`fsyncSync`，见上面的"fd 面（同步）"一节）。剩下的是**异步/向量/句柄对象**那些面：
+ * 回调式（`fs.open`/`fs.read`/…）、`readv/writev`、`fs.promises.open` 的 `FileHandle`、
+ * `fs.createReadStream`、`Dir`/`opendir`。
+ */
+const FD_WHY = 'only the synchronous fd face is exposed (openSync/readSync/writeSync/closeSync/fstatSync/ftruncateSync/fsyncSync); the callback, vector, FileHandle and stream faces are not';
 const STREAM_WHY = 'streams are not available in the sandbox (this batch does not emulate node:stream)';
 const WATCH_WHY = 'there is no inotify surface in the sandbox (poll with timers/@host/api)';
 const SYMLINK_WHY = 'symlink/link creation is not exposed to plugins';
 const META_WHY = 'host-managed metadata (mode/owner/timestamps) is not exposed';
 
 const open = stub('fs.open', FD_WHY);
-const openSync = stub('fs.openSync', FD_WHY);
 const close = stub('fs.close', FD_WHY);
-const closeSync = stub('fs.closeSync', FD_WHY);
 const read = stub('fs.read', FD_WHY);
-const readSync = stub('fs.readSync', FD_WHY);
 const readv = stub('fs.readv', FD_WHY);
 const readvSync = stub('fs.readvSync', FD_WHY);
 const write = stub('fs.write', FD_WHY);
-const writeSync = stub('fs.writeSync', FD_WHY);
 const writev = stub('fs.writev', FD_WHY);
 const writevSync = stub('fs.writevSync', FD_WHY);
 const fstat = stub('fs.fstat', FD_WHY);
-const fstatSync = stub('fs.fstatSync', FD_WHY);
 const ftruncate = stub('fs.ftruncate', FD_WHY);
-const ftruncateSync = stub('fs.ftruncateSync', FD_WHY);
 const fsync = stub('fs.fsync', FD_WHY);
-const fsyncSync = stub('fs.fsyncSync', FD_WHY);
 const fdatasync = stub('fs.fdatasync', FD_WHY);
 const fdatasyncSync = stub('fs.fdatasyncSync', FD_WHY);
 const fchmod = stub('fs.fchmod', FD_WHY);

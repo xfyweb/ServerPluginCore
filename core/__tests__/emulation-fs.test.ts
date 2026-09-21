@@ -13,7 +13,7 @@
 // （参数按 VM 类型取、结果 JSON 化、失败回错误信封），宿主实现一行都不重写。
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as HOST_FS_CONSTANTS, symlinkSync } from 'node:fs';
 import * as hostFs from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -477,14 +477,22 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     fs.unlinkSync(join(DATA_DIR, 'big.bin'));
   });
 
-  it('fd 面 / 流 / watch / 元数据一律**响亮抛错**，不静默 undefined', () => {
-    const names = [
-      'open', 'openSync', 'closeSync', 'readSync', 'writeSync', 'fstatSync', 'fsyncSync',
+  it('**同步 fd 面已支持**；回调 / 向量 / 流 / watch / 元数据面仍**响亮抛错**', () => {
+    // 2026-09-21：同步 fd 面接上了真 OS 资源（句柄模型），所以它**不在**"抛错"名单里了。
+    // 这条用例同时钉住两半：支持的那半是**函数且真的能用**（下面单独验），不支持的那半必须明确抛错。
+    const supportedSyncFd = ['openSync', 'closeSync', 'readSync', 'writeSync', 'fstatSync', 'ftruncateSync', 'fsyncSync'];
+    for (const name of supportedSyncFd) {
+      assert.equal(typeof (fs as any)[name], 'function', `${name} 应当是函数`);
+      assert.equal(typeof (hostFs as any)[name], 'function', `对照：宿主上 ${name} 也在`);
+    }
+    const stillStubbed = [
+      'open', 'close', 'read', 'write', 'fstat', 'ftruncate', 'fsync', 'fdatasync', 'fdatasyncSync',
+      'readv', 'readvSync', 'writev', 'writevSync',
       'createReadStream', 'createWriteStream', 'watch', 'watchFile', 'unwatchFile',
       'symlinkSync', 'linkSync', 'readlinkSync', 'fchmodSync', 'chownSync', 'utimesSync',
       'opendirSync', 'statfsSync', 'cpSync', 'globSync', 'truncateSync',
     ];
-    for (const name of names) {
+    for (const name of stillStubbed) {
       assert.equal(typeof (fs as any)[name], 'function', `${name} 应当是函数（不能是 undefined）`);
       const err: any = (() => {
         try {
@@ -495,8 +503,85 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
       })();
       assert.equal(err?.code, 'ERR_NOT_SUPPORTED_IN_SANDBOX', `${name} 应当明确抛错（拿到 ${err?.code}）`);
       // 对照：宿主上它是真的可用的，所以这是**有意**的缺失（不是抄漏了）
-      assert.equal(typeof (hostFs as any)[name], 'function');
+      assert.equal(typeof (hostFs as any)[name], 'function', `对照：宿主上 ${name} 也在`);
     }
+  });
+
+  it('fd 面（同步）语义与宿主一致：写入/按位置读/追加/EOF/fstat/ftruncate/EBADF', () => {
+    // 差分对象是**宿主 Node**（同一套操作喂两边比结果）—— 与其余 fs 用例同一路数。
+    const runs: Array<{ ours: unknown; host: unknown }> = [];
+    const both = (fn: (f: typeof fs, dir: string) => unknown) => {
+      runs.push({ ours: fn(fs, DATA_DIR), host: fn(hostFs as unknown as typeof fs, HOST_DIR) });
+    };
+    both((f, dir) => {
+      const p = join(dir, 'fd-a.txt');
+      const fd = f.openSync(p, 'w');
+      const n = f.writeSync(fd, 'hello');
+      f.writeSync(fd, ' world');
+      f.closeSync(fd);
+      const rfd = f.openSync(p, 'r');
+      const buf = Buffer.alloc(5);
+      const read1 = f.readSync(rfd, buf, 0, 5, 0);
+      const read2 = f.readSync(rfd, buf, 0, 5, 6);
+      const eof = f.readSync(rfd, buf, 0, 5, 999);
+      const size = f.fstatSync(rfd).size;
+      f.closeSync(rfd);
+      return { n, read1, read2, eof, size, first: buf.toString(), second: buf.toString() };
+    });
+    both((f, dir) => {
+      // 追加旗标 + 位置为空（用当前偏移）+ ftruncate。
+      // ⚠️ 截断要用**可写 fd**（'r+'）：Windows 上对**追加模式**的 fd 做 ftruncate 会 `EPERM`
+      // （实测踩到 —— 那是真语义，不是仿真的锅）。
+      const p = join(dir, 'fd-b.txt');
+      const afd = f.openSync(p, 'a');
+      f.writeSync(afd, 'abcdef');
+      f.writeSync(afd, Buffer.from('XY'), 0, 2, 1);
+      f.closeSync(afd);
+      const rfd = f.openSync(p, 'r+');
+      f.ftruncateSync(rfd, 5);
+      const size = f.fstatSync(rfd).size;
+      f.fsyncSync(rfd);
+      f.closeSync(rfd);
+      return { size, text: f.readFileSync(p, 'utf8') };
+    });
+    both((f, dir) => {
+      // 错误面：只读 fd 上写 / 方向不符 / 关了再用 / 二次关 / 未知编号 / 非法旗标 / 越界参数。
+      // 每条都**被 catch 住**再比（不然第一条例外就把用例掀了 —— 踩过）。
+      const cap = (fn: () => unknown) => {
+        try {
+          fn();
+          return 'no-throw';
+        } catch (e: any) {
+          return `${e.code}/${e.syscall ?? '-'}`;
+        }
+      };
+      const rfd = f.openSync(join(dir, 'a.txt'), 'r');
+      const wfd = f.openSync(join(dir, 'fd-c.txt'), 'w');
+      const out = {
+        writeOnReadOnly: cap(() => f.writeSync(rfd, 'x')),
+        readOnWriteOnly: cap(() => f.readSync(wfd, Buffer.alloc(1), 0, 1, 0)),
+        offsetOutOfRange: cap(() => f.readSync(rfd, Buffer.alloc(4), 3, 4, 0)),
+        badFlag: cap(() => f.openSync(join(dir, 'fd-d.txt'), 'zzz')),
+        missing: cap(() => f.openSync(join(dir, 'nope.txt'), 'r')),
+        closeUnknown: cap(() => f.closeSync(999999)),
+        closeTwice: cap(() => {
+          f.closeSync(wfd);
+          f.closeSync(wfd);
+          return 'second-ok';
+        }),
+        readAfterClose: cap(() => f.readSync(rfd, Buffer.alloc(1), 0, 1, 0)),
+      };
+      f.closeSync(rfd);
+      return out;
+    });
+    for (const pair of runs) {
+      assert.deepEqual(pair.ours, pair.host, `fd 面与宿主不一致：${JSON.stringify(pair)}`);
+    }
+    // ⚠️ 有意不同（**不进差分**）：本仿真不做 BigIntStats ⇒ `{ bigint: true }` 明确抛错，宿主则能用。
+    assert.equal(
+      capture(() => fs.fstatSync(3, { bigint: true }), DATA_DIR).code,
+      'ERR_NOT_SUPPORTED_IN_SANDBOX',
+    );
   });
 
   it('BigIntStats 与 readdir recursive 也抛错（不静默降级）', () => {
@@ -645,6 +730,83 @@ describe('仿真 node:fs —— 真实 QuickJS 沙箱里跑通（真桥 + 权限
 
   // 这条必须走真沙箱：宿主进程里的差分测试证明不了"沙箱里真的没有缺全局"、
   // 也证明不了引导层的注入与**权限判定**在真桥上成立（这个项目踩过 queueMicrotask 的坑）。
+  it('fd 面在真沙箱里成立：逐位置读写 / 上限 fail-closed / 卸载强制关掉真 fd', async () => {
+    // 这条验的是**句柄模型的真资源那一半**：fd 是 OS 资源，"只 open 不 close" 真会泄漏，
+    // 所以三种收口都要在真桥后面成立（正常关闭 / 到上限拒绝 / 卸载强回收 + 审计）。
+    const bridge: { releaseHandles?: () => void } = {};
+    const api = buildHostApi({ pluginId: '@spc-test/fd', dataDir: SMOKE_DIR, bridge });
+    const sandbox = await createSandbox(api, {
+      pluginId: '@spc-test/fd',
+      permissions: ['fs.read.data', 'fs.write.data'],
+      bridge,
+      facts: { version: { code: 1, name: 'test' }, dataDir: SMOKE_DIR, manifest: {}, config: {} },
+    });
+    // 卸载强回收的**探针**：包一层看它有没有被调（真正的释放语义由 handles.test.ts 单测钉住）
+    let releaseCalls = 0;
+    const origRelease = bridge.releaseHandles;
+    bridge.releaseHandles = () => {
+      releaseCalls++;
+      origRelease?.();
+    };
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        '@spc-test/fd',
+        `
+import fs from 'node:fs';
+export function init() {
+  const fd = fs.openSync('fd.txt', 'w');
+  console.log('FD ' + (typeof fd === 'number'));
+  fs.writeSync(fd, 'abcdef');
+  // 位置写用 **Buffer 重载**（字符串重载的 writeSync(fd, str, position, encoding) 第 4 参是 encoding，
+  // 传数字会像 Node 一样报 ERR_INVALID_ARG_VALUE —— 仿真是对的，别在这里写错）
+  fs.writeSync(fd, Buffer.from('XY'), 0, 2, 1);
+  fs.closeSync(fd);
+  const rfd = fs.openSync('fd.txt', 'r');
+  const b = Buffer.alloc(4);
+  const n = fs.readSync(rfd, b, 0, 4, 2); // 从位置 2 读 4 字节
+  console.log('READ ' + n + '/' + b.toString() + '/' + Buffer.isBuffer(b));
+  console.log('SIZE ' + fs.fstatSync(rfd).size);
+  fs.closeSync(rfd);
+  try { fs.readSync(rfd, b, 0, 1, 0); } catch (e) { console.log('CLOSED ' + e.code + '/' + e.syscall); }
+  // 上限：同时活着的 fd 上限 64（每插件独立）⇒ 第 65 个必须被拒（fail-closed）
+  let opened = 0;
+  let limitCode = 'none';
+  try { for (let i = 0; i < 80; i++) { fs.openSync('many-' + i + '.txt', 'w'); opened++; } }
+  catch (e) { limitCode = e.code; }
+  console.log('LIMIT ' + opened + ' ' + limitCode);
+}
+`,
+      );
+      await sandbox.callHook('init', 10_000);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    const out = logs.join('\n');
+    assert.match(out, /FD true/, `实际日志：${out}`);
+    // 'abcdef' 的 1..2 被 'XY' 覆盖 ⇒ 'aXYdef'；从位置 2 读 4 字节 ⇒ 'Ydef'
+    assert.match(out, /READ 4\/Ydef\/true/, `实际日志：${out}`);
+    assert.match(out, /SIZE 6/, `实际日志：${out}`);
+    assert.match(out, /CLOSED EBADF\/read/, `实际日志：${out}`);
+    // 上限用满 ⇒ 对外像 Node 的 `EMFILE`（too many open files）；宿主码 `HANDLE_LIMIT_EXCEEDED`
+    // 留在 `err.spcCode` 里（判过 spcCode，这里只看对外形状）
+    assert.match(out, /LIMIT 64 EMFILE/, `实际日志：${out}`);
+    // 卸载：句柄表被强制回收（那 64 个没人关的 fd 全靠这一步），并落一条审计
+    assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收');
+    const forced = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
+      .filter((e) => e.pluginId === '@spc-test/fd' && e.method?.startsWith('handles.'))
+      .map((e) => e.method!);
+    for (const expected of ['handles.open', 'handles.close', 'handles.limit', 'handles.forced-release']) {
+      assert.ok(forced.includes(expected), `审计缺少 ${expected}（实际：${[...new Set(forced)].join(',')}）`);
+    }
+  });
+
   it('写入/读取/列目录/stat/promises/清理全链路在沙箱里成立', async () => {
     // 权限只声明 fs.*：**用 node:fs 不该额外依赖 `bytes.*`**（设计 §6 的映射表就是这么写的）——
     // 这一条同时是那个不变量的回归（文本读写的编解码在宿主侧跟读取一起做，不走 bytes 组）。
