@@ -1,5 +1,5 @@
 {
- "at": "2026-09-21T13:58:03.711Z",
+ "at": "2026-09-22T09:28:41.857Z",
  "baselines": {
   "vendor": {
    "forkCommit": "4f5ad7c",
@@ -8,6 +8,9 @@
   },
   "node": {
    "commit": "edc61b14de8"
+  },
+  "linux": {
+   "version": "6.12.110"
   },
   "pkgs": {
    "lockSha": "fd363c23f7f4"
@@ -22,6 +25,17 @@
      "ref": "vendor/quickjs/quickjs.c:2036",
      "num": 2036,
      "sha": "0cd89642d446",
+     "gone": false
+    }
+   ]
+  },
+  "AGENTS.md|include/linux/notifier.h": {
+   "file": "linux-6.12/include/linux/notifier.h",
+   "refs": [
+    {
+     "ref": "include/linux/notifier.h:185",
+     "num": 185,
+     "sha": "fefbd9f0c7b7",
      "gone": false
     }
    ]
@@ -897,6 +911,108 @@
      "ref": "vendor/quickjs/quickjs.c:2036",
      "num": 2036,
      "sha": "0cd89642d446",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\events-and-hooks-design.md|include/linux/connector.h": {
+   "file": "linux-6.12/include/linux/connector.h",
+   "refs": [
+    {
+     "ref": "include/linux/connector.h:78-127",
+     "num": 78,
+     "sha": "b7652d1dcc07",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\events-and-hooks-design.md|include/linux/inotify.h": {
+   "file": "linux-6.12/include/linux/inotify.h",
+   "refs": [
+    {
+     "ref": "include/linux/inotify.h:12-18",
+     "num": 12,
+     "sha": "cc64f207ce79",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\events-and-hooks-design.md|include/linux/notifier.h": {
+   "file": "linux-6.12/include/linux/notifier.h",
+   "refs": [
+    {
+     "ref": "include/linux/notifier.h:185-209",
+     "num": 185,
+     "sha": "fefbd9f0c7b7",
+     "gone": false
+    },
+    {
+     "ref": "include/linux/notifier.h:18-47",
+     "num": 18,
+     "sha": "766e0153d3f7",
+     "gone": false
+    },
+    {
+     "ref": "include/linux/notifier.h:185",
+     "num": 185,
+     "sha": "fefbd9f0c7b7",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\events-and-hooks-design.md|kernel/notifier.c": {
+   "file": "linux-6.12/kernel/notifier.c",
+   "refs": [
+    {
+     "ref": "kernel/notifier.c:25-45",
+     "num": 25,
+     "sha": "a0c25424770b",
+     "gone": false
+    },
+    {
+     "ref": "kernel/notifier.c:73-104",
+     "num": 73,
+     "sha": "6abd4b12cde5",
+     "gone": false
+    },
+    {
+     "ref": "kernel/notifier.c:122-129",
+     "num": 122,
+     "sha": "3e5e2024908b",
+     "gone": false
+    },
+    {
+     "ref": "kernel/notifier.c:73",
+     "num": 73,
+     "sha": "6abd4b12cde5",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\events-and-hooks-design.md|security/security.c": {
+   "file": "linux-6.12/security/security.c",
+   "refs": [
+    {
+     "ref": "security/security.c:994-1011",
+     "num": 994,
+     "sha": "78d0f11b24c8",
+     "gone": false
+    },
+    {
+     "ref": "security/security.c:1013-1016",
+     "num": 1013,
+     "sha": "b55186439ef6",
+     "gone": false
+    }
+   ]
+  },
+  "docs\\events-and-hooks-design.md|include/linux/fanotify.h": {
+   "file": "linux-6.12/include/linux/fanotify.h",
+   "refs": [
+    {
+     "ref": "include/linux/fanotify.h:108-127",
+     "num": 108,
+     "sha": "8f1f34c4d882",
      "gone": false
     }
    ]

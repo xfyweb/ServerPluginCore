@@ -37,7 +37,7 @@ ServerPluginCore 是一个**宿主最小、能力全插件化**的服务端核�
 
 | 你要引的东西 | 有冻结的帧吗 | 怎么写 |
 |---|---|---|
-| 上游引擎 / Node 源码 / 第三方包 | ✅ 有（发行版本、提交哈希、lockfile） | **符号 + 行号**（基准见下表） |
+| 上游引擎 / Node 源码 / **Linux 内核源码** / 第三方包 | ✅ 有（发行版本、提交哈希、lockfile、内核版本） | **符号 + 行号**（基准见下表） |
 | **我们自己在改的码**（本仓库源码，fork 里我们要打补丁的 `c/interface.c` 与 `packages/*/src`） | ❌ **没有** | **只写符号**，不写行号 |
 
 **为什么自引不能写行号**：我们自己这份**每次提交都在动**。若给它也记个提交哈希当基准，注释要么永远落后
@@ -60,13 +60,14 @@ ServerPluginCore 是一个**宿主最小、能力全插件化**的服务端核�
    > 不要在多个文件里各抄一份哈希 —— 那样基准一改就要改很多地方（本仓库已经踩过一次：
    > 6 个文件各写了一份，后来全撤了）。
 
-   | 引用的源码 | 行号基准（2026-09-20 核实） |
+   | 引用的源码 | 行号基准 |
    |---|---|
    | `vendor/quickjs/{quickjs,libregexp}.c` | **我们发行的那份引擎**：fork `quickjs-emscripten-spc` @ **`7b7af98`** 的 `vendor/quickjs`，`VERSION` = **`2025-09-13`**（= npm 上 `quickjs-emscripten@0.32.0` 所用 WASM 的来源） |
    | Node 源码 `lib/*.js` | `main` @ **`edc61b14de8`**（2026-09-16；`src/node_version.h` 声明 27） |
+   | **Linux 内核源码**（`include/linux/*.h`、`kernel/*.c`、`security/*.c` …） | **6.12.110**。行号写**内核树根相对路径**（`include/linux/notifier.h:185`）或带树名前缀（`linux-6.12/…`） |
    | 第三方包（`fast-glob` / `csv-parse` / `@nodelib/*` …） | **锁在 `pnpm-lock.yaml`** ⇒ 天然稳定；注释里写**包名 + 版本**即可，不必写哈希 |
 
-   > 这三份基准**记在快照里**（`tools/line-refs.snapshot.json` 的 `baselines`）：
+   > 这四份基准**记在快照里**（`tools/line-refs.snapshot.json` 的 `baselines`）：
    > 源码树换了修订，体检会先警告"你看到的'变了'可能只是换了修订"，再逐条比。
 
 3. ⚠️ **别引"另一个 QuickJS"**：开发者本机可能还有一个上游 `quickjs/` 克隆（比 vendored 那份**新 9 个月**，

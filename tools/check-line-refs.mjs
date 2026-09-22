@@ -13,9 +13,13 @@
 //   node tools/check-line-refs.mjs --update   # 核对无误后，把当前状态记成新快照
 //   node tools/check-line-refs.mjs --json
 //
-// 三类**冻结的帧**（见仓库根 AGENTS.md §3.1）：vendor/quickjs（我们发行的引擎，帧 = fork 提交）、
-// node/lib（Node 源码，帧 = Node 提交）、第三方包（帧 = pnpm-lock.yaml）。
+// 四类**冻结的帧**（见仓库根 AGENTS.md §3.1）：vendor/quickjs（我们发行的引擎，帧 = fork 提交）、
+// node/lib（Node 源码，帧 = Node 提交）、**Linux 内核源码（帧 = 内核版本，如 6.12.110）**、
+// 第三方包（帧 = pnpm-lock.yaml）。
 // 缺哪个源码树就跳过并说明——别人克隆仓库时本来就没有。
+//
+// Linux 那一类是**部分子树**（`include/`、`kernel/`、`security/`、`drivers/` … 里只解了被引用的文件）：
+// 所以"树在、文件不在"在这里是**正常状态**，报 ❓ 但不判失败，把文件解出来即可核对。
 //
 // ⚠️ **第四类：我们自己会改的代码（本仓库源码、工作区里的 survey 目录……）不写行号。**
 // 行号是**坐标**，坐标只相对一个**冻结的帧**才有意义：
@@ -45,6 +49,28 @@ function sh(cmd, args, cwd) {
   try { return execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
   catch { return null; }
 }
+/**
+ * Linux 这棵树的版本号 = **它的帧**。三个来源，按可靠性排：
+ *   ① 完整树里的 `Makefile`（`VERSION`/`PATCHLEVEL`/`SUBLEVEL` 三行）——最权威；
+ *   ② 工作区里那个官方 tarball 的文件名（`linux-<版本>.tar.xz`）——部分子树没有 `.git` 也没有 `Makefile`，
+ *      版本只体现在"当初解的是哪个包"，所以文件名就是证据；
+ *   ③ 都没有 ⇒ `null`，体检打 `linux=?`：**明说这个帧没锚住**，别让人以为"没报就是对的"。
+ */
+function linuxVersion() {
+  const mk = path.join(ROOTS.linux, 'Makefile');
+  if (fs.existsSync(mk)) {
+    const text = fs.readFileSync(mk, 'utf8');
+    const pick = (k) => new RegExp('^' + k + '\\s*=\\s*(\\d+)', 'm').exec(text)?.[1];
+    const v = [pick('VERSION'), pick('PATCHLEVEL'), pick('SUBLEVEL')];
+    if (v.every(Boolean)) return v.join('.');
+  }
+  try {
+    const f = fs.readdirSync(path.resolve(REPO_ROOT, '..', '_kernel-dl'))
+      .find((n) => /^linux-[\d.]+\.tar\.xz$/.test(n));
+    if (f) return f.replace(/^linux-/, '').replace(/\.tar\.xz$/, '');
+  } catch { /* 没有下载目录：这台机器上就没有，按 ③ 处理 */ }
+  return null;
+}
 function readBaselines() {
   const vendorRoot = ROOTS.vendor;                        // .../vendor/quickjs
   const forkRoot = path.resolve(vendorRoot, '..', '..');  // fork 根
@@ -56,6 +82,7 @@ function readBaselines() {
       ? fs.readFileSync(path.join(vendorRoot, 'VERSION'), 'utf8').trim() : null,
   };
   out.node = { commit: sh('git', ['-C', ROOTS.node, 'rev-parse', '--short', 'HEAD']) };
+  out.linux = { version: linuxVersion() };
   const lock = path.join(REPO_ROOT, 'pnpm-lock.yaml');
   out.pkgs = { lockSha: fs.existsSync(lock) ? crypto.createHash('sha256').update(fs.readFileSync(lock)).digest('hex').slice(0, 12) : null };
   return out;
@@ -63,18 +90,25 @@ function readBaselines() {
 const fmtBaselines = (b) => [
   'vendor=' + (b?.vendor?.forkCommit ?? '?') + (b?.vendor?.engineVersion ? '/VERSION ' + b.vendor.engineVersion : ''),
   'node=' + (b?.node?.commit ?? '?'),
+  'linux=' + (b?.linux?.version ?? '?'),
   'pkgs.lock=' + (b?.pkgs?.lockSha ?? '?'),
 ].join('   ');
 
 const ROOTS = {
   vendor: process.env.SPC_VENDOR_ROOT ?? path.resolve(REPO_ROOT, '..', 'quickjs-emscripten-spc', 'vendor', 'quickjs'),
   node: process.env.SPC_NODE_ROOT ?? path.resolve(REPO_ROOT, '..', 'node'),
+  // Linux 内核源码。**部分子树就够**：体检是"按被引用的路径去找"，找到就核对那一行，
+  // 找不到只报 ❓（树在、文件不在）而**不判失败**——部分子树里没有哪个文件，就把那个文件解出来。
+  linux: process.env.SPC_LINUX_ROOT ?? path.resolve(REPO_ROOT, '..', 'linux-6.12'),
   pkgs: [path.join(REPO_ROOT, 'node_modules'), path.resolve(REPO_ROOT, '..', '_deps-survey', 'node_modules')],
 };
 const WORKSPACE_ROOT = path.dirname(REPO_ROOT);   // 开发工作区根（仓库外那一圈）：自引判定要连它一起看
+// Linux 引用的**树名前缀**（`linux-6.12/include/linux/notifier.h:185`）。从根目录名推出来，
+// 这样 `SPC_LINUX_ROOT` 指到别处时前缀跟着变，不用手改两处。
+const LINUX_PREFIX = path.basename(ROOTS.linux) + '/';
 // 冻结的帧所在的位置：落在这里面的文件**不算"我们自己的码"**——
 // 否则 `../node/lib/fs.js:12` 这种"用相对路径写的 Node 引用"会被误判成自引（它引的是冻结的 Node，不是我们的源码）。
-const FROZEN_DIRS = [ROOTS.vendor, ROOTS.node, ...ROOTS.pkgs];
+const FROZEN_DIRS = [ROOTS.vendor, ROOTS.node, ROOTS.linux, ...ROOTS.pkgs];
 const under = (f, root) => { const r = path.resolve(root); return f === r || f.startsWith(r + path.sep); };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.spc', 'tools']);
@@ -122,12 +156,32 @@ function resolveTarget(refPath) {
     const f = path.join(ROOTS.vendor, p.slice('vendor/quickjs/'.length));
     return fs.existsSync(f) ? { file: f, kind: 'vendor' } : { missing: 'vendor', root: ROOTS.vendor };
   }
+  // Linux 源码：带树名前缀的写法（`linux-6.12/include/linux/notifier.h:185`）。
+  // ⚠️ 这一支**必须在自引判定之前**：那棵树就摆在工作区里，不先拦下来，`linux-6.12/…` 会被
+  // 解析成工作区文件 ⇒ 判成"我们自己在改的码"（`unfrozen`）而**直接失败**——反直觉，且看着像工具坏了。
+  if (p.startsWith(LINUX_PREFIX)) {
+    const f = path.join(ROOTS.linux, p.slice(LINUX_PREFIX.length));
+    if (!fs.existsSync(ROOTS.linux)) return { missing: 'linux', root: ROOTS.linux };
+    return fs.existsSync(f) ? { file: f, kind: 'linux' } : { notFound: 'linux' };
+  }
   for (const [root, kind] of [[REPO_ROOT, 'self'], [WORKSPACE_ROOT, 'local']]) {
     const f = path.resolve(root, p);
     if (!under(f, root)) continue;                                    // 别让 `../..` 逃出去
     if (FROZEN_DIRS.some((r) => under(f, r))) continue;               // 冻结帧的源码，不算"我们的码"
     if (!fs.existsSync(f) || !fs.statSync(f).isFile()) continue;
     return { file: f, kind, unfrozen: true };
+  }
+  // Linux 源码：**内核树根相对路径**的写法（`include/linux/notifier.h:185`、`kernel/notifier.c:73`）。
+  // 与 Node 的 `lib/fs.js` 同一套路：不带树名前缀，基准由 AGENTS.md §3.1 的表给。
+  // ⚠️ 这份目录名单**刻意不含 `lib/`、`src/`、`deps/`**：那三个是 Node 的基座（`lib/fs.js` 必须解析到 Node），
+  // 而 Linux 的 `lib/string.c` 这类真要用时，写成 `linux-6.12/lib/string.c` 即可（带了前缀就走上面那一支）。
+  const LINUX_TOP = /^(include|kernel|security|fs|mm|net|ipc|arch|block|crypto|drivers|init|io_uring|rust|sound|usr|virt|samples|certs|scripts)\//;
+  if (LINUX_TOP.test(p)) {
+    if (!fs.existsSync(ROOTS.linux)) return { missing: 'linux', root: ROOTS.linux };
+    const f = path.join(ROOTS.linux, p);
+    // 树在、文件不在 = **部分子树的正常状态**（不是"引用写错了"）：报 ❓ 并提示去解那个文件，
+    // 所以这里带一个 `'linux'` 标记，让下面的输出能把这句话说对。
+    return fs.existsSync(f) ? { file: f, kind: 'linux' } : { notFound: 'linux' };
   }
   if (/^(node\/)?(lib|src|internal|deps)\//.test(p) || /^[a-z][a-z0-9_-]*\.(js|c|h)$/.test(p)) {
     const rel = p.replace(/^node\//, '');
@@ -169,7 +223,7 @@ for (const f of walk(REPO_ROOT)) {
       const t = resolveTarget(m[1]);
       const rec = { site: path.relative(REPO_ROOT, f) + ':' + (i + 1), citingFile: path.relative(REPO_ROOT, f), ref: m[0].replace(/`/g, ''), refPath: m[1], num: Number(m[2]) };
       if (t.missing) { rows.push({ ...rec, skipped: '缺 ' + t.missing + ' 源码根' }); continue; }
-      if (t.notFound) { rows.push({ ...rec, notFound: true }); continue; }
+      if (t.notFound) { rows.push({ ...rec, notFound: t.notFound }); continue; }
       // **不冻结的帧**（我们自己在改的码）：不进快照、也没什么"变没变"可比 —— 直接当违规报。
       // 这里只把"那一行现在是什么"读出来当证据（例如 `core/main.ts:36` 现在是 CLI 横幅），
       // 让人一眼看出"它早就不是当初指的东西了"，照此改写成符号名。
@@ -258,7 +312,7 @@ console.log('  ❌ 目标行没了  ' + gone.length);
 console.log('  ➕ 新增引用处  ' + added.length + '（没进快照；核对无误后跑 --update）');
 if (removed.length) console.log('  ➖ 引用处已删  ' + removed.length);
 console.log('  ⛔ 不冻结的帧  ' + unfrozen.length + ' 处自引行号（' + (unfrozen.length ? '**必改**：改成符号名，见 AGENTS.md §3.1' : '好，一处都没有') + '）');
-if (notFound.length) console.log('  ❓ 目标找不到  ' + notFound.length + ' 处（源码树在、文件不在 ⇒ 多半是引用写错了）');
+if (notFound.length) console.log('  ❓ 目标找不到  ' + notFound.length + ' 处（源码树在、文件不在 ⇒ 多半是引用写错了；**Linux 那棵是部分子树**，解出该文件即可）');
 
 if (changed.length) {
   console.log('\n=== 变了（**不一定是错**：源码升级了、或引用该更新了——去看一眼）===');
@@ -285,6 +339,9 @@ if (unfrozen.length) {
 }
 if (notFound.length) {
   console.log('\n=== ❓ 目标找不到（源码树在，但里面没这个文件）===');
-  for (const r of notFound.slice(0, 20)) console.log('  ' + r.site + '  →  ' + r.ref);
+  for (const r of notFound.slice(0, 20)) {
+    console.log('  ' + r.site + '  →  ' + r.ref);
+    if (r.notFound === 'linux') console.log('      Linux 是**部分子树**：把 ' + r.refPath + ' 从同版本内核包里解出来就能核对');
+  }
 }
 process.exit(changed.length + gone.length + unfrozen.length > 0 ? 1 : 0);
