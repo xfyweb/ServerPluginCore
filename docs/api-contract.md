@@ -28,64 +28,59 @@
 
 ## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
 
-> 事件订阅方主要是**协作插件**（hook，类型设计中）：钩子触发逻辑，参与核心事件生命周期并干预/修改；notify/arbitrate 语义即协作插件的工作方式。运行位置（核心/沙箱）与默认权限（网络/文件）待 ADR 定稿。
+> **完整设计见 `docs/events-and-hooks-design.md`**：**§1 事件面（P2 落地）** / **§2 钩子链（结论保留、P2 不做）**。
+> 本节只留契约面：清单声明、方法、等级门槛。
 
-### 3.1 事件分类（manifest 声明）
+**一句话**：沙箱里**没有"总线"**——插件自己发布事实，**声明过关系**（清单订阅 + `dependencies.plugins` 依赖声明 + 管理员批准）的插件收到；**核心只搬运**，不广播、不解释、不裁决。
 
-插件在 manifest `exports.events` 中**显式声明**发布与订阅，两类语义分开：
+### 3.1 清单声明（manifest `exports.events`）
 
 ```json
 "exports": {
   "events": {
     "publish": [
-      { "topic": "backup.done", "classification": "public" }
+      { "topic": "@a/sqlite.refresh-started", "classification": "public", "ask": true }
     ],
     "subscribe": [
-      { "topic": "job.finished", "mode": "notify" },        // 只读通知（宽松）
-      { "topic": "exec.before",  "mode": "arbitrate" }      // 裁决修改（严格）
+      { "topic": "@a/sqlite.refresh-started", "mode": "notify" },     // 只听
+      { "topic": "@a/sqlite.refresh-started", "mode": "arbitrate" }   // 我愿意出意见
     ]
   }
 }
 ```
 
-- **notify（只读通知）**：fire-and-forget，订阅方只读事件负载；
-- **arbitrate（裁决修改）**：可返回 EventResult（allow/deny/modify/pass）影响核心流程（如 SSO 裁决登录）；
-- topic 授权：**枚举声明，无通配**；事件负载可能含敏感信息（如 exec.after 的命令输出），订阅门槛见 §3.3。
+- **`publish[].ask`**（新增字段）：这个 topic **支不支持被征询**，缺省 `false`；对没声明 `ask` 的 topic 调 `request` ⇒ `EVENT_ASK_NOT_SUPPORTED`；
+- **`subscribe[].mode`**：`notify` = 只听；`arbitrate` = **我愿意出意见**（**不是**"我裁决"——采纳与否由发布方自己的代码决定）；
+- **命名空间**：`core.` 保留，插件只能用**自己的 id** 开头（`@publisher/name.`）；
+- **授权**：topic **枚举声明、无通配**；订阅他人事件还必须在 `dependencies.plugins` 里声明依赖发布方（`manifest-design.md` §6）；事件负载可能含敏感信息，跨插件订阅的门槛见 `intent-capture.md` §8.5。
 
-### 3.2 事件实例结构
+### 3.2 方法（两个方向）
 
-```ts
-interface EventContext {
-  event: string;              // "auth.login.before"
-  pluginId: string;           // 处理方
-  ts: number;
-  subject: string;            // 触发者
-  payload: unknown;           // 事件数据（只读）
-  state: Record<string, unknown>;  // 跨 before→after 可变上下文
-}
+| 方法 | 方向 | 语义 |
+|---|---|---|
+| `events.publish(topic, payload, bytes?)` | 插件 → 宿主 | **通知**：说完就走，不等任何人 |
+| `events.request(topic, payload, bytes?)` | 插件 → 宿主 | **征询**：等意见回来，拿到 `{ eventId, opinions[] }`；**采纳与否由发布方自己的代码决定** |
+| `events.on(topic, handler)` / `events.off` | 宿主 → 插件 | 运行时**绑定处理函数**；只能绑清单里**申报过**的 topic（清单是授权面，运行时只绑函数） |
 
-interface EventResult {
-  status: 'allow' | 'deny' | 'modify' | 'pass';  // 放行/拒绝/改写后继续/不处理
-  data?: unknown;     // modify 时的改写内容
-  reason?: string;    // deny 时的原因（进审计）
-}
-```
+处理函数的返回值是**意见**（SDK 约定，**核心不解释**）：`{ decision?: 'allow' | 'deny' | 'defer' | string, reason?: string, data?: unknown }`。
 
-### 3.3 安全等级（三级矩阵）
+> 早先草拟的 `EventContext` 与 `EventResult.status` 四态**归 §2 的钩子链**（P2 不做）；事件面用的是上面的意见列表形状。
 
-两个正交维度：**保密等级**（读门槛，管谁能订阅通知）与**执行等级**（写门槛，管谁能裁决）。
+### 3.3 等级门槛（事件面只剩"听"这一把）
+
+两个正交维度：**保密等级**（读门槛，管谁能订阅）与**执行等级**（写门槛，管谁能裁决——**随 §2 的钩子链，P2 不做**）。
 
 > 与 §6 **同一套等级、两处门槛**：本节的 confidentiality / executionLevel 管"事件订阅与裁决"的门槛（插件调用时通过 `meta` 声明、用户目录覆盖兜底）；§6 的同名字段是**权限点的默认等级**。两处不是两个维度——判定时按 `effective = max(...)` 合成，只取最高。
 
-| 等级 | 通知订阅（读） | 裁决修改（写） |
+| 等级 | 通知订阅（读） | 裁决修改（写，P2 不做） |
 |---|---|---|
 | `public` / `low` | 无需额外授权 | 无需额外授权 |
 | `sensitive` / `medium` | 显式授权（安装时确认） | 显式授权 |
 | `secret` / `high` | 显式授予 + 二次确认 | 显式授予 + 二次确认 |
 
-- **调用时声明**：插件每次调用宿主 API 时通过 `meta` 声明本次操作的等级（不同目录/命令敏感度不同）；权限点的 `confidentiality/executionLevel` 是**默认值**（未声明时兜底）；
-- **用户目录覆盖（只升不降）**：管理员可配置目录 → 等级映射（`pathLevels`，P2 进配置中心），涉及指定目录时 `effective = max(调用方声明, 用户配置)`——用户设置高于调用方时升级，低于时尊重调用方；
-- 审计记录 effective 等级。
+- **调用时声明**：事件等级由**发布方逐次声明**（"这一次有多敏感"），清单里的 `classification` 是**兜底**；
+- **管理员覆盖（只升不降）**：`effective = max(发布方声明, 管理员覆盖, 清单兜底)`（目录 → 等级映射 `pathLevels` 进配置中心）；
+- 审计记录 effective 等级。⚠️ 落地现状与缺口见 §7.1（桥还没把 `meta` / `userOverride` 传进判定）。
 
 ## 4. 方法组（核心第一版）
 
@@ -133,7 +128,7 @@ interface TaskHandle {
   wait(): Promise<{ exitCode: number }>;      // 阻塞等待（STOP→resolve / ERROR→reject）
   output(opts?): string[];                   // 拉取输出（增量/尾部）
   kill(): Promise<void>;                     // 取消（先软后硬杀树）
-  events: EventEmitter;                       // started/exit/data/error（或走事件总线）
+  events: EventEmitter;                       // started/exit/data/error —— **句柄自己的事件**，不走事件面的投递
 }
 ```
 
@@ -158,7 +153,7 @@ process.output(id) / process.signal(id, sig) / process.stop(id, {timeoutMs})
 状态机：STOPPING → STARTING → RUNNING（+ 崩溃自动重启：autoRestart + 次数上限）
 ```
 
-**事件扩展**（进 §3 事件清单）：`job.finished`、`process.exit`、`process.crash`、`process.data`（输出流订阅可选）。
+**不做事件**（2026-09-22 定）：`job.finished` / `process.exit` / `process.crash` / `process.data` **都不是核心发的事件**——任务是**插件自己的动作**，结果它自己拿得到（`wait()` / `output()` / 句柄自己的 `events`），别的插件没有知情权。核心对插件之间的可见性一律按 `manifest-design.md` §6。理由与边界见 `docs/events-and-hooks-design.md` §1.14。
 
 ## 4.2 插件钩子（宿主 → 插件）
 
@@ -258,7 +253,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 >
 > ⚠️ **`fs.read.data` / `fs.write.data` 暂留 `self`**：它们碰的是宿主文件系统里的真实文件，
 > 按 `scope` 的定义更像 `host`（`grant: install` 那一档）。「内容式权限」（按路径/内容而不是按
-> 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦。见批次规划文档 `batch-4-plan.md` §2.3（开发工作区文档，不随仓库分发）。
+> 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦（缺口表见本节 §7.1；事件侧的门槛接线见 `docs/events-and-hooks-design.md` §1.7）。
 
 ### 7.1 等级（`confidentiality` / `executionLevel`）的落地现状与缺口
 
@@ -279,7 +274,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 **结论**：等级机制目前**只在单测里活着**；生产路径上等于"每个权限点一个固定等级"——
 与设计意图不符（这正是"读无关文件低、读机密目录高"做不到的原因）。
 
-**补法（待与「内容式权限」一起定，见批次规划文档 `batch-4-plan.md` §5（开发工作区文档，不随仓库分发））**：
+**补法（待与「内容式权限」一起定；**本表就是缺口的单一事实源**，事件侧的门槛接线见 `docs/events-and-hooks-design.md` §1.7）**：
 ① `HostApi` 的方法表加 `metaFor?(args, ctx)` —— **原语自己声明"这次碰的是什么"**
 （`fs.readText` 看路径落在哪个目录、`exec.run` 看模板与命令、`events.publish` 看事件等级）；
 ② 桥把它与 `pathLevels` 覆盖一起交给 `checkPermission`；
@@ -374,7 +369,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 ## 12. 待定项（v0.3 再议）
 
-1. 事件总线 topic 与插件可见性（dependencies.plugins 显式声明）的细化授权模型；
+1. ~~事件 topic 与插件可见性（`dependencies.plugins` 显式声明）的细化授权模型~~ **已定（2026-09-22）**：订阅他人事件必须先在 `dependencies.plugins` 里声明依赖发布方；topic 枚举声明、无通配（`manifest-design.md` §6、`docs/events-and-hooks-design.md` §1.7）；
 2. `@host/api` 类型声明的自动生成（从注册表生成 TS 类型，保证 IDE 体验与运行时一致）；
 3. 驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）；
 4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响；

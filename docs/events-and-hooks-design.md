@@ -240,6 +240,17 @@ Linux 在同一件事上的做法可以直接对照（下面几条都来自 Linu
 
 ⇒ **裁决链属于 hook / driver，不外借给沙箱里的能力插件**。把 Linux 内核那套"通知链 + 安全模块钩子"用在互相隔离的第三方之间，是**把同信任域的机制搬到了隔离域**——这两件事必须分开（§1 与 §2 分节就是为了这个）。
 
+**答复的形状**（原先草拟在 api-contract §3.2，随本节移过来；裁决链串行 + 链式修改 = 后一位看到前一位改过的数据）：
+
+```ts
+interface EventResult {
+  status: 'allow' | 'deny' | 'modify' | 'pass';  // 放行 / 拦下 / 改了继续 / 我不管
+  data?: unknown;     // modify 时的改写内容
+  reason?: string;    // deny 时的原因（进审计）
+  stop?: boolean;     // 「我放行，但后面不用问了」——照 Linux 的 NOTIFY_STOP
+}
+```
+
 **P2 不做**，但结论保留，供 hook 轮直接使用。
 
 ### 2.2 从 Linux 学来的七条
@@ -291,17 +302,17 @@ Linux 在同一件事上的做法可以直接对照（下面几条都来自 Linu
 
 ## 3. 与其它文档的同步清单，与待定
 
-### 3.1 要同步改的（本设计定案后）
+### 3.1 同步清单（2026-09-22：除最后一行外**已全部落地**）
 
-| 文档 | 改什么 |
+| 文档 | 改了什么 |
 |---|---|
-| `api-contract.md` §3 | 整节按本文重写（事件面 = 通知 + 意见征询；`EventContext`/`EventResult` 的裁决语义移到"钩子链，P2 不做"）；§3.1 的 `exec.before` 示例删掉 |
-| `ROADMAP.md` P2-3 | "事件清单扩展 + 事务裁决语义"重写为本文 §1 的范围，§2 标 P2 不做 |
-| `README.md` 插件类型表 | `hook` 一行：**运行位置**改为"核心流程的决策点上被回调（P2 不做）"，职责写"中间件"，去掉"待 ADR 定稿"里的歧义 |
-| `ADR-002` §5 / `ADR-005` §3ter / `manifest-design.md` §27 | `hook` 定义的同一处措辞；"运行位置（核心/沙箱）待 ADR 定稿"按 §2.1 收敛（沙箱可以，但**权限位置**是"被核心回调"） |
-| `plugin-lifecycle-design.md` §12-4 / §13 | `hook` 钩子形态（指向本文 §2）；`OnPluginLoadedEvent` 改为 §2.5 的依赖变更通知 |
-| `api-contract.md` §7.1 与 `core/__tests__/permissions-meta.test.ts` | 各有一处引用**开发工作区文档**（不随仓库分发）：按仓库约定改写成无路径形式，或把内容收编进仓库 |
-| `sdk/types.ts` / `sdk/host-api.d.ts` | 新增 `publish[].ask`；`request` / `on` / `off` 的类型；`arbitrate` 的注释改成"我愿意出意见" |
+| `api-contract.md` §3 | 整节重写：**只留契约面**（清单声明 / 方法 / 等级门槛）；`exec.before` 这类核心流程事件的示例删掉；`EventContext` 与 `EventResult` 四态标注为"归 §2 钩子链"。§3.3 的"调用时声明"改成**发布方逐次声明**，写门槛标注 P2 不做 |
+| `ROADMAP.md` | P2-3 重写为本文 §1 的范围（钩子链标 P2 不做）；现状表"❌ 待补"里的"事件总线本体"改成"事件面本体 + 钩子链" |
+| `README.md` | 插件类型表 `hook` 行（运行位置 = **被核心回调**、职责 = 中间件、前端 = 无）；状态表的"事件总线 + 驱动扩展点"改成"事件面 + 驱动扩展点" |
+| `ADR-002` §5 · `ADR-005` §3ter · `manifest-design.md` §27 | `hook` 定义按 §2.1 收敛：**差别是调用方向**（不是"特权"），沙箱内即可，**P2 不做** |
+| `plugin-lifecycle-design.md` §12-4 / §13 | `hook` 钩子形态**已定**（指向本文 §2）；`OnPluginLoadedEvent` 改成 §2.5 的**依赖变更定向通知**（不做广播） |
+| 三处**仓库外引用** | 已改写成无路径形式：`api-contract.md` §7 两处 + `core/__tests__/permissions-meta.test.ts` 一处；另清了 `core/__tests__/emulation-worker-threads.test.ts` 里一处同类措辞 |
+| `sdk/types.ts` / `sdk/host-api.d.ts` | ⏳ **未做（属代码面）**：`publish[].ask`、`request` / `on` / `off` 的类型。⚠️ 现在加类型＝给插件承诺一个还没实现的字段与方法 ⇒ 与事件面本体一起做 |
 
 ### 3.2 待定
 

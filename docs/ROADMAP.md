@@ -18,7 +18,7 @@
 | P0 | 契约定稿（v0.2 最小集） | S | — |
 | P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 审计 | M | P0 |
 | **P1.5** | **插件生命周期与装载器（冻结装载契约）** ✅ **已落地** | M | P1 |
-| P2 | 构建层 + 事件总线 + 驱动插件扩展点 + **权限档位（`grant` 三档）** | L | P1.5 |
+| P2 | 构建层 + 事件面 + 驱动插件扩展点 + **权限档位（`grant` 三档）** | L | P1.5 |
 | P3 | 核心 Web Shell + 主题系统 + 插件前端容器 | L | P1（可与 P2 并行） |
 | P4 | 市场签名与源管理 + 市场 | M | P1 + P3 |
 | P5 | 核心插件集 + 加固 + 发布 | L | P2 + P3 |
@@ -32,7 +32,7 @@
   - 方法组最小集：exec（模板）、fs（受限）、kv、timers、events、lifecycle、audit（api-contract §4）；
   - 权限注册表（`scope` + 等级）+ 三态判定（§6/§7）；
   - manifest schema 2 编译成 JSON Schema（sdk/schema/manifest.schema.json）。
-- **明确不做**：db/ssh/网络能力（驱动插件，P2+）；事件总线细化授权（v0.3）。
+- **明确不做**：db/ssh/网络能力（驱动插件，P2+）；事件 topic 细化授权（**已定**：订阅他人事件须先声明依赖发布方，见 `docs/events-and-hooks-design.md` §1.7）。
 - 交付：api-contract.md v0.2 + manifest JSON Schema + interface-audit-exec-fs.md 评审通过。
 - 验收：核心方法 ≤ 10 个；威胁建模清单（interface-audit-exec-fs）过审。
 
@@ -46,7 +46,7 @@
 |---|---|
 | ✅ 已完成 | core 初始化 + 非 root fail-closed；QuickJS 沙箱宿主（错误桥 + 模块白名单 + dispose 修复）；权限注册表与判定（v3：`scope` + 逐点授予）；审计链路；**exec 模板基线**（模板注册表 + 原生写法匹配 + 参数校验 + env/超时/截断 + 内置 git 模板集）；exec 沙箱设计（声明层）；**P1.5 的装载器与生命周期**（见下） |
 | ⚠️ 部分 | CLI（`about`/`status`/插件全命令面；缺 `audit tail`）；sdk（清单校验器 + 两个手写 `.d.ts`；构建模板缺）；性能 benchmark（R1）未做 |
-| ❌ 待补 | `exec.spawn` 任务模型（P2）；构建流水线（P2）；`audit tail`；事件总线本体（P2） |
+| ❌ 待补 | `exec.spawn` 任务模型（P2）；构建流水线（P2）；`audit tail`；事件面本体（P2：**核心不发流程事件、不做强制裁决**，见 `docs/events-and-hooks-design.md` §1）；钩子链（P2 不做，见同文档 §2） |
 
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/hello/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
@@ -79,7 +79,10 @@
 
 1. **命令执行任务模型**（api-contract §4.1，参考 MCSManager）：exec.spawn → TaskHandle（wait/output/kill）、世代号防竞态、取消三层链（杀进程树）、优雅停止契约、输出环形缓冲 + 截断标记；**进程管理器**（process.* 组：长驻进程状态机 + 崩溃自动重启）——MC 管理场景的落地；
 2. **构建流水线**（设计见 **docs/build-layer-design.md**，证据见 **docs/build-layer-evidence.md**）：依赖闭包静态解析（含传递）→ 内建登记表校验（两道闸：① 未登记内建 / 原生模块 → **构建失败**，已登记内建 → **内联仿真正文**；② 产物自检）→ esbuild 单文件 ESM bundle → 产物事实写进清单文件。**依赖不分级**（ADR-005 §7 v2：装完之后不存在"加载依赖"这个动作，勾选拦不住任何东西）。**esbuild 行为与依赖面已实测**（27 个包、417 处运行期欠条 = 413 字面量 + 4 动态）；
-3. **事件总线完备化**：事件清单扩展（job.finished/process.exit/process.crash + 钩子事件 auth.*/exec.before 等）+ 事务裁决语义（EventResult 四态，协作插件地基）；
+3. **事件面**（设计已定：`docs/events-and-hooks-design.md`）：**插件自己发布事实、声明过关系的插件收到、核心只搬运**（两种用法：通知 / 意见征询）。
+   **核心不发布流程事件**（`exec.*` / `job.*` / `process.*` / `auth.*` 一律不做——exec/job/process 是插件自己的动作、结果它自己拿得到；`auth.*` 属下面那条）；
+   **能力插件之间不做强制裁决**（核心只转发意见，采纳与否由发布方决定）。
+   **钩子链**（≈ 协作插件 `hook`：核心在决策点上回调插件、答复进核心决策）**结论保留、P2 不做**，等 hook 轮——那时 `auth.*` 的 SSO 场景才有落点；
 4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
 5. **模板注册制 + API 扩展注册点**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）+ 驱动插件注册协议（§10）+ 第一个驱动插件候选：db（pg/mysql2，社区）；
 6. **官方模块仿真**（docs/module-emulation-design.md，**当前最高优先**）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖。

@@ -134,7 +134,7 @@ export async function stop(ctx: PluginContext) {
 |---|---|---|
 | 路由（面板页面） | `exports.routes` | ✅ 登记进宿主路由表（前端渲染 P3） |
 | Web API | `exports.webApis` | ✅ 登记 + 网关按 `permission` 字段鉴权 |
-| 事件发布/订阅 | `exports.events` | ✅ 登记进事件总线（总线本体 P2） |
+| 事件发布/订阅 | `exports.events` | ✅ 登记（事件面本体 P2：投递只给"声明订阅 + 声明依赖发布方 + 管理员批准"的插件，见 `docs/events-and-hooks-design.md` §1） |
 | **前端页面** | `exports.routes` + `frontend.mode` | ✅ 登记路由（`declarative` 渲染组件树 / `iframe` 提供 bundle，P3，见 intent-capture.md） |
 | **主题** | `type: theme` + `theme.json` | ✅ 登记主题令牌（无沙箱、无钩子，P3） |
 | exec 模板 | `execTemplates` | ⏳ B 阶段：走同一套 `registerTemplate()`（自动获得形状唯一性、E1–E10、原生写法匹配） |
@@ -355,8 +355,8 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 - **依赖的版本区间解析**：`dependencies.plugins[].version` 字段已在 schema 里，但装载期**不读**它——只检查依赖是否存在、启用、已装载（P2 补）；
 - **依赖的传递检查**：只查直接依赖。B→A→C 时，C 的问题会先让 A 装载失败，B 随即以 `PLUGIN_DEPENDENCY_NOT_LOADED` 被拒——报错准确，但不是一次性给出完整依赖链；
 - **热重载注入**：`reload` = 整插件 stop → 重新 load（不做模块热替换）；
-- **插件间调用**：`dependencies.plugins` 目前只是可见性声明 + 依赖检查，调用通道属 P2（事件总线 / 注册点）；
-- **依赖失效的运行时通知**：A 在 B 运行期间被 `reload`（先 stop 后 load）时，B 不会收到任何事件——依赖图的一致性只在管理操作的那一刻检查（运行时通知要等事件总线，P2）。当前没有插件间调用通道，所以在窗口期"失去依赖"不会立刻出错，但这是 P2 必须补的；
+- **插件间调用**：`dependencies.plugins` 目前只是可见性声明 + 依赖检查，调用通道属 P2（注册点；**事件面只做通知与意见征询，不做调用**，见 `docs/events-and-hooks-design.md` §1）；
+- **依赖失效的运行时通知**：A 在 B 运行期间被 `reload`（先 stop 后 load）时，B 不会收到任何通知——依赖图的一致性只在管理操作的那一刻检查。**已定做法**：核心发**定向通知**（只发给声明依赖 A 的插件；单向、不可裁决），见 `docs/events-and-hooks-design.md` §2.5。当前没有插件间调用通道，所以在窗口期"失去依赖"不会立刻出错，但这是 P2 必须补的；
 - **driver / theme / hook 的加载档**：P1.5 只做 `ability`（沙箱 / QuickJS）与 `theme`（无沙箱、只登记令牌）；driver 是核心侧进程（P2+），hook 待 ADR；
 - **自动重启的退避策略**：只做线性 `restartBackoffMs`；
 - **进程外隔离**：单进程内沙箱；子进程档与系统级沙箱见 ADR-005 §8 / exec-sandbox-design §3。
@@ -432,7 +432,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 1. 钩子命名是否就用 `init/start/stop`（备选：`activate/deactivate`）——**已按 init/start/stop 落地**，改名窗口关闭；
 2. `stop` 是否需要接收"关闭原因"（`stop(ctx, {reason})`：`reload` / `disable` / `shutdown`）——**倾向要**，便于插件区分优雅停机与重启。**现状**：原因只进审计（`lifecycle.unload` 的 `paramsDigest`），还没进钩子签名；
 3. `dataDir` 清理策略（`disable` 是否保留数据；卸载是否删数据）——**倾向：都保留，卸载提供 `--purge`**。**现状**：都保留，`--purge` 未做；
-4. hook 插件的钩子形态与 `init/start/stop` 的关系（待 ADR 定稿）；
+4. hook 插件的钩子形态与 `init/start/stop` 的关系——**已定**：hook = **核心在决策点上回调插件、答复进核心决策**（中间件，跑沙箱即可；**P2 不做**），设计见 `docs/events-and-hooks-design.md` §2；
 5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量共存）。**已按此落地**（`core/config.ts`，另加 `SPC_DATA_DIR` 覆盖数据根）。
 
 
@@ -456,7 +456,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `plugin_id = author/name`（对类属性注入 `name/author/plugin_id`） | `id = @publisher/name`（多一个 `@`；身份与来源解耦见 ADR-001 v3） |
 | 插件专用 logger，且支持按插件覆盖日志等级 | `ctx.logger`；日志等级覆盖记在 P2-4 日志聚合器 |
 | `astrbot_version`（PEP 440 区间）不满足即拒载 | `compat.minCore/targetCore`：不满足即拒载，不静默降级 |
-| `OnPluginLoadedEvent` 钩子（插件间可监听"某插件已加载"） | hook 插件 + 事件总线（P2；P1.5 只登记 `exports.events`） |
+| `OnPluginLoadedEvent` 钩子（插件间可监听"某插件已加载"） | **改成"依赖变更定向通知"**（只发给**声明依赖它的插件**；单向、不可裁决），设计见 `docs/events-and-hooks-design.md` §2.5。**不做广播**："所有插件都能监听别人加载"与"插件默认看不见其他插件"（manifest-design §6）冲突 |
 | 旧版插件类兼容加载（`Plugin`/`Main` 命名回退） | **不做兼容回退**：导出契约唯一（缺 `init` 即 `PLUGIN_NO_ENTRY`），fail-closed |
 
 ## 14. 实现记录与偏差（P1.5a）

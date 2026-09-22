@@ -4,7 +4,7 @@
 // 插件类型（中文叫法：能力插件/驱动插件/协作插件/主题包）
 //   ability 能力插件（默认）：运行在 QuickJS 沙箱内，挂载管理页面，经 @host/api 调驱动端点
 //   driver  驱动插件：运行在核心端（特权），注册权限节点 + API 端点暴露给沙箱并自行鉴权
-//   hook    协作插件：钩子触发逻辑，参与核心事件生命周期并干预/修改（位置/权限设计中）
+//   hook    协作插件：核心在流程的决策点上回调它、答复进核心决策（中间件；与 ability 的差别是调用方向相反；P2 不做）
 //   theme   主题包：声明式设计令牌 + 资源 + 受限样式，无 JS、无沙箱（v3 由"面板插件"降级而来）
 export type PluginType = 'ability' | 'driver' | 'hook' | 'theme';
 export type RuntimeType = 'quickjs' | 'node-child';

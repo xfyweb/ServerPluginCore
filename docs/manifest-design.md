@@ -24,7 +24,7 @@
 
 ## 二、manifest 草案（schema 2）
 
-> `type` 声明插件类型，缺省 `ability`。四类（v3 起）：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点；前端形态由 `frontend.mode` 决定）、**driver** 驱动插件（核心端注册权限节点 + API 端点并自行鉴权；安装走**独立界面与最高强度提示**，见 ADR-005 §3）、**hook** 协作插件（事件钩子，位置/权限设计中）、**theme** 主题包（v3 由"面板插件"降级而来：`theme.json`，声明式令牌 + 资源，无 JS、无沙箱）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
+> `type` 声明插件类型，缺省 `ability`。四类（v3 起）：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点；前端形态由 `frontend.mode` 决定）、**driver** 驱动插件（核心端注册权限节点 + API 端点并自行鉴权；安装走**独立界面与最高强度提示**，见 ADR-005 §3）、**hook** 协作插件（**核心在决策点上回调它、答复进核心决策**；与能力插件的差别是调用方向相反；**P2 不做**，设计见 `docs/events-and-hooks-design.md` §2）、**theme** 主题包（v3 由"面板插件"降级而来：`theme.json`，声明式令牌 + 资源，无 JS、无沙箱）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
 
 ```json
 {
@@ -52,8 +52,7 @@
       { "path": "/docker", "title": "Docker", "icon": "container", "order": 10 }
     ],
     "events": {
-      "publish":   [{ "topic": "backup.done", "classification": "public" }],
-      "subscribe": [{ "topic": "job.finished", "mode": "notify" }]
+      "publish":   [{ "topic": "@xfy2412/docker.backup-done", "classification": "public" }]
     }
   },
 
@@ -92,7 +91,7 @@
 
 5. **`compat.minCore/targetCore`（对应 minSdk/targetSdk）**：解决插件与核心的版本耦合——`minCore` = 运行所需的核心 API 下限；`targetCore` = 开发针对的核心版本。核心 API 契约 semver + 废弃期（api-contract §6）由此可判定"此插件能否在此核心版本上运行 / 是否需要警告"。这是生态一旦建立就最难改的部分，第一天就要定。
 
-6. **插件间可见性（对应 Android 11+ `<queries>`）**：插件默认看不见其他插件；要订阅他人事件或调用他人 Web API，必须在 `dependencies.plugins` 显式声明（同源依赖省略 `origin`，跨源依赖必须写明；**缺少的源不会被自动添加**，只提示管理员，见 plugin-signature-design.md §7.1）。顺带解决 api-contract §7 的待定项"事件总线 topic 授权模型（通配 vs 枚举）"——用显式声明替代通配。
+6. **插件间可见性（对应 Android 11+ `<queries>`）**：插件默认看不见其他插件；要订阅他人事件或调用他人 Web API，必须在 `dependencies.plugins` 显式声明（同源依赖省略 `origin`，跨源依赖必须写明；**缺少的源不会被自动添加**，只提示管理员，见 plugin-signature-design.md §7.1）。顺带解决了 api-contract §12 的待定项"事件 topic 授权模型（通配 vs 枚举）"——用显式声明替代通配：**订阅他人事件必须先声明依赖发布方**，见 `docs/events-and-hooks-design.md` §1.7。
 
 7. **`reason` 字段**：每个权限请求附一行"为什么需要"，安装时展示给用户——安装风险提示的实体内容（对应 Android 安装时的权限用途说明），也是审核时的评审材料（ADR-001 v3 审核）。
 
@@ -126,4 +125,4 @@
 
 - **不做运行时逐次授权弹窗**（Android 6+ dangerous 权限每次使用要用户同意）——对服务器面板是噪音；用"**安装清单一次性授权**（`auto`/`install` 档）+ 只对 `explicit` 档逐点授予 + 可撤销"替代（intent-capture §8）；
 - **不照搬 protectionLevel**——Android 的"授予仪式"枚举（normal / dangerous / signature，以及 privileged / development / appop / instant / setup 等内部档）在我们这里退化成三条正交判断：`scope` 决定碰不碰宿主资源、`grant` 决定要不要管理员点头、等级决定提示强度；**身份 / 信任类档位（signature = 同签名才可用）整类删除**（ADR-001 v3）；
-- **不做 intent-filter 级隐式分发**——插件间通信走显式声明的事件总线，不搞隐式意图匹配（那套是 Android 特有的复杂性与安全漏洞来源）。
+- **不做 intent-filter 级隐式分发**——插件间通信走**显式声明的事件面**（清单订阅 + 依赖声明 + 管理员批准）与显式调用的端点，不搞隐式意图匹配（那套是 Android 特有的复杂性与安全漏洞来源）。

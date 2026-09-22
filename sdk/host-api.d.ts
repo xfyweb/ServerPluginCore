@@ -231,7 +231,8 @@ declare module '@host/api' {
     /**
      * 发布事件。`topic` 必须先在 manifest `exports.events.publish` 声明，
      * 否则 EVENT_TOPIC_NOT_DECLARED（声明即审核面）。
-     * 事件总线本体是 P2，P1.5 只保证"声明内 + 可审计"。
+     * 事件面本体是 P2（设计见 docs/events-and-hooks-design.md §1）：投递只给"声明订阅 + 声明依赖发布方 +
+     * 管理员批准"的插件；**核心不广播、也不发自己的流程事件**。P1.5 只保证"声明内 + 可审计"。
      */
     publish(topic: string, payload?: unknown): PublishResult;
   };
