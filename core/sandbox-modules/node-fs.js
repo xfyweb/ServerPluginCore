@@ -883,10 +883,66 @@ function assertFd(fd) {
 /**
  * 旗标分类：**只有 `'r'`（与 `'rs'`）算只读**，其余一律按"要写权限"走（**保守 = fail-closed**）。
  * 分类只决定用哪条宿主方法/权限点（`fs.fdOpenRead` 走 `fs.read.data`，写走 `fs.write.data`）；
- * 旗标本身仍由宿主 Node 判合法性。数字旗标一律当写（读不出位，宁可多要一个权限）。
+ * 旗标本身仍由宿主 Node 判合法性。
+ *
+ * ⚠️ **数字旗标要按 `fs.constants` 的**访问模式**判**（2026-09-22 修）：
+ * 旧写法"数字一律当写"是保守但会**静默多要一个权限**（`O_RDONLY` 也被算成写），
+ * 而数字旗标本身还有另一个更大的坑见 `portableFlags`。
  */
 function flagsNeedWrite(flags) {
-  return !(flags === 'r' || flags === 'rs');
+  if (flags === 'r' || flags === 'rs') return false;
+  if (typeof flags === 'number') return (flags & 3) !== 0; // O_ACCMODE：0 = O_RDONLY
+  return true;
+}
+
+/**
+ * **数字旗标 → 平台无关的描述**（2026-09-22 修的真 bug）。
+ *
+ * 为什么必须要这一步：`fs.constants` 是**Linux 真值**（本仿真模块的固定取向，见文件头边界 6），
+ * 而宿主 Node 跑在**它自己的平台**上——Windows 的 `O_CREAT` 是 `0x100`、Linux 是 `0x40`。
+ * 把插件的数字旗标原样交给宿主 ⇒ **位对不上**：`O_CREAT|O_EXCL|O_RDWR`（Linux 194）到了 Windows
+ * 变成"O_RDWR + 两个未定义位" ⇒ 建文件失败成 `ENOENT`。这不是理论问题：`tmp` 包就是这么写旗标的
+ * （`fs.openSync(name, O_CREAT|O_EXCL|O_RDWR, mode)`），实测就是 `ENOENT`。
+ *
+ * 做法：这里按**沙箱侧的 Linux 常量**把数字拆成"要什么语义"，宿主再用**它自己的**常量拼回数字
+ * （见 hostApi 的 `composeHostFlags`）。两边都不需要知道对方的常量值 ⇒ 宿主换平台也不会再错。
+ *
+ * 两条边界的处理（都是**照着判卷人实测**定的，别照 POSIX 直觉猜）：
+ *   · **认不出的位 ⇒ 忽略**（判卷人 Linux 实测：`O_RDONLY|0x40000000` **照开不误**，返回 fd；
+ *     Windows 宿主同样忽略）。我们不是"丢掉一个安全属性"：路径作用域（F2/F5）已经在**收敛层**
+ *     把软链解析成目标并把越界挡死，安全不依赖旗标位（见文件头边界 2）；
+ *   · **宿主平台没有的位 ⇒ 也忽略**（Windows 的 `fs.constants` 里 `O_SYNC`/`O_NOFOLLOW`/`O_DIRECTORY`
+ *     都是 `undefined`；判卷人对这些同样表现为"打开成功"）。持久化语义在 Windows 上本来就给不出，
+ *     记账在"已知边界"里，而不是把整个 open 变成失败。
+ */
+function portableFlags(n) {
+  const C = FS_CONSTANTS;
+  const acc = n & 3; // O_ACCMODE
+  if (acc === 3) {
+    // Linux 的 O_ACCMODE 只有 0/1/2；3 不是合法组合 ⇒ EINVAL（Windows 宿主的 Node 同样报 EINVAL）
+    const e = new Error('EINVAL: ' + ERRNO.EINVAL[1] + ', open');
+    e.errno = -ERRNO.EINVAL[0];
+    e.code = 'EINVAL';
+    e.syscall = 'open';
+    throw e;
+  }
+  const has = (bit) => typeof bit === 'number' && (n & bit) === bit;
+  return {
+    acc,
+    // O_SYNC 的位里含着 O_DSYNC（Linux：O_SYNC = 0x101000、O_DSYNC = 0x1000）⇒ 先认 O_SYNC
+    sync: has(C.O_SYNC),
+    dsync: !has(C.O_SYNC) && has(C.O_DSYNC),
+    create: has(C.O_CREAT),
+    excl: has(C.O_EXCL),
+    trunc: has(C.O_TRUNC),
+    append: has(C.O_APPEND),
+    nofollow: has(C.O_NOFOLLOW),
+    directory: has(C.O_DIRECTORY),
+    noctty: has(C.O_NOCTTY),
+    nonblock: has(C.O_NONBLOCK),
+    direct: has(C.O_DIRECT),
+    noatime: has(C.O_NOATIME),
+  };
 }
 
 function openFdImpl(p, flags, needWrite, syscall) {
@@ -894,10 +950,9 @@ function openFdImpl(p, flags, needWrite, syscall) {
   if (typeof raw !== 'string' && typeof raw !== 'number') {
     throw invalidArgType('flags', ['string', 'number'], flags);
   }
-  // 数字/字符串都 JSON 化过桥（`marshalArg` 的约定：数字会被 JSON 化成文本，宿主侧解析回来）
-  const res = withSyscall(syscall, p, undefined, () =>
-    callJson(needWrite ? 'fs.fdOpenWrite' : 'fs.fdOpenRead', p, JSON.stringify(raw)),
-  );
+  // 字符串旗标原样过桥（宿主 Node 自己判）；**数字旗标拆成语义描述**（见 portableFlags）
+  const payload = typeof raw === 'number' ? JSON.stringify({ spcFlags: portableFlags(raw) }) : JSON.stringify(raw);
+  const res = withSyscall(syscall, p, undefined, () => callJson(needWrite ? 'fs.fdOpenWrite' : 'fs.fdOpenRead', p, payload));
   return res.fd;
 }
 

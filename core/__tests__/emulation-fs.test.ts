@@ -1252,6 +1252,91 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], '尾巴三件套与宿主不一致（[键, 我们, 宿主]）');
   });
 
+  it('数字旗标：按**各自平台的 fs.constants** 语义一致（O_CREAT 建文件 / EXCL / TRUNC / APPEND / RDONLY）', () => {
+    // 这条是 2026-09-22 那个真 bug 的回归：`fs.constants` 在沙箱里是 **Linux 真值**（O_CREAT = 0x40），
+    // 而宿主 Node 用它**自己平台**的常量（Windows O_CREAT = 0x100）——数字旗标原样转交就会位对不上，
+    // 表现是"建文件变成 ENOENT"（`tmp` 包就是这么写旗标的：`O_CREAT|O_EXCL|O_RDWR`）。
+    // 判别点：去掉仿真层的 `portableFlags` 拆解（或宿主的 `composeHostFlags` 重组）⇒ `created` 变 ENOENT ⇒ 这条红。
+    // 写法要点：两边各自取**自己那份** `fs.constants`（真实库就是这么写的），所以这是"语义差分"而非"数值差分"。
+    const scenario = (api: { fs: any }, dir: string) => {
+      const C = api.fs.constants;
+      const p = join(dir, 'flag-num.txt');
+      const cap = (fn: () => unknown) => {
+        try {
+          return { ok: true, v: fn() };
+        } catch (e: any) {
+          return { ok: false, code: e.code, syscall: e.syscall ?? null };
+        }
+      };
+      const r: Record<string, unknown> = {};
+      // ① O_CREAT|O_EXCL|O_RDWR：建文件 + 写 + 读回；第二次再开 ⇒ EEXIST
+      r.created = cap(() => {
+        const fd = api.fs.openSync(p, C.O_CREAT | C.O_EXCL | C.O_RDWR, 0o600);
+        api.fs.writeSync(fd, 'hi');
+        api.fs.closeSync(fd);
+        return api.fs.readFileSync(p, 'utf8');
+      });
+      r.again = cap(() => api.fs.openSync(p, C.O_CREAT | C.O_EXCL | C.O_RDWR, 0o600));
+      // ② O_CREAT **不带** O_TRUNC：内容要留着（这条是字符串旗标表达不出来的语义）
+      r.createNoTrunc = cap(() => {
+        const fd = api.fs.openSync(p, C.O_CREAT | C.O_RDWR);
+        const size = api.fs.fstatSync(fd).size;
+        api.fs.closeSync(fd);
+        return size;
+      });
+      // ③ O_CREAT|O_TRUNC：截断成 0
+      r.truncated = cap(() => {
+        const fd = api.fs.openSync(p, C.O_CREAT | C.O_TRUNC | C.O_RDWR);
+        const size = api.fs.fstatSync(fd).size;
+        api.fs.closeSync(fd);
+        return size;
+      });
+      // ④ O_CREAT|O_APPEND|O_WRONLY：写在末尾
+      r.appended = cap(() => {
+        const fd = api.fs.openSync(p, C.O_CREAT | C.O_APPEND | C.O_WRONLY, 0o600);
+        api.fs.writeSync(fd, 'Z');
+        api.fs.closeSync(fd);
+        return api.fs.readFileSync(p, 'utf8');
+      });
+      // ⑤ 纯 O_RDONLY：能读、写报 EBADF、目标不存在报 ENOENT
+      r.rdonly = cap(() => {
+        const fd = api.fs.openSync(p, C.O_RDONLY);
+        const b = Buffer.alloc(1);
+        const n = api.fs.readSync(fd, b, 0, 1, 0);
+        api.fs.closeSync(fd);
+        return { n, text: b.toString('latin1') };
+      });
+      r.rdonlyWrite = cap(() => {
+        const fd = api.fs.openSync(p, C.O_RDONLY);
+        try {
+          api.fs.writeSync(fd, 'x');
+        } finally {
+          api.fs.closeSync(fd);
+        }
+      });
+      r.rdonlyMissing = cap(() => api.fs.openSync(join(dir, 'flag-nope.txt'), C.O_RDONLY));
+      // ⑥ 非法访问模式（O_ACCMODE = 3）：明确的 EINVAL，不是"猜一个语义去写"
+      r.badAccMode = cap(() => {
+        const fd = api.fs.openSync(p, 3);
+        api.fs.closeSync(fd);
+        return 'ok';
+      });
+      // ⑦ 不认识的位：**忽略**（判卷人实测：Linux 与 Windows 宿主都照开不误）——注意只回 'ok'，
+      //    fd 数值是各自的编号空间，不能进差分
+      r.unknownBits = cap(() => {
+        const fd = api.fs.openSync(p, C.O_RDONLY | 0x40000000);
+        api.fs.closeSync(fd);
+        return 'ok';
+      });
+      return r;
+    };
+
+    const ours = scenario({ fs }, DATA_DIR);
+    const host = scenario({ fs: hostFs as unknown as typeof fs }, HOST_DIR);
+    const differing = Object.keys({ ...ours, ...host }).filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
+    assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], '数字旗标与宿主不一致（[键, 我们, 宿主]）');
+  });
+
   it('BigIntStats 与 readdir recursive 也抛错（不静默降级）', () => {
     assert.equal(capture(() => fs.statSync(join(DATA_DIR, 'a.txt'), { bigint: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
     assert.equal(capture(() => fs.readdirSync(DATA_DIR, { recursive: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');

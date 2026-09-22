@@ -115,20 +115,39 @@ export function init() {
 }
 `,
   // 第三批靶子：crypto（tmp 用 randomBytes 生成名字）+ fs + os
+  // 第三批靶子：crypto（tmp 用 randomBytes 生成名字）+ fs + os
+  //
+  // 2026-09-22 改断言（原来两条都是"钉边界"：fd 面没做时 fileSync 必然失败）。现在三条**都要成立**：
+  //   ① dirSync 走 mkdirSync + crypto 随机名；
+  //   ② fileSync 走 **fd + 数字旗标**（O_CREAT|O_EXCL|O_RDWR）——这条正是数字旗标那个 bug 的靶子
+  //      （修之前：Linux 常量被原样交给 Windows 宿主 ⇒ ENOENT）；
+  //   ③ **边界照旧**：template 里的子目录不存在 ⇒ ENOENT（真 Node 也这样：它把 template 拼到
+  //      os.tmpdir() 下，而沙箱的 os.tmpdir() = <dataDir>/tmp）。harness 预建了 tmp/cfg，
+  //      所以 ①② 能过；这里故意用一个没预建的子目录把边界钉住。
   tmp: `
 import tmp from 'tmp';
+import fs from 'node:fs';
+import os from 'node:os';
 export function init() {
-  // ① 目录形态：不需要 fd，走 fs.mkdirSync + **crypto.randomBytes** 生成名字
+  const t = os.tmpdir();
   const d = tmp.dirSync({ template: 'cfg/d-XXXXXX' });
-  console.log('TMPDIR ' + /d-[A-Za-z0-9]{6}$/.test(d.name) + '/' + d.name.startsWith('cfg/d-'));
+  if (!/d-[A-Za-z0-9]{6}$/.test(d.name)) throw new Error('目录名形状不对：' + d.name);
+  if (!d.name.startsWith(t)) throw new Error('目录没落在 os.tmpdir() 下：' + d.name);
+  const dPath = d.name;
   d.removeCallback();
-  // ② 文件形态要 fd（openSync）——**本批明确不做**，这条断言把边界钉住
-  try {
-    tmp.fileSync({ template: 'cfg/f-XXXXXX.txt' });
-    console.log('TMPFILE unexpected');
-  } catch (e) {
-    console.log('TMPFILE-FD ' + e.code);
-  }
+  if (fs.existsSync(dPath)) throw new Error('removeCallback 没删掉目录');
+  console.log('TMPDIR ok/' + fs.existsSync(t));
+  const f = tmp.fileSync({ template: 'cfg/f-XXXXXX.txt' });
+  if (!fs.existsSync(f.name)) throw new Error('fileSync 没建出文件');
+  if (typeof f.fd !== 'number') throw new Error('fileSync 没给数字 fd');
+  fs.writeSync(f.fd, 'tmp-ok');
+  f.removeCallback();
+  if (fs.existsSync(f.name)) throw new Error('fileSync 的 removeCallback 没删掉文件');
+  console.log('TMPFILE ok/' + typeof f.fd);
+  let code = 'none';
+  try { tmp.fileSync({ template: 'no-such-sub/f-XXXXXX.txt' }); } catch (e) { code = e.code; }
+  if (code !== 'ENOENT') throw new Error('缺子目录时应当 ENOENT，实际 ' + code);
+  console.log('TMPFILE-MISSING ' + code);
 }
 `,
   // 第三批靶子：dotenv 的**加密 .env 解密路径**（就是 createDecipheriv 那个用例）
@@ -142,6 +161,7 @@ export function init() {
   // 第三批靶子：adm-zip（zlib 的同步路径 + 我们自己写的 fs 读写字节）
   'adm-zip': `
 import AdmZip from 'adm-zip';
+import { existsSync } from 'node:fs';
 const seedBytes = Buffer.from("UEsDBBQAAAgIAJluMl0lK8DFFAAAABIAAAAFAAAAYS50eHTLSM3JyVdIK8rPVUhMydWtyiwAAFBLAwQUAAAICACZbjJdaREftggAAAAGAAAACQAAAGRpci9iLnR4dCtOTc7PSwEAUEsBAhQKFAAACAgAmW4yXSUrwMUUAAAAEgAAAAUAAAAAAAAAAAAAAKSBAAAAAGEudHh0UEsBAhQKFAAACAgAmW4yXWkRH7YIAAAABgAAAAkAAAAAAAAAAAAAAKSBNwAAAGRpci9iLnR4dFBLBQYAAAAAAgACAGoAAABmAAAAAAA=", 'base64');
 export function init() {
   // ① 内存读路径：从字节建 zip → 列条目 → 读内容（走 zlib.inflateRawSync）
@@ -151,13 +171,13 @@ export function init() {
   const made = new AdmZip();
   made.addFile('x.txt', Buffer.from('made in the sandbox'));
   console.log('MADE ' + (made.toBuffer().length > 0) + '/' + new AdmZip(made.toBuffer()).readAsText('x.txt'));
-  // ③ 写盘路径是 **fd 式**（openSync/writeSync/closeSync）——本批明确不做，等 HostRef 审定后的决定
-  try {
-    made.writeZip('out.zip');
-    console.log('WRITE unexpected');
-  } catch (e) {
-    console.log('WRITE-FD ' + e.code);
-  }
+  // ③ 写盘路径是 **fd 式**（openSync/writeSync/closeSync）——2026-09-22：这条**改断言**（fd 面 09-21 落地）
+  //    （原来只打一句 WRITE-unexpected 钉边界；靶子不该在能力到位后还留着"预期失败"）
+  made.writeZip('out.zip');
+  if (!existsSync('out.zip')) throw new Error('writeZip 没写出 out.zip');
+  const back = new AdmZip('out.zip');
+  if (back.readAsText('x.txt') !== 'made in the sandbox') throw new Error('写出的 zip 读回来内容不对');
+  console.log('WRITE ' + back.getEntries().length + '/' + back.readAsText('x.txt'));
 }
 `,
   // 模板引擎：读模板文件（fs.readFileSync + path）
@@ -177,17 +197,18 @@ export function init() {
   // ⚠️ 它（经由 signal-exit）会用到 __filename：那是 esbuild 把 CJS 包搬进 ESM 产物时**自己**
   // 留下的引用，不是包源码里的（见设计 §9 的 __filename/__dirname 条目）。所以下面那两条
   // 断言量的是**边界**，不是"这个包能不能用"。
-  // ① 同步写盘路径是 **fd 式**（openSync/writeSync/fsyncSync/closeSync）——本批明确不做
-  try {
-    writeFileAtomic.sync('cfg/atomic.txt', 'atomic-ok', { fsync: false });
-    console.log('WFA-SYNC unexpected');
-  } catch (e) {
-    console.log('WFA-SYNC-FD ' + (e && e.code) + '/' + (e && e.name));
-  }
-  // ② 异步路径：它是 Promise 形态（内部用 promisify 的 fs 调用，不走 fd）
+  // ① 同步写盘路径是 **fd 式**（openSync/writeSync/fsyncSync/closeSync）——2026-09-22：这条**改断言**（fd 面 09-21 落地），
+  //    这条从"钉边界"改成**断言**（写进去 + 读回来一致）
+  writeFileAtomic.sync('cfg/atomic.txt', 'atomic-ok', { fsync: false });
+  if (readFileSync('cfg/atomic.txt', 'utf8') !== 'atomic-ok') throw new Error('writeFileAtomic.sync 的内容不对');
+  console.log('WFA-SYNC ok');
+  // ② 异步路径：它是 Promise 形态（内部用 promisify 的 fs 调用，不走 fd）——这里断言内容 + 临时文件已清
   const p = writeFileAtomic('cfg/async.txt', 'async-ok');
   p.then(() => {
-    console.log('WFA-ASYNC ' + readFileSync('cfg/async.txt', 'utf8') + '/' + existsSync('cfg/async.txt.tmp'));
+    const got = readFileSync('cfg/async.txt', 'utf8');
+    if (got !== 'async-ok') throw new Error('异步写的内容不对：' + got);
+    if (existsSync('cfg/async.txt.tmp')) throw new Error('写完还留着 .tmp');
+    console.log('WFA-ASYNC ' + got + '/clean');
   }, (e) => {
     console.log('WFA-ASYNC-ERR ' + (e && e.code) + '/' + (e && e.message));
   });

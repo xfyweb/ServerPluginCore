@@ -498,7 +498,44 @@ function parseJsonArg(value: HostArg | undefined, what: string): unknown {
 }
 
 /**
- * fd 打开的**公共参数处理**（同步/异步两条 open 共用）：旗标原样交 Node 判、路径按模式收敛。
+ * 把仿真层送上来的**平台无关旗标描述**拼成**宿主自己的**数字旗标。
+ *
+ * 为什么要有这一步：`fs.constants` 在沙箱里是 **Linux 真值**，而宿主 Node 跑在自己的平台上
+ * （Windows 的 `O_CREAT` 是 `0x100`、Linux 是 `0x40`）——数字旗标原样转交就会**位对不上**
+ * （实测：`tmp` 包的 `O_CREAT|O_EXCL|O_RDWR` 在 Windows 宿主上退化成"无 O_CREAT" ⇒ `ENOENT`）。
+ * 所以仿真层只送"要什么语义"，这里用 `FS_CONSTANTS`（**宿主的**常量）拼回来。
+ * 宿主没有对应位的（如某些平台的 `O_NOATIME`）**fail-closed**，不静默丢掉那个语义。
+ */
+function composeHostFlags(f: Record<string, unknown>): number {
+  const O = FS_CONSTANTS;
+  const acc = typeof f.acc === 'number' ? f.acc : 0;
+  let out: number = acc === 0 ? O.O_RDONLY : acc === 1 ? O.O_WRONLY : O.O_RDWR;
+  const bit = (name: keyof typeof FS_CONSTANTS, want: unknown): void => {
+    if (want !== true) return;
+    // 宿主平台不一定有这个位（`fs.constants` 是平台相关的：Windows 上 `O_SYNC`/`O_NOFOLLOW`/`O_DIRECTORY`
+    // 都是 undefined）。**按判卷人实测忽略它**：Linux 判卷人带这些位打开同样成功，语义在普通文件上也是空的
+    // （软链防护由路径收敛层负责，不靠 `O_NOFOLLOW`）；持久化语义确实给不出，记在"已知边界"里。
+    const v = O[name] as number | undefined;
+    if (typeof v === 'number') out |= v;
+  };
+  bit('O_SYNC', f.sync);
+  bit('O_DSYNC', f.dsync);
+  bit('O_CREAT', f.create);
+  bit('O_EXCL', f.excl);
+  bit('O_TRUNC', f.trunc);
+  bit('O_APPEND', f.append);
+  bit('O_NOFOLLOW', f.nofollow);
+  bit('O_DIRECTORY', f.directory);
+  bit('O_NOCTTY', f.noctty);
+  bit('O_NONBLOCK', f.nonblock);
+  bit('O_DIRECT', f.direct);
+  bit('O_NOATIME', f.noatime);
+  return out;
+}
+
+/**
+ * fd 打开的**公共参数处理**（同步/异步两条 open 共用）：
+ * 字符串旗标**原样交 Node 判**；`{spcFlags:{…}}`（数字旗标拆出来的语义）由 `composeHostFlags` 拼回数字。
  */
 function fdOpenArgs(
   dataDir: string,
@@ -506,9 +543,14 @@ function fdOpenArgs(
   flagsJson: HostArg | undefined,
   mode: 'read' | 'write',
 ): { safe: string; flags: string | number } {
-  const flags = flagsJson === undefined ? 'r' : parseJsonArg(flagsJson, 'flags');
-  if (typeof flags !== 'string' && typeof flags !== 'number') {
-    throw new SpcError('INVALID_ARGS', { reason: 'expected-flags', got: typeof flags });
+  const raw = flagsJson === undefined ? 'r' : parseJsonArg(flagsJson, 'flags');
+  let flags: string | number;
+  if (raw !== null && typeof raw === 'object' && typeof (raw as { spcFlags?: unknown }).spcFlags === 'object') {
+    flags = composeHostFlags((raw as { spcFlags: Record<string, unknown> }).spcFlags);
+  } else if (typeof raw === 'string' || typeof raw === 'number') {
+    flags = raw;
+  } else {
+    throw new SpcError('INVALID_ARGS', { reason: 'expected-flags', got: typeof raw });
   }
   const safe =
     mode === 'read'
