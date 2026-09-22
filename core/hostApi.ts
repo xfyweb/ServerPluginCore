@@ -536,6 +536,11 @@ function composeHostFlags(f: Record<string, unknown>): number {
 /**
  * fd 打开的**公共参数处理**（同步/异步两条 open 共用）：
  * 字符串旗标**原样交 Node 判**；`{spcFlags:{…}}`（数字旗标拆出来的语义）由 `composeHostFlags` 拼回数字。
+ *
+ * ⚠️ **写侧不补建父目录**（2026-09-22 修）：这里原先用的是 `resolveWriteTarget`，而那个函数是给
+ * `@host/api` 的 `fs.write` 用的（会**替调用方建目录**）——`node:fs` 面不能走它：Node 的
+ * `open`/`createWriteStream` 在父目录缺失时就是 `ENOENT`（实测：我们把
+ * `createWriteStream('nodir/x.txt')` 变成"建目录 + 成功"，与判卷人不一致）。fd 面走**严格**解析。
  */
 function fdOpenArgs(
   dataDir: string,
@@ -555,7 +560,7 @@ function fdOpenArgs(
   const safe =
     mode === 'read'
       ? resolveReadTarget(dataDir, p)
-      : resolveWriteTarget(dataDir, resolvePluginPath(dataDir, p)).path;
+      : validatePath(resolvePluginPath(dataDir, p), [dataDir]).path;
   return { safe, flags };
 }
 

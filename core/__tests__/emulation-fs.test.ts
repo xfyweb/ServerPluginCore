@@ -32,11 +32,12 @@ const { toErrorShape } = await import('../../core/errors.ts');
 
 // shim 的加载方式与既有对齐测试一致：逐字节拷到临时目录（ESM），再按 file: 导入。
 // 这样 TS 不会去检查纯 JS 的 shim，也能精确控制"哪些伴随文件在场"（node-fs.js 依赖
-// node-buffer.js 与 node-url.js，`FileHandle` 还要 node-events.js，三个都得拷）。
+// node-buffer.js / node-url.js / node-events.js，fs 流还要 node-stream.js + node-string_decoder.js）。
 const SHIM_DIR = mkdtempSync(join(tmpdir(), 'spc-shims-fs-'));
 writeFileSync(join(SHIM_DIR, 'package.json'), '{"type":"module"}\n');
 const SHIM_SRC = join(process.cwd(), 'core', 'sandbox-modules');
-for (const f of ['node-fs.js', 'node-fs-promises.js', 'node-buffer.js', 'node-url.js', 'node-events.js']) {
+const SHIM_FILES = ['node-fs.js', 'node-fs-promises.js', 'node-buffer.js', 'node-url.js', 'node-events.js', 'node-stream.js', 'node-string_decoder.js'];
+for (const f of SHIM_FILES) {
   copyFileSync(join(SHIM_SRC, f), join(SHIM_DIR, f));
 }
 after(() => rmSync(SHIM_DIR, { recursive: true, force: true }));
@@ -498,7 +499,6 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     // 唯一仍然明确"做不了"的监视入口：异步迭代器（需要无界阶段）
     assert.equal(capture(() => (fsPromises as any).watch('x'), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
     const stillStubbed = [
-      'createReadStream', 'createWriteStream',
       'symlinkSync', 'linkSync', 'readlinkSync', 'fchmodSync', 'chownSync', 'utimesSync',
       'statfsSync', 'cpSync', 'globSync',
     ];
@@ -1337,6 +1337,165 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], '数字旗标与宿主不一致（[键, 我们, 宿主]）');
   });
 
+  it('fs 流（createReadStream / createWriteStream）：与宿主同形（事件顺序 / 范围 / 坏路径 / cork / pipe）', async () => {
+    // 差分对象仍是宿主 Node。按仓库对流的既有口径：**事件顺序也比**（探针实测两个判卷人都是
+    // open→ready→data(×N)→end→close，我们的微任务链也对得上），但 data 的**分块大小**不苛求
+    //（水位相同即可，见 `node-stream.js` 头部"不比事件交错顺序"的说明）。
+    const scenario = async (api: { fs: any }, dir: string) => {
+      const r: Record<string, unknown> = {};
+      /** 收事件直到 close/error/超时（有界：等一条永不到来的事件会挂死） */
+      const collect = (stream: any, ms = 1500) =>
+        new Promise<any>((resolve) => {
+          const events: string[] = [];
+          const chunks: any[] = [];
+          let lastErr = '';
+          let done = false;
+          const finish = (why: string) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve({
+              why,
+              events,
+              data: Buffer.concat(chunks).toString('latin1'),
+              bytes: Buffer.concat(chunks).length,
+              bytesRead: stream.bytesRead,
+              bytesWritten: stream.bytesWritten,
+              fdAfter: stream.fd,
+              // 错误文案里的**根目录不同**（两边各自一个临时目录）⇒ 抹掉再比
+              err: lastErr.split(dir).join('<DIR>'),
+            });
+          };
+          const timer = setTimeout(() => finish('timeout'), ms);
+          for (const ev of ['open', 'ready', 'data', 'end', 'finish', 'close', 'error']) {
+            stream.on(ev, (arg: any) => {
+              events.push(ev + (ev === 'error' ? ':' + (arg && arg.code) : ''));
+              if (ev === 'error') lastErr = String((arg && arg.message) || arg);
+              if (ev === 'data') chunks.push(Buffer.isBuffer(arg) ? arg : Buffer.from(String(arg), 'latin1'));
+              if (ev === 'close' || ev === 'error') finish(ev);
+            });
+          }
+        });
+      const cap = (fn: () => unknown) => {
+        try {
+          return { ok: true, v: fn() };
+        } catch (e: any) {
+          return { ok: false, code: e.code };
+        }
+      };
+
+      const file = join(dir, 'stream-src.txt');
+      api.fs.writeFileSync(file, 'abcdefghij');
+
+      // ① 基本读 + 属性
+      const rs = api.fs.createReadStream(file);
+      r.readProps = { pathIsInput: rs.path === file, pendingBefore: rs.pending, fdBefore: rs.fd, hwm: rs.readableHighWaterMark };
+      r.readBasic = await collect(rs);
+      // ② 分块 / 范围
+      r.readChunks = await collect(api.fs.createReadStream(file, { highWaterMark: 4 }));
+      r.readRange = await collect(api.fs.createReadStream(file, { start: 2, end: 5 }));
+      r.readStartOnly = await collect(api.fs.createReadStream(file, { start: 7 }));
+      r.readEndBeyondEof = await collect(api.fs.createReadStream(file, { start: 8, end: 99 }));
+      // ③ encoding：给的是**字符串**（跨块多字节由 setEncoding 的解码器处理）
+      r.readEncoding = await collect(api.fs.createReadStream(join(dir, 'stream-mb.txt'), { encoding: 'utf8', highWaterMark: 2 }));
+      // ④ 坏路径 / 目录：构造期不抛，异步 error+close
+      const bad = api.fs.createReadStream(join(dir, 'stream-nope.txt'));
+      r.readBadConstruct = { pending: bad.pending };
+      r.readBad = await collect(bad, 1200);
+      r.readDir = await collect(api.fs.createReadStream(dir), 1200);
+      // ⑤ autoClose:false ⇒ 'end' 之后 fd 还开着（这里只比"有没有 close 事件"与 fd 类型）
+      const rsNoClose = api.fs.createReadStream(file, { autoClose: false });
+      const noClose = await collect(rsNoClose, 900);
+      r.autoCloseFalse = { events: noClose.events, fdIsNumber: typeof rsNoClose.fd === 'number' };
+      if (typeof rsNoClose.fd === 'number') api.fs.closeSync(rsNoClose.fd);
+      // ⑥ 选项校验（构造期同步抛）
+      r.optErrors = {
+        badStart: cap(() => api.fs.createReadStream(file, { start: 'x' })),
+        startAfterEnd: cap(() => api.fs.createReadStream(file, { start: 5, end: 2 })),
+      };
+      // ⑦ 写：基本 / 位置 / 追加 / cork 批量 / 坏路径
+      const w1 = join(dir, 'stream-w1.txt');
+      const ws1 = api.fs.createWriteStream(w1);
+      r.writeProps = { pathIsInput: ws1.path === w1, pendingBefore: ws1.pending, fdBefore: ws1.fd, hwm: ws1.writableHighWaterMark };
+      const d1 = collect(ws1);
+      ws1.write('hello');
+      ws1.end();
+      r.writeBasic = await d1;
+      r.writeBasicContent = api.fs.readFileSync(w1, 'latin1');
+
+      const w2 = join(dir, 'stream-w2.txt');
+      api.fs.writeFileSync(w2, 'XXXXXX');
+      const ws2 = api.fs.createWriteStream(w2, { start: 2 });
+      const d2 = collect(ws2);
+      ws2.end('ZZ');
+      r.writeStart = await d2;
+      r.writeStartContent = api.fs.readFileSync(w2, 'latin1');
+
+      const w3 = join(dir, 'stream-w3.txt');
+      const ws3 = api.fs.createWriteStream(w3, { flags: 'a' });
+      const d3 = collect(ws3);
+      ws3.write('1');
+      ws3.write('2');
+      ws3.end('3');
+      r.writeAppend = await d3;
+      r.writeAppendContent = api.fs.readFileSync(w3, 'latin1');
+
+      const w4 = join(dir, 'stream-w4.txt');
+      const ws4 = api.fs.createWriteStream(w4);
+      const d4 = collect(ws4);
+      ws4.cork();
+      ws4.write('aa');
+      ws4.write('bb');
+      r.corkedNothingYet = api.fs.existsSync(w4) ? api.fs.readFileSync(w4, 'latin1') : '';
+      ws4.uncork();
+      ws4.end('cc');
+      r.writeCork = await d4;
+      r.writeCorkContent = api.fs.readFileSync(w4, 'latin1');
+
+      const badW = api.fs.createWriteStream(join(dir, 'stream-nodir', 'x.txt'));
+      badW.on('error', () => {});
+      r.writeBad = await collect(badW, 1200);
+      // ⑩ **父目录不补建**（2026-09-22 修的回归）：`fs.open`/`createWriteStream` 在父目录缺失时就是
+      //    ENOENT —— 我们原先的 fd 打开路径借用了 `@host/api` 的 `fs.write` 那套"帮你建目录"的解析，
+      //    于是"建流成功、文件悄悄出现在新目录里"。判别点：把 `fdOpenArgs` 换回 `resolveWriteTarget` ⇒ 这条红。
+      r.openMissingParent = cap(() => {
+        const fd = api.fs.openSync(join(dir, 'diag-nodir', 'x.txt'), 'w');
+        api.fs.closeSync(fd);
+        return 'open-succeeded';
+      });
+      r.openMissingParentDirCreated = api.fs.existsSync(join(dir, 'diag-nodir'));
+
+      // ⑧ pipe：读流 → 写流
+      const w5 = join(dir, 'stream-copy.txt');
+      const rsPipe = api.fs.createReadStream(file, { highWaterMark: 3 });
+      const wsPipe = api.fs.createWriteStream(w5);
+      const piped = new Promise((resolve) => wsPipe.on('close', () => resolve('closed')));
+      rsPipe.pipe(wsPipe);
+      r.pipe = await Promise.race([piped, new Promise((resolve) => setTimeout(() => resolve('timeout'), 1500))]);
+      r.pipeContent = api.fs.existsSync(w5) ? api.fs.readFileSync(w5, 'latin1') : 'MISSING';
+      // ⑨ 类身份与别名
+      r.aliases = {
+        readIsFileRead: api.fs.ReadStream === api.fs.FileReadStream,
+        writeIsFileWrite: api.fs.WriteStream === api.fs.FileWriteStream,
+        readName: api.fs.ReadStream.name,
+        writeName: api.fs.WriteStream.name,
+      };
+      return r;
+    };
+
+    // 多字节字符：验证 `{encoding}` 的解码器跨块（水位 2 字节 < 一个汉字的 3 字节）
+    for (const [api, dir] of [
+      [fs, DATA_DIR],
+      [hostFs, HOST_DIR],
+    ] as const) {
+      writeFileSync(join(dir, 'stream-mb.txt'), 'a汉b');
+    }
+    const ours = await scenario({ fs }, DATA_DIR);
+    const host = await scenario({ fs: hostFs as unknown as typeof fs }, HOST_DIR);
+    const differing = Object.keys({ ...ours, ...host }).filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
+    assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], 'fs 流与宿主不一致（[键, 我们, 宿主]）');
+  });
+
   it('BigIntStats 与 readdir recursive 也抛错（不静默降级）', () => {
     assert.equal(capture(() => fs.statSync(join(DATA_DIR, 'a.txt'), { bigint: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
     assert.equal(capture(() => fs.readdirSync(DATA_DIR, { recursive: true }), DATA_DIR).code, 'ERR_NOT_SUPPORTED_IN_SANDBOX');
@@ -1757,6 +1916,95 @@ export function stop() {
     assert.ok(methods.includes('handles.forced-release'), `审计缺少 handles.forced-release（实际：${[...new Set(methods)].join(',')}）`);
     // 事件投递有自己的审计方法名（别和 timers.tick 混在一起）
     assert.ok(methods.includes('watch.event'), `审计缺少 watch.event（实际：${[...new Set(methods)].join(',')}）`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('fs 流在真沙箱里成立：pipe 复制 / 真异步读写 / 卸载时句柄收口', async () => {
+    // 为什么必须真沙箱：流的 `_read`/`_write` 走的是 `fs.fdReadAsync`/`fs.fdWriteAsync`（声明了 `async: true`
+    // 的宿主方法），**挂起只在真 VM 里发生**；纯 Node 假桥只验语义（上面那条差分）。
+    const dir = mkdtempSync(join(tmpdir(), 'spc-streams-smoke-'));
+    const bridge: { releaseHandles?: () => void } = {};
+    const api = buildHostApi({ pluginId: '@spc-test/streams', dataDir: dir, bridge });
+    writeFileSync(join(dir, 'src.txt'), 'abcdefghij');
+    const sandbox = await createSandbox(api, {
+      pluginId: '@spc-test/streams',
+      permissions: ['fs.read.data', 'fs.write.data'],
+      bridge,
+      facts: { version: { code: 1, name: 'test' }, dataDir: dir, manifest: {}, config: {} },
+    });
+    let releaseCalls = 0;
+    const origRelease = bridge.releaseHandles;
+    bridge.releaseHandles = () => {
+      releaseCalls++;
+      origRelease?.();
+    };
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        '@spc-test/streams',
+        `
+import fs from 'node:fs';
+// ⚠️ 沙箱里**没有 setTimeout**（引导层刻意不提供宏任务面）——靠事件自己收口，
+// 防挂死由宿主侧的 callHook 预算兜住
+function readAll(stream) {
+  return new Promise((resolve) => {
+    const events = [];
+    const chunks = [];
+    for (const ev of ['open', 'ready', 'data', 'end', 'close', 'error']) {
+      stream.on(ev, (arg) => {
+        events.push(ev + (ev === 'error' ? ':' + (arg && arg.code) : ''));
+        if (ev === 'data') chunks.push(typeof arg === 'string' ? Buffer.from(arg, 'latin1') : arg);
+        if (ev === 'close' || ev === 'error') resolve({ events, text: Buffer.concat(chunks).toString('latin1'), why: ev });
+      });
+    }
+  });
+}
+export async function init() {
+  // ① 整读（分块）+ 事件序号
+  const rs = fs.createReadStream('src.txt', { highWaterMark: 4 });
+  const one = await readAll(rs);
+  console.log('READ ' + one.text + '/' + one.events.join(',') + '/' + rs.bytesRead);
+  // ② 范围读（闭区间）+ encoding（字符串块）
+  const rs2 = fs.createReadStream('src.txt', { start: 2, end: 5, encoding: 'utf8' });
+  const two = await readAll(rs2);
+  console.log('RANGE ' + two.text + '/' + typeof two.text);
+  // ③ pipe 复制到另一个文件，再整读回来比对
+  const ws = fs.createWriteStream('copy.txt');
+  const piped = new Promise((resolve) => ws.on('close', resolve));
+  fs.createReadStream('src.txt', { highWaterMark: 3 }).pipe(ws);
+  await piped;
+  console.log('PIPE ' + fs.readFileSync('copy.txt', 'utf8') + '/' + ws.bytesWritten);
+  // ④ 坏路径：**构造期不抛**，异步 error + close
+  const bad = fs.createReadStream('nope.txt');
+  const badRes = await readAll(bad);
+  console.log('BAD ' + badRes.events.join(',') + '/pending=' + bad.pending);
+  // ⑤ 故意留一条没关的读流：**卸载时靠句柄表强回收**
+  fs.createReadStream('src.txt');
+  console.log('DONE');
+}
+`,
+      );
+      await sandbox.callHook('init', 30_000);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    const out = logs.join('\n');
+    assert.match(out, /READ abcdefghij\/open,ready,data,data,data,end,close\/10/, `实际日志：${out}`);
+    assert.match(out, /RANGE cdef\/string/, `实际日志：${out}`);
+    assert.match(out, /PIPE abcdefghij\/10/, `实际日志：${out}`);
+    assert.match(out, /BAD error:ENOENT,close\/pending=true/, `实际日志：${out}`);
+    assert.match(out, /DONE/, `实际日志：${out}`);
+    assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收（那条没关的读流靠它）');
+    const audit = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
+      .filter((e) => e.pluginId === '@spc-test/streams')
+      .map((e) => e.method!);
+    assert.ok(audit.includes('handles.forced-release'), `审计缺少 handles.forced-release（实际：${[...new Set(audit)].join(',')}）`);
     rmSync(dir, { recursive: true, force: true });
   });
 

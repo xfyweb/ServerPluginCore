@@ -24,7 +24,8 @@ const { buildEnvFacts } = await import('../../core/emulated-env.ts');
 const SHIM_DIR = mkdtempSync(join(tmpdir(), 'spc-shims-stream-'));
 writeFileSync(join(SHIM_DIR, 'package.json'), '{"type":"module"}\n');
 const SHIM_SRC = join(process.cwd(), 'core', 'sandbox-modules');
-for (const f of ['node-stream.js', 'node-events.js', 'node-buffer.js']) {
+// `node-string_decoder.js` 是 2026-09-22 加的：`setEncoding()` 要用它做跨块解码（`fs` 流的 `{encoding}`）
+for (const f of ['node-stream.js', 'node-events.js', 'node-buffer.js', 'node-string_decoder.js']) {
   copyFileSync(join(SHIM_SRC, f), join(SHIM_DIR, f));
 }
 after(() => rmSync(SHIM_DIR, { recursive: true, force: true }));

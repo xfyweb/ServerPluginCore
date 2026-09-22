@@ -25,6 +25,7 @@
 // 内联约束：静态、无占位符（见 registry.ts 头注释）。
 
 import { EventEmitter } from './node-events.js';
+import { StringDecoder } from './node-string_decoder.js';
 
 const nextMicrotask = queueMicrotask;
 
@@ -107,23 +108,68 @@ function initReadableState(self, options) {
     endEmitted: false,
     closeEmitted: false,
     reading: false,
+    /** `setEncoding()` 挂上的解码器（跨块的多字节边界交给它，见 `node-string_decoder.js`） */
+    decoder: null,
+    encoding: null,
     destroyed: false,
   };
+}
+
+/**
+ * 向**子类**要数据（Node 的 `Readable.prototype.read` → `_read(hwm)` 那一半）。
+ *
+ * 为什么必须有它（2026-09-22 补）：本文件原先只有**推**那一半（数据由调用方 `push()` 进来），
+ * 够 `fast-glob`/`csv-parse` 那类"自己产出数据"的流用；而 `fs.createReadStream` 是**拉**型的 ——
+ * 消费者要一块、它才去读一块。少了这一半，拉取型子类的 `_read` 永远不被调，
+ * 表现为"流建好了、一个 `'data'` 都没有"。纯推型的流不定义 `_read`，这里就什么都不做（行为不变）。
+ * `state.reading` 是**在飞标记**：一次只请求一块，`push()` 里清掉。
+ */
+function requestRead(self) {
+  const state = self._readableState;
+  if (state.reading || state.ended || state.destroyed) return;
+  if (typeof self._read !== 'function') return;
+  state.reading = true;
+  try {
+    self._read(state.highWaterMark);
+  } catch (err) {
+    self.destroy(err);
+  }
 }
 
 function readableAddChunk(self, chunk, encoding) {
   const state = self._readableState;
   if (state.destroyed) return false;
 
+  // 这一块到账了 ⇒ 在飞标记清掉（下一次 `read()`/flowing 才能再请求）
+  state.reading = false;
+
   if (chunk === null) {
+    // `setEncoding()` 之后，解码器里可能还压着**半个多字节序列**：收尾时吐出来（Node 的 `decoder.end()`）
+    if (state.decoder !== null) {
+      const tail = state.decoder.end();
+      state.decoder = null;
+      if (typeof tail === 'string' && tail.length > 0) {
+        state.buffer.push(tail);
+        state.length += tail.length;
+      }
+    }
     state.ended = true;
     maybeEmitEnd(self);
     return false;
   }
 
-  // byte mode 的字符串块要转成 Buffer（Node 的行为）；objectMode 原样保留
+  // byte mode 的字符串块要转成 Buffer（Node 的行为）；objectMode 原样保留；
+  // `setEncoding()` 之后反过来：字节要解成字符串（解码器跨块保持状态）
   let value = chunk;
-  if (!state.objectMode && typeof chunk === 'string') {
+  if (state.decoder !== null && !state.objectMode) {
+    const asBuf = typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : chunk;
+    value = state.decoder.write(asBuf);
+    if (value === '') {
+      // 解码器还没攒够一个完整字符 ⇒ 这一块不产出数据，但**要继续要下一块**（否则流会停住）
+      if (state.flowing === true) requestRead(self);
+      return state.length < state.highWaterMark;
+    }
+  } else if (!state.objectMode && typeof chunk === 'string') {
     value = Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8');
   }
 
@@ -146,6 +192,8 @@ function flushBuffer(self) {
     state.length -= state.objectMode ? 1 : value.length;
     self.emit('data', value);
   }
+  // 拉取型流：缓冲排空且还没结束 ⇒ 再要一块（Node 的 `flow()` 就是这么续上的）
+  if (state.flowing === true && state.buffer.length === 0 && !state.ended) requestRead(self);
   maybeEmitEnd(self);
 }
 
@@ -243,7 +291,12 @@ Readable.prototype.unshift = function unshift(chunk) {
 Readable.prototype.read = function read(size) {
   const state = this._readableState;
   if (size === 0) return null;
+  // 取走之后缓冲掉到水位线下 ⇒ 向子类再要一块（拉取型流的驱动力就在这一句）
+  const refill = () => {
+    if (!state.ended && state.length < state.highWaterMark) requestRead(this);
+  };
   if (state.buffer.length === 0) {
+    refill();
     if (state.ended) maybeEmitEnd(this);
     return null;
   }
@@ -252,11 +305,13 @@ Readable.prototype.read = function read(size) {
     if (state.objectMode) {
       const value = state.buffer.shift();
       state.length -= 1;
+      refill();
       return value;
     }
     const chunks = state.buffer;
     state.buffer = [];
     state.length = 0;
+    refill();
     return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
   }
   // byte mode 的部分读取：从第一块切出 size 字节
@@ -265,8 +320,36 @@ Readable.prototype.read = function read(size) {
   if (first.length === size) state.buffer.shift();
   else state.buffer[0] = first.subarray(size);
   state.length -= size;
+  refill();
   return Buffer.from(out);
 };
+
+/**
+ * `setEncoding(enc)`：之后 `'data'`/`read()` 给的是**字符串**，跨块的多字节序列由 `StringDecoder` 处理
+ * （与 Node 同一套语义；解码走沙箱的 `node-string_decoder.js`，它内部的编解码是宿主的 `bytes.decode`）。
+ */
+Readable.prototype.setEncoding = function setEncoding(enc) {
+  const state = this._readableState;
+  if (enc === null || enc === undefined) return this;
+  state.decoder = new StringDecoder(enc);
+  state.encoding = enc;
+  return this;
+};
+
+// 水位与缓冲长度的可读属性（Node 的 `readableHighWaterMark`/`readableLength`）——
+// `fs.createReadStream` 的差分测试要用它们，依赖也常拿来判背压
+Object.defineProperty(Readable.prototype, 'readableHighWaterMark', {
+  configurable: true,
+  get() {
+    return this._readableState.highWaterMark;
+  },
+});
+Object.defineProperty(Readable.prototype, 'readableLength', {
+  configurable: true,
+  get() {
+    return this._readableState.length;
+  },
+});
 
 Readable.prototype.resume = function resume() {
   const state = this._readableState;
@@ -437,6 +520,9 @@ function initWritableState(self, options) {
     queue: [],
     writing: false,
     length: 0,
+    // `cork()` 的层数：> 0 时 `drainWritable` 不动队列（Node 的 `state.corked`）。
+    // `uncork()` 归零时把积压的一次性放出去（有 `_writev` 就一次批量写，否则顺序写）。
+    corked: 0,
     finished: false,
     finishEmitted: false,
     ended: false,
@@ -506,9 +592,83 @@ Writable.prototype.write = function write(chunk, encoding, callback) {
   return ok;
 };
 
+/**
+ * `cork()`/`uncork()`：Node 的**批量写**语义 —— cork 期间 `write()` 只入队、一个字节都不写出去；
+ * `uncork()` 归零时把积压放出去（有 `_writev` 就一次批量，否则顺序写）。
+ * 为什么要有它：`fs.WriteStream` 与不少依赖（tar/archiver 一类）用 `cork()` 把碎写攒成一次系统调用；
+ * 少了它，`ws.cork()` 直接是 `undefined`（TypeError）。
+ */
+Writable.prototype.cork = function cork() {
+  this._writableState.corked += 1;
+  return this;
+};
+
+Writable.prototype.uncork = function uncork() {
+  const state = this._writableState;
+  if (state.corked > 0) state.corked -= 1;
+  if (state.corked === 0 && !state.writing && !state.destroyed) drainWritable(this);
+  return this;
+};
+
+Object.defineProperty(Writable.prototype, 'writableCorked', {
+  configurable: true,
+  get() {
+    return this._writableState.corked;
+  },
+});
+// 与可读侧同理：Node 的 `writableHighWaterMark`/`writableLength`
+Object.defineProperty(Writable.prototype, 'writableHighWaterMark', {
+  configurable: true,
+  get() {
+    return this._writableState.highWaterMark;
+  },
+});
+Object.defineProperty(Writable.prototype, 'writableLength', {
+  configurable: true,
+  get() {
+    return this._writableState.length;
+  },
+});
+
+/** 批量写：把队列里所有积压交给 `_writev([{chunk, encoding}], cb)` */
+function drainWritableV(self) {
+  const state = self._writableState;
+  const entries = state.queue.splice(0, state.queue.length);
+  state.writing = true;
+  const total = entries.reduce((n, e) => n + (state.objectMode ? 1 : e.chunk.length), 0);
+  let sync = true;
+  const done = (err) => {
+    state.writing = false;
+    state.length -= total;
+    for (const e of entries) if (e.callback) e.callback(err ?? null);
+    if (err) {
+      state.errored = true;
+      state.queue.length = 0;
+      nextMicrotask(() => self.emit('error', err));
+      return;
+    }
+    if (state.queue.length === 0) self.emit('_spcDrained');
+    if (sync) nextMicrotask(() => drainWritable(self));
+    else drainWritable(self);
+  };
+  try {
+    self._writev(entries.map((e) => ({ chunk: e.chunk, encoding: 'buffer' })), done);
+  } catch (err) {
+    done(err);
+  }
+  sync = false;
+}
+
 function drainWritable(self) {
   const state = self._writableState;
   if (state.writing || state.destroyed) return;
+  // 被 `cork()` 挡住：队列原地不动（Node 的行为：cork 期间一个字节都不写出去）
+  if (state.corked > 0) return;
+  // 一次批量写：有 `_writev` 且积压不止一条时走它（Node 的 writable 在 uncork 后就是这么做的）
+  if (typeof self._writev === 'function' && state.queue.length > 1) {
+    drainWritableV(self);
+    return;
+  }
   const entry = state.queue.shift();
   if (!entry) {
     if (state.ended && !state.finishEmitted) emitFinish(self);
