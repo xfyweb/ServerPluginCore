@@ -45,7 +45,7 @@
   ],
 
   "exports": {
-    "webApis": [
+    "endpoints": [
       { "path": "/api/docker/containers", "permission": "docker.read" }
     ],
     "routes": [
@@ -111,7 +111,7 @@
 | 旧（schema 1） | 新（schema 2） | 理由 |
 |---|---|---|
 | `permissions: ["docker.read"]` 字符串数组 | `permissions: [{name, reason}]` 对象数组 | reason 支撑风险提示与审核（要点 7） |
-| 无 exports | `exports: {webApis, routes, events}` | 默认私有 + 显式导出（要点 3） |
+| 无 exports | `exports: {endpoints, routes, events}` | 默认私有 + 显式导出（要点 3） |
 | `version: "1.0.0"` 字符串 | `version: {code, name}` | 版本比较正确性（要点 4） |
 | 无 compat | `compat: {minCore, targetCore}` | 插件-核心版本耦合（要点 5） |
 | `runtime: "node"` 字符串 | `runtime: {type, esm}` | 运行时类型 + ESM-only 硬约束（ADR-005 §4） |

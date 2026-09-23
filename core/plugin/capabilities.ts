@@ -22,7 +22,15 @@ export interface RouteCapability {
   frontendMode: FrontendMode;
 }
 
-export interface ApiCapability {
+/**
+ * 端点能力（原 `ApiCapability`，manifest 里原叫 `exports.webApis`）。
+ * **改名理由**：这个面的调用者**有两类**（面板的 HTTP 网关 / 其他插件），`webApis` 既排除了插件、
+ * 又暗示了实现路径；文档里"端点"这个词本来就在用（见 `docs/events-and-hooks-design.md` §3.1）。
+ * ⚠️ **两件还没做**（别照文档以为已就位）：① `callable`（谁能调）—— 等插件间调用面落地再加，
+ * 不提前给插件承诺一个没实现的字段；② "`path` 必须带自己的**完整引用**命名空间"—— 等身份改成
+ * `(origin, id)`（§3.2）之后才有 origin 可拼。
+ */
+export interface EndpointCapability {
   pluginId: string;
   path: string;
   permission?: string;
@@ -50,7 +58,7 @@ export interface ThemeCapability {
 
 export interface CapabilitySnapshot {
   routes: RouteCapability[];
-  webApis: ApiCapability[];
+  endpoints: EndpointCapability[];
   publishedEvents: EventCapability[];
   subscriptions: SubscriptionCapability[];
   themes: ThemeCapability[];
@@ -58,7 +66,7 @@ export interface CapabilitySnapshot {
 
 export class CapabilityRegistry {
   private readonly routes = new Map<string, RouteCapability>();
-  private readonly webApis = new Map<string, ApiCapability>();
+  private readonly endpoints = new Map<string, EndpointCapability>();
   /** topic → 唯一发布者（同 topic 两方发布 → 冲突） */
   private readonly published = new Map<string, EventCapability>();
   /** topic → 订阅者列表（订阅可多方，不冲突） */
@@ -75,7 +83,7 @@ export class CapabilityRegistry {
 
     // ① 先在临时集合里算完（全有或全无）
     const addRoutes: RouteCapability[] = [];
-    const addApis: ApiCapability[] = [];
+    const addEndpoints: EndpointCapability[] = [];
     const addEvents: EventCapability[] = [];
     const addSubs: SubscriptionCapability[] = [];
     const caps: string[] = [];
@@ -101,12 +109,12 @@ export class CapabilityRegistry {
       caps.push(`route:${r.path}`);
     }
 
-    for (const a of manifest.exports?.webApis ?? []) {
-      const owner = this.webApis.get(a.path);
+    for (const a of manifest.exports?.endpoints ?? []) {
+      const owner = this.endpoints.get(a.path);
       if (owner && owner.pluginId !== pluginId) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
           pluginId,
-          kind: 'webApi',
+          kind: 'endpoint',
           path: a.path,
           owner: owner.pluginId,
         });
@@ -115,13 +123,13 @@ export class CapabilityRegistry {
       if (a.permission !== undefined && !registry.get(a.permission)) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
           pluginId,
-          kind: 'webApi-permission',
+          kind: 'endpoint-permission',
           path: a.path,
           permission: a.permission,
         });
       }
-      addApis.push({ pluginId, path: a.path, permission: a.permission });
-      caps.push(`api:${a.path}`);
+      addEndpoints.push({ pluginId, path: a.path, permission: a.permission });
+      caps.push(`endpoint:${a.path}`);
     }
 
     for (const e of manifest.exports?.events?.publish ?? []) {
@@ -162,7 +170,7 @@ export class CapabilityRegistry {
 
     // ② 全部合法 → 提交（此时才动共享状态）
     for (const r of addRoutes) this.routes.set(r.path, r);
-    for (const a of addApis) this.webApis.set(a.path, a);
+    for (const a of addEndpoints) this.endpoints.set(a.path, a);
     for (const e of addEvents) this.published.set(e.topic, e);
     for (const s of addSubs) {
       const list = this.subscriptions.get(s.topic) ?? [];
@@ -176,7 +184,7 @@ export class CapabilityRegistry {
   /** 撤销该插件的全部登记（重载与卸载都走这里；幂等） */
   revoke(pluginId: string): void {
     for (const [k, v] of [...this.routes]) if (v.pluginId === pluginId) this.routes.delete(k);
-    for (const [k, v] of [...this.webApis]) if (v.pluginId === pluginId) this.webApis.delete(k);
+    for (const [k, v] of [...this.endpoints]) if (v.pluginId === pluginId) this.endpoints.delete(k);
     for (const [k, v] of [...this.published]) if (v.pluginId === pluginId) this.published.delete(k);
     for (const [k, list] of [...this.subscriptions]) {
       const kept = list.filter((s) => s.pluginId !== pluginId);
@@ -198,7 +206,7 @@ export class CapabilityRegistry {
   snapshot(): CapabilitySnapshot {
     return {
       routes: [...this.routes.values()],
-      webApis: [...this.webApis.values()],
+      endpoints: [...this.endpoints.values()],
       publishedEvents: [...this.published.values()],
       subscriptions: [...this.subscriptions.values()].flat(),
       themes: [...this.themes.values()],
@@ -208,7 +216,7 @@ export class CapabilityRegistry {
   /** 测试用：清空全部登记 */
   reset(): void {
     this.routes.clear();
-    this.webApis.clear();
+    this.endpoints.clear();
     this.published.clear();
     this.subscriptions.clear();
     this.themes.clear();

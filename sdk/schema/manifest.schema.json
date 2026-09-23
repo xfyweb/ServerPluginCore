@@ -345,7 +345,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "webApis": {
+        "endpoints": {
+          "description": "对外端点（原 webApis，改名理由见 docs/events-and-hooks-design.md §3.1）：调用者有两类——面板的 HTTP 网关与其他插件。今天只有前者有实现；'谁能调'（callable）与'path 带自己完整引用命名空间'随插件间调用面与 (origin, id) 身份一起落地",
           "type": "array",
           "items": {
             "type": "object",

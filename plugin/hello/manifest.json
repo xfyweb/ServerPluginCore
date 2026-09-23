@@ -37,7 +37,7 @@
   },
   "exports": {
     "routes": [{ "path": "/hello", "title": "示例插件", "icon": "sparkles", "order": 10 }],
-    "webApis": [{ "path": "/api/hello/status", "permission": "lifecycle.health" }],
+    "endpoints": [{ "path": "/api/hello/status", "permission": "lifecycle.health" }],
     "events": {
       "publish": [{ "topic": "hello.heartbeat", "classification": "public" }]
     }

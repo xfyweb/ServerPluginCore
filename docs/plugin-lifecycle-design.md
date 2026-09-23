@@ -133,7 +133,7 @@ export async function stop(ctx: PluginContext) {
 | 能力 | manifest 来源 | P1.5 |
 |---|---|---|
 | 路由（面板页面） | `exports.routes` | ✅ 登记进宿主路由表（前端渲染 P3） |
-| Web API | `exports.webApis` | ✅ 登记 + 网关按 `permission` 字段鉴权 |
+| 端点（API） | `exports.endpoints`（原 `webApis`） | ✅ 登记 + 网关按 `permission` 字段鉴权（网关属 P3）；"谁能调"（`callable`）与 path 命名空间随插件间调用面落地 |
 | 事件发布/订阅 | `exports.events` | ✅ 登记（事件面本体 P2：投递只给"声明订阅 + 声明依赖发布方 + 管理员批准"的插件，见 `docs/events-and-hooks-design.md` §1） |
 | **前端页面** | `exports.routes` + `frontend.mode` | ✅ 登记路由（`declarative` 渲染组件树 / `iframe` 提供 bundle，P3，见 intent-capture.md） |
 | **主题** | `type: theme` + `theme.json` | ✅ 登记主题令牌（无沙箱、无钩子，P3） |
@@ -142,7 +142,7 @@ export async function stop(ctx: PluginContext) {
 **为什么不由插件 `ctx.register()` 动态注册**：manifest 是审核对象与唯一事实源；loader 按 manifest 登记，卸载时可精确撤销，插件说了不算。
 
 - 登记冲突（路由撞车、topic 撞车、权限点未知）→ `PLUGIN_EXPORT_INVALID`，并**回滚本次已登记的部分**（不留半登记状态）。
-- **登记结果写进安装记录**（`capabilities: string[]`，如 `route:/docker`、`api:/api/docker/*`、`event:backup.done`、`template:mc.start`）：卸载按它精确撤销、CLI/面板可展示、审计可追溯；
+- **登记结果写进安装记录**（`capabilities: string[]`，如 `route:/docker`、`endpoint:/api/docker/*`、`event:backup.done`、`template:mc.start`）：卸载按它精确撤销、CLI/面板可展示、审计可追溯；
 - **重载必须幂等**：`reload` 先撤销该插件的全部已登记能力，再重新登记（避免重复绑定/能力叠加）；
 - **`disabled` 不做任何求值**：禁用的插件连 bundle 都不加载（不建沙箱、不执行任何插件代码）。
 
@@ -295,7 +295,7 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
     "version": { "code": 1, "name": "0.0.1" },
     "enabled": true,
     "grants": ["fs.write.home", "exec.template.git.version"],
-    "capabilities": ["route:/hello", "api:/api/hello/*"],
+    "capabilities": ["route:/hello", "endpoint:/api/hello/*"],
     "configPath": "config/plugins/xfy2412__hello.json",
     "state": "stopped",
     "installedAt": "2026-09-15T00:00:00Z",
@@ -400,7 +400,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `core/plugin/records.ts` | 记录读写（`plugins.json`），字段校验，与 P4 字段对齐 |
 | `core/plugin/loader.ts` | 单插件装载：沙箱创建 → 导出校验 → 能力登记 → init/start；以及卸载 |
 | `core/plugin/manager.ts` | **唯一状态机**：多插件、enable/disable/reload、失败重启策略、审计 |
-| `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / webApis / events / frontend；`execTemplates` 留槽） |
+| `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / endpoints / events / frontend；`execTemplates` 留槽） |
 | `core/plugin/config.ts` | 插件配置：`configSchema` 校验、默认值填充、只读快照与落盘 |
 | `core/plugin/theme.ts`（P3） | 主题包装载分支：登记 `theme.json` 令牌与资源；**不建沙箱、豁免 `init`** |
 | `core/config.ts` | 最小配置面（文件 + `SPC_*` 覆盖） |
@@ -471,7 +471,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `core/config.ts`（新） | 状态目录统一（`SPC_STATE_DIR` 基座 + `SPC_AUDIT_DIR`/`SPC_DATA_DIR`/`SPC_KEYRING_DIR` 覆盖）、配置面（限额 / `failedRestart` / 退避）、`SPC_*` 环境变量覆盖、`sanitizePluginId` |
 | `core/plugin/limits.ts`（新） | 四层限额装配、deadline 中断、`classifyVmFailure`（InternalError 三态归类）、job 泵 |
 | `core/plugin/records.ts`（新） | `plugins.json` 读写（原子写）、记录字段校验、状态枚举 |
-| `core/plugin/capabilities.ts`（新） | 能力登记/回滚/快照（routes / webApis / events / 订阅 / theme），**全有或全无** |
+| `core/plugin/capabilities.ts`（新） | 能力登记/回滚/快照（routes / endpoints / events / 订阅 / theme），**全有或全无** |
 | `core/plugin/config.ts`（新） | 插件配置：`configSchema` 校验 + 默认值填充 + 值文件读写 |
 | `core/plugin/loader.ts`（新） | 单插件装载（目录→依赖→沙箱→bundle→能力→init→start）与卸载（stop→撤销→dispose） |
 | `core/plugin/manager.ts`（新） | **唯一状态机** + 唯一锁、install/enable/disable/reload/uninstall/grant/revoke、失败重启策略 |

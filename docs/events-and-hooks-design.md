@@ -316,12 +316,12 @@ interface EventResult {
 
 | 面 | 现状 |
 |---|---|
-| `exports.webApis[]` | `{path, permission?}`，装载时登记进 `capabilities.ts`：**path 全局唯一**（撞车 → `PLUGIN_EXPORT_INVALID`）、`permission` **必须在核心注册表里已登记**（未知即拒绝，不许"先声明后实现"）、进 `capabilities`（`api:/api/docker/containers`）、卸载/重载精确撤销 |
+| 端点声明 | ✅ `exports.endpoints[]`（**原名 `exports.webApis`，2026-09-22 已改名**）：`{path, permission?}`，装载时登记进 `capabilities.ts`：**path 全局唯一**（撞车 → `PLUGIN_EXPORT_INVALID`）、`permission` **必须在核心注册表里已登记**（未知即拒绝，不许"先声明后实现"）、进 `capabilities`（`endpoint:/api/docker/containers`）、卸载/重载精确撤销 |
 | 谁能调到它 | **没有人**：核心还没有网关（HTTP 面属 P3），沙箱里也没有 HTTP 客户端；`dependencies.plugins` 只是可见性声明 + 依赖检查 |
 | 插件间调用方法 | ❌ 不存在 |
 | driver 的端点 | 走另一条路：`@host/api/<capability>`，注册**权限节点**，网关 + 驱动自身**双层鉴权** |
 
-### 3.1 声明面：`exports.webApis` 改名 `exports.endpoints`
+### 3.1 声明面：`exports.webApis` 改名 `exports.endpoints`（✅ 2026-09-22 已落地）
 
 ```json
 "exports": {
@@ -334,7 +334,7 @@ interface EventResult {
 - **改名理由**：这个面的**调用者有两类**（面板的 HTTP 网关 / 其他插件），`webApis` 既排除了插件、又暗示了实现路径；文档里"端点"这个词本来就在用；
 - **`callable` 缺省 `["panel"]`** —— fail-closed：不声明就不能被插件调用；
 - **`path` 强制以自己完整引用的命名空间开头**（`/<origin>/@user/name/…`）：今天只查"全局唯一"（先到先得），插件可以抢注别人的路径；
-- 影响面（**未发布，一次改到位、不做兼容层**）：`sdk/types.ts`、`sdk/schema/manifest.schema.json`、`core/plugin/capabilities.ts`（字段 + 快照键 + `kind: 'webApi'` → `'endpoint'`）、`core/__tests__/lifecycle.test.ts`、`plugin/hello/manifest.json`、`sdk/__tests__/manifest.test.ts`、文档 5 处。
+- 影响面（**未发布，一次改到位、不做兼容层**）：`sdk/types.ts`、`sdk/schema/manifest.schema.json`、`core/plugin/capabilities.ts`（字段 / 接口名 `ApiCapability`→`EndpointCapability` / 快照键 / `kind: 'webApi'`→`'endpoint'` / 能力标签 `api:`→`endpoint:`）、`core/__tests__/lifecycle.test.ts`、`plugin/hello/manifest.json`、`sdk/__tests__/manifest.test.ts`、`core/plugin/records.ts` 的注释、文档 6 处 —— **✅ 已全部改完（2026-09-22）**；⚠️ **`callable` 与"path 带自己的完整引用命名空间"不在这一批**（前者等插件间调用面落地，别提前承诺没实现的字段；后者要等身份改成 `(origin, id)` 才有 origin 可拼），见 §4.3。
 
 ### 3.2 身份：`(origin, id)`，引用一律用完整引用
 
@@ -510,7 +510,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 2. `sdk/types.ts` 的 `dependencies.plugins` **缺 `origin`**（schema 里有）；
 3. `install()` **没有来源入参**，且遇到同 id 已装会**静默覆盖**（无作者校验、`origin` 也不会被市场接管）⇒ 按 §3.2 的规则改成"同 `(origin, id)` 覆盖 / 同 id 不同源 = 两个插件"，并加**防同名顶替**校验（比作者公钥）。
 
-新码（只增不改）：`PLUGIN_AUTHOR_MISMATCH`（同 id 不同公钥）、reanchor 相关码；`kind: 'webApi'` 系列参数值随改名一起改成 `'endpoint'`。
+新码（只增不改）：`PLUGIN_AUTHOR_MISMATCH`（同 id 不同公钥）、reanchor 相关码；~~`kind: 'webApi'` 系列参数值~~ **✅ 已随改名改成 `'endpoint'` / `'endpoint-permission'`，能力标签也从 `api:` 改成 `endpoint:`**。
 
 ## 4. 与其它文档的同步清单、实施顺序与待定
 
@@ -525,7 +525,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | `plugin-lifecycle-design.md` §12-4 / §13 | `hook` 钩子形态**已定**（指向本文 §2）；`OnPluginLoadedEvent` 改成 §2.5 的**依赖变更定向通知**（不做广播） |
 | 三处**仓库外引用** | 已改写成无路径形式：`api-contract.md` §7 两处 + `core/__tests__/permissions-meta.test.ts` 一处；另清了 `core/__tests__/emulation-worker-threads.test.ts` 里一处同类措辞 |
 | `sdk/types.ts` / `sdk/host-api.d.ts` | ⏳ **未做（属代码面）**：`publish[].ask`、`request` / `on` / `off` 的类型。⚠️ 现在加类型＝给插件承诺一个还没实现的字段与方法 ⇒ 与事件面本体一起做 |
-| **本文 §3（调用面 + 带源身份）** | ⏳ **未做**：见 §4.3 的实施顺序；它会牵动 `records`（主键）/ `manager`（依赖检查、安装覆盖）/ CLI / `GET /api/plugins/{id}` 一大片，也要同步 `plugin-signature-design.md`（身份口径）与 `manifest-design.md`（`endpoints` + `callable` + 依赖的 `origin`/`author`） |
+| **本文 §3（调用面 + 带源身份）** | ⏳ **未做**（**步骤 ① `endpoints` 改名 ✅ 2026-09-22**）：见 §4.3 的实施顺序；它会牵动 `records`（主键）/ `manager`（依赖检查、安装覆盖）/ CLI / `GET /api/plugins/{id}` 一大片，也要同步 `plugin-signature-design.md`（身份口径）与 `manifest-design.md`（`endpoints` + `callable` + 依赖的 `origin`/`author`） |
 
 ### 4.2 待定
 
@@ -544,7 +544,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 
 | # | 做什么 | 为什么排这儿 |
 |---|---|---|
-| 1 | `endpoints` 改名 + `callable` + path 命名空间校验 | 纯重命名 + 一处校验，**好 review**；先把声明面定死 |
+| 1 | ~~`endpoints` 改名~~ **✅ 已做（2026-09-22）**；`callable` 与 path 命名空间**移到后面** | 纯重命名**好 review**、先做掉；`callable` 不该在调用面之前加（不承诺没实现的字段），path 命名空间要等 `(origin, id)` 有 origin 可拼 |
 | 2 | **身份主键改 `(origin, id)`**：记录 / 数据目录（`<sanitize(origin)>/`）/ 配置 / CLI / `GET /api/plugins/{id}` / 依赖检查；**本地来源具名** `local:<名字>`（`keyring` 加 `kind: 'local'`）；同 `(origin,id)` 公钥不同 ⇒ **拒装** | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
 | 3 | "引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点 | 授权面；与 §3.4 一起钉死 |
 | 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub` + `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖解析比公钥 + 作者名册 `authors.json` | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |

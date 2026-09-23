@@ -166,7 +166,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 ```
 
 - **两种注入分工**：`@host/api`（模块注入）= **能力**；`ctx`（参数注入）= **环境事实**（`{ pluginId, version, dataDir, manifest(只读), grants(只读), logger }`）；
-- **能力登记由 loader 依 manifest 完成**（routes / webApis / events；`execTemplates` 随 P2-5），插件不能自己注册；
+- **能力登记由 loader 依 manifest 完成**（routes / endpoints / events；`execTemplates` 随 P2-5），插件不能自己注册；
 - **四层限额**：CPU 中断（`setInterruptHandler`：死循环与正则灾难性回溯都拦得住）/ 内存（`setMemoryLimit`）/ 栈（`setMaxStackSize`）/ **宿主 API 自带超时**；
 - **契约要求（对宿主 API 作者）**：asyncify 挂起期间 VM 不执行代码，中断不触发——所以**任何可能阻塞或依赖外部输入的宿主 API 必须自带超时**（`exec.run` 的 `timeoutMs` 是样板）；
 - async 钩子由宿主泵 job 队列（`executePendingJobs`），未泵完即报 `PLUGIN_JOB_PENDING`。
@@ -311,7 +311,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
   "runtime": { "type": "quickjs", "esm": true },
   "permissions": [ { "name": "docker.read", "reason": "列出容器与镜像" } ],
   "exports": {
-    "webApis": [ { "path": "/api/docker/containers", "permission": "docker.read" } ],
+    "endpoints": [ { "path": "/api/docker/containers", "permission": "docker.read" } ],
     "routes": [ { "path": "/docker", "title": "Docker", "icon": "container" } ],
     "events": {
       "publish":   [ { "topic": "backup.done", "classification": "public" } ],

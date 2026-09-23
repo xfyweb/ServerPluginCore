@@ -114,7 +114,7 @@ export interface Manifest {
     reason?: string;
   }[];
   exports?: {
-    webApis?: {
+    endpoints?: {
       path: string;
       permission?: string;
     }[];

@@ -70,7 +70,7 @@ pnpm verify:sandbox     # 验证 QuickJS 补丁有效（8/8）
 [@xfy2412/hello] git: git version 2.x
 [@xfy2412/hello] started (heartbeat every 30s)
 [spc] plugins=1
-  · @xfy2412/hello@0.0.1 [running] enabled=true grants=[exec.template.git.version] caps=[route:/hello,api:/api/hello/status,event:hello.heartbeat]
+  · @xfy2412/hello@0.0.1 [running] enabled=true grants=[exec.template.git.version] caps=[route:/hello,endpoint:/api/hello/status,event:hello.heartbeat]
 [spc] stopping all plugins ...
 [spc] done.
 ```

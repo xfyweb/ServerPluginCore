@@ -20,7 +20,7 @@ const validFull = {
     { name: 'docker.write' },
   ],
   exports: {
-    webApis: [{ path: '/api/docker/containers', permission: 'docker.read' }],
+    endpoints: [{ path: '/api/docker/containers', permission: 'docker.read' }],
     routes: [{ path: '/docker', title: 'Docker', icon: 'container', order: 10 }],
     events: {
       publish: [{ topic: 'backup.done', classification: 'public' }],

@@ -251,11 +251,11 @@ test('start 抛错 → PLUGIN_START_FAILED，能力登记回滚', async () => {
     'start-throws',
     `export function init(){}
      export function start(){ throw new Error('nope'); }`,
-    { exports: { webApis: [{ path: '/api/start-throws' }] } },
+    { exports: { endpoints: [{ path: '/api/start-throws' }] } },
   );
   await rejects(() => manager.install(dir), 'PLUGIN_START_FAILED');
   assert.equal(manager.status(id('start-throws')).state, 'failed');
-  assert.equal(capabilities.snapshot().webApis.filter((w) => w.pluginId === id('start-throws')).length, 0);
+  assert.equal(capabilities.snapshot().endpoints.filter((w) => w.pluginId === id('start-throws')).length, 0);
 });
 
 // ---------------- 9/10 CPU 中断 ----------------
@@ -433,7 +433,7 @@ test('能力登记幂等：连续两次 reload 后登记表与 capabilities 完�
   const dir = makePlugin('caps-idem', `export function init(){}`, {
     exports: {
       routes: [{ path: '/caps-idem', title: 'x' }],
-      webApis: [{ path: '/api/caps-idem' }],
+      endpoints: [{ path: '/api/caps-idem' }],
       events: { publish: [{ topic: 'caps.idem', classification: 'public' }] },
     },
   });
@@ -444,7 +444,7 @@ test('能力登记幂等：连续两次 reload 后登记表与 capabilities 完�
   assert.deepEqual([...after.capabilities].sort(), expected);
   const snap = capabilities.snapshot();
   assert.equal(snap.routes.filter((r) => r.pluginId === id('caps-idem')).length, 1);
-  assert.equal(snap.webApis.filter((w) => w.pluginId === id('caps-idem')).length, 1);
+  assert.equal(snap.endpoints.filter((w) => w.pluginId === id('caps-idem')).length, 1);
   assert.equal(snap.publishedEvents.filter((e) => e.pluginId === id('caps-idem')).length, 1);
   await manager.disable(id('caps-idem'));
 });

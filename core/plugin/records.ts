@@ -51,7 +51,7 @@ export interface PluginRecord {
   enabled: boolean;
   /** 管理员逐点授予的权限点（精确，不接受通配） */
   grants: string[];
-  /** 该插件登记了哪些能力（撤销依据 + 展示 + 审计）：route:/x · api:/api/x · event:t · theme:id */
+  /** 该插件登记了哪些能力（撤销依据 + 展示 + 审计）：route:/x · endpoint:/api/x · event:t · theme:id */
   capabilities: string[];
   configPath: string;
   state: PluginState;

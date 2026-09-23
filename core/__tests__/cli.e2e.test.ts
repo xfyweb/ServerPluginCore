@@ -104,7 +104,7 @@ test('CLI plugin install：写记录 → 立即装载 → init/start 跑通', as
   assert.match(r.stdout, /已授予：exec\.template\.git\.version/);
   // 能力登记结果回落到记录
   assert.match(r.stdout, /能力：.*route:\/hello/);
-  assert.match(r.stdout, /能力：.*api:\/api\/hello\/status/);
+  assert.match(r.stdout, /能力：.*endpoint:\/api\/hello\/status/);
 });
 
 test('CLI plugin list：显示状态而不是"目录里有没有 manifest"', async () => {
