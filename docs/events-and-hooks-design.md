@@ -546,7 +546,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 |---|---|---|
 | 1 | ~~`endpoints` 改名~~ **✅ 已做（2026-09-22）**；`callable` 与 path 命名空间**移到后面** | 纯重命名**好 review**、先做掉；`callable` 不该在调用面之前加（不承诺没实现的字段），path 命名空间要等 `(origin, id)` 有 origin 可拼 |
 | 2 | ~~**身份主键改 `(origin, id)`**~~ **✅ 已做（2026-09-22）**：记录（含 `pluginRef`/`resolveRecord`）/ 数据目录（`<sanitize(origin)>/`）/ 配置 / 能力登记（条目改带 `ref`）/ CLI（`--source` + 打完整引用）/ HTTP（`source` 入参）/ 依赖检查（`dep.origin ?? 自己来源`）/ 生命周期审计与错误的 `pluginId` 改带 ref；本地来源具名 `local:<名字>` | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
-| **2b** | **运行时层的身份**：沙箱 `ctx.pluginId` / `hostApi` 审计仍是**裸 id**（本批刻意没动）⇒ 同 id 不同来源并存时，宿主 API 的审计条目分不清是谁。做法：给沙箱多传一个 `ref`，审计条目带 ref（`pluginId` 保留为兼容/展示） | ② 的必然尾巴；字段是**加**不是改（审计格式只增不改） |
+| **2b** | ~~**运行时层的身份**~~ **✅ 已做（2026-09-22）**：`AuditEntry` 加 `ref?`（**只增不改**，`pluginId` 保留）；`sandbox.ts` 用就地包装 `auditOwn` 让十几处审计一次到位；`hostApi.ts` 同理（`PluginHostContext.ref`）；`loader` 把 `ref` 同时传给 `buildHostApi` 与 `createSandbox`；判别用例：同 id 两来源的 `fs.write` 审计两条，`pluginId` 相同、`ref` 分得开 | ② 的必然尾巴（字段是**加**不是改，符合"审计格式只增不改"） |
 | 3 | "引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点 | 授权面；与 §3.4 一起钉死 |
 | 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub` + `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖解析比公钥 + 作者名册 `authors.json` | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
 | 5 | **调用本体**：`plugins.call`（投递链 + 有界重试 + 审计 `callId` + 深度上限） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提 |

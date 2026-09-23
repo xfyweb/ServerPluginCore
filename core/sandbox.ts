@@ -9,7 +9,7 @@ import {
   type QuickJSAsyncRuntime,
   type QuickJSHandle,
 } from 'quickjs-emscripten';
-import { audit, digest, digestParams } from './audit';
+import { audit as auditRaw, digest, digestParams, type AuditEntry } from './audit';
 import { DEFAULT_LIMITS, type PluginLimits } from './config';
 import { buildEnvFacts } from './emulated-env';
 import { SpcError, toErrorShape } from './errors';
@@ -408,6 +408,8 @@ export interface SandboxFacts {
 /** 插件沙箱上下文（来自 manifest 声明 + 安装记录的授予） */
 export interface SandboxOptions {
   pluginId: string;
+  /** **完整引用** `<origin>/<id>`（v4）：只用于审计消歧（身份 = `(origin, id)`，见 audit.ts 的 `ref`） */
+  ref?: string;
   /** manifest.permissions 提取的权限请求（可含通配） */
   permissions: string[];
   /** 管理员逐点授予的权限点（精确；宿主侧唯一真相，见 plugin-signature-design.md §9） */
@@ -600,6 +602,15 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   // （两处各写一份 `?? process.cwd()` 迟早会漂移）
   const dataDir = options.facts?.dataDir ?? process.cwd();
 
+  /**
+   * 本文件的审计都带"这个插件是谁"：`pluginId` 是裸 id（历史字段），`ref` 是**完整引用**（身份 = `(origin, id)`）。
+   * 就地包装一次（`auditOwn`），免得十几处调用点各写两遍 —— 漏一个就出现"分不清是谁"的条目。
+   * ⚠️ 调用点里原有的 `pluginId: options.pluginId` 会被这里**覆盖**：保留它只是为了让这次改动是"换个函数名"，
+   * 不必同时动十几处；**新写审计时两件都不用写**。
+   */
+  const auditOwn = (entry: Omit<AuditEntry, 'pluginId' | 'ref'> & { pluginId?: string }): void =>
+    auditRaw({ ...entry, pluginId: options.pluginId, ref: options.ref });
+
   // asyncify 变体：宿主 API 可返回 Promise（exec/网络必须异步，见设计结论）
   // 注：quickjs-emscripten@0.32.0 的 asyncify newRuntime 释放顺序有 bug（deleteRuntime 先于
   // QTS_FreeRuntime），上游 Issue #261（justjake/quickjs-emscripten，OPEN）已确认：
@@ -689,7 +700,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         } catch {
           // **失败路径也要落审计**：不落的话插件可以制造任意多次不可见交互，
           // 破坏"每个宿主调用一条审计"这条不变量。
-          audit({
+          auditOwn({
             ts: Date.now(),
             pluginId: options.pluginId,
             method: name,
@@ -722,7 +733,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         requested = resolved;
       } catch (err) {
         const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
-        audit({
+        auditOwn({
           ts: Date.now(),
           pluginId: options.pluginId,
           method: name,
@@ -741,7 +752,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       // ② 权限判定（宿主侧强制 + 审计）；判定只记码与参数摘要，不记本地化文本
       const check = checkPermission(registry, requested, options.permissions, options.grants ?? []);
       if (check.decision === 'deny') {
-        audit({
+        auditOwn({
           ts: Date.now(),
           pluginId: options.pluginId,
           method: name,
@@ -781,7 +792,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       // 失败路径**一律**回字符串信封，于是沙箱侧可以按「ArrayBuffer = 数据 / 字符串 = 错误」区分。
       const bytes = method.binaryResult ? toExactBytes(result) : null;
       const serialized = bytes ? null : JSON.stringify(result ?? null);
-      audit({
+      auditOwn({
         ts: Date.now(),
         pluginId: options.pluginId,
         method: name,
@@ -802,7 +813,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     /** 后段·失败：宿主错误 → 英文码 + 参数摘要入审计；插件面拿到 code/params（未分类错误记 INTERNAL） */
     function failCall(prep: PreparedCall, err: unknown): QuickJSHandle {
       const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
-      audit({
+      auditOwn({
         ts: Date.now(),
         pluginId: options.pluginId,
         method: name,
@@ -1280,7 +1291,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     const auditMethod = kind === 'timer' ? 'timers.tick' : 'watch.event';
     try {
       await invoke(kind, callbackId, kind, limits.timerTimeoutMs);
-      audit({
+      auditOwn({
         ts: Date.now(),
         pluginId: options.pluginId,
         method: auditMethod,
@@ -1293,7 +1304,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       });
     } catch (err) {
       const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
-      audit({
+      auditOwn({
         ts: Date.now(),
         pluginId: options.pluginId,
         method: auditMethod,
@@ -1462,7 +1473,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       );
 
       // 判定为加载失败：终止本次加载 + 记账（是否禁用该插件由上层策略决定，核心不崩）
-      audit({
+      auditOwn({
         ts: Date.now(),
         pluginId: options.pluginId,
         method: 'lifecycle.load',

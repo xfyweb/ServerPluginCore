@@ -42,6 +42,14 @@ export interface AuditError {
 export interface AuditEntry {
   ts: number;
   pluginId: string;
+  /**
+   * **完整引用** `<origin>/<id>`（v4）。
+   *
+   * 为什么要它：身份是 `(origin, id)` —— 同 id 不同来源是**两个插件**，只记裸 `pluginId` 时，
+   * 两条审计读起来分不清是谁（沙箱/宿主 API 这一层拿到的也只有一个 id）。
+   * **只增不改**：`pluginId` 保留原样（历史条目、既有展示与测试都还按它读）。
+   */
+  ref?: string;
   method: string;
   /** 机器可读目标（如 exec 模板对应的权限点 `exec.template.nginx.reload`）；非敏感，便于排障与统计 */
   target?: string;

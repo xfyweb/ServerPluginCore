@@ -468,6 +468,30 @@ test('管理命令传**裸 id** 且有两个来源 ⇒ PLUGIN_REF_AMBIGUOUS（�
   await manager.disable(`local:dev-b/${id('amb')}`);
 });
 
+test('审计消歧（②b）：同 id 两个来源的**宿主调用**条目，裸 id 相同但 ref 分得开', async () => {
+  const dir = makePlugin(
+    'audit-ref',
+    `import { fs } from '@host/api';
+     export function init(){ fs.write('a.txt', 'x'); }`,
+  );
+  await manager.install(dir, { source: 'local:dev-a' });
+  await manager.install(dir, { source: 'local:dev-b' });
+
+  const mine = auditEntries().filter(
+    (e) => e.method === 'fs.write' && (e.ref === `local:dev-a/${id('audit-ref')}` || e.ref === `local:dev-b/${id('audit-ref')}`),
+  );
+  assert.equal(mine.length, 2, `两次装载各应有一条 fs.write 审计，实际 ${mine.length}`);
+  // 裸 `pluginId` 是历史字段：两条**一样**（这正是需要 ref 的原因）
+  assert.deepEqual([...new Set(mine.map((e) => e.pluginId))], [id('audit-ref')]);
+  assert.deepEqual(
+    [...new Set(mine.map((e) => e.ref))].sort(),
+    [`local:dev-a/${id('audit-ref')}`, `local:dev-b/${id('audit-ref')}`],
+  );
+
+  await manager.disable(`local:dev-a/${id('audit-ref')}`);
+  await manager.disable(`local:dev-b/${id('audit-ref')}`);
+});
+
 test('来源非法 ⇒ PLUGIN_SOURCE_INVALID（`local:` 必须带合法名字；不接受路径分隔）', async () => {
   const dir = makePlugin('bad-src', `export function init(){}`);
   await rejects(() => manager.install(dir, { source: 'local:' }), 'PLUGIN_SOURCE_INVALID');

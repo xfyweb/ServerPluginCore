@@ -41,7 +41,7 @@ import { domainToASCII, domainToUnicode } from 'node:url';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { SpcError, toErrorShape } from './errors';
 import { HandleTable } from './plugin/handles';
-import { audit, digest } from './audit';
+import { audit as auditRaw, digest, type AuditEntry } from './audit';
 import { assertInodeMatch, validatePath } from './fs/safe-path';
 import type { PathValidation } from './fs/safe-path';
 import type { HostApi, HostArg, SandboxBridge } from './sandbox';
@@ -120,6 +120,8 @@ function asText(value: HostArg | undefined): string {
 /** 宿主 API 的每插件上下文（由装载器提供） */
 export interface PluginHostContext {
   pluginId: string;
+  /** **完整引用** `<origin>/<id>`（v4）：只用于审计消歧（身份 = `(origin, id)`，见 audit.ts 的 `ref`） */
+  ref?: string;
   /** 插件数据目录：fs 作用域、kv 落盘位置（宿主创建并保证存在） */
   dataDir: string;
   /** manifest 声明可发布的 topic（未声明即拒） */
@@ -850,6 +852,10 @@ function assertKvKey(key: string): void {
  * 发生在权限通过之后，未授权的插件拿不到校验结果做探测。
  */
 export function buildHostApi(ctx: PluginHostContext): HostApi {
+  // 本文件的审计都带"这个插件是谁"：`pluginId` 是裸 id（历史字段），`ref` 是**完整引用**（身份 = (origin, id)）。
+  // 就地包装一次，免得每个调用点各写两遍（漏一个就出现"分不清是谁"的条目）。
+  const auditOwn = (entry: Omit<AuditEntry, 'pluginId' | 'ref'>): void =>
+    auditRaw({ ...entry, pluginId: ctx.pluginId, ref: ctx.ref });
   const kv = createKvStore(ctx.dataDir);
   const topics = new Set<string>(ctx.declaredTopics ?? []);
   // kv 是合并写的，落盘点在沙箱的阶段边界：把 flushNow 挂到桥上（没有桥=独立探测，走 immediate 兜底）
@@ -863,9 +869,8 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     maxPerKind: { hash: MAX_DIGEST_HANDLES, hmac: MAX_DIGEST_HANDLES, fd: MAX_FD_HANDLES, watch: MAX_WATCH_HANDLES },
     // 审计 open/close/limit/release 四类事件（`durationMs: 0`：句柄事件没有"耗时"可言）
     onEvent: (event) =>
-      audit({
+      auditOwn({
         ts: Date.now(),
-        pluginId: ctx.pluginId,
         method: `handles.${event.type}`,
         target: event.id === '' ? undefined : event.id,
         paramsDigest: digest(event.kind),
@@ -879,9 +884,8 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       const leaked = handles.releaseAll();
       if (leaked.length > 0) {
         // 强制回收本身就是一条值得记的事：插件把资源留到了卸载（kind 分布比 id 更有用）
-        audit({
+        auditOwn({
           ts: Date.now(),
-          pluginId: ctx.pluginId,
           method: 'handles.forced-release',
           paramsDigest: digest(String(leaked.length)),
           result: 'ok',

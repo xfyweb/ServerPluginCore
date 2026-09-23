@@ -200,12 +200,15 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
   const sandbox = await createSandbox(
     buildHostApi({
       pluginId: id,
+      // 审计消歧：宿主 API 的条目也带完整引用（身份 = (origin, id)，见 core/audit.ts 的 `ref`）
+      ref,
       dataDir,
       declaredTopics: (manifest.exports?.events?.publish ?? []).map((e) => e.topic),
       bridge,
     }),
     {
       pluginId: id,
+      ref,
       permissions: manifest.permissions.map((p) => p.name),
       grants: record.grants,
       limits: deps.limits,
