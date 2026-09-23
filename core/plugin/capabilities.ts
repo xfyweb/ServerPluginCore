@@ -8,9 +8,16 @@
 //      任何冲突/非法 → PLUGIN_EXPORT_INVALID 且**不留半登记状态**（§3）。
 //   2) **重载幂等**：reload 先 revoke(pluginId) 再 register()，登记表与 capabilities 完全一致，不叠加。
 //   3) **登记结果可枚举**：capabilities: string[] 是撤销依据、CLI/面板展示与审计追溯的输入。
+//
+// 登记的**派生品**：权限点。别人的能力就是你授权时的候选集 —— 端点 ⇒ `plugins.call.<引用>.<path>`、
+// 发布的 topic ⇒ `events.subscribe.<引用>.<topic>`（点名怎么拼见 core/permissions/points.ts，
+// 为什么由**发布方/被调方**带出来见 docs/events-and-hooks-design.md §3.4/§3.7）。
+// 它们跟着 `revoke()` 一起消失：能力没了，那条路就没了，授权不该留着。
 import type { FrontendMode, Manifest } from '../../sdk/types';
 import { SpcError } from '../errors';
 import { registry } from '../permissions/registry';
+import { callPointOf, subscribePointOf } from '../permissions/points';
+import type { Confidentiality, ExecutionLevel, PermissionPoint } from '../permissions/registry';
 
 export interface RouteCapability {
   ref: string;
@@ -64,6 +71,28 @@ export interface CapabilitySnapshot {
   themes: ThemeCapability[];
 }
 
+/**
+ * 订阅点的等级**取发布方声明的分类**（docs/events-and-hooks-design.md §1.10）：
+ * 管理员在安装清单上看到的敏感度与真正会被投递的内容**同源** —— 两处各写一个值，迟早会出现
+ * "标着 public、搬的却是敏感数据"。`executionLevel` 必须 ≥ `confidentiality`（注册期不变式，
+ * 否则仲裁通道就是保密旁路），所以三档一一对齐。
+ */
+function subscribeLevel(classification: Confidentiality): {
+  confidentiality: Confidentiality;
+  executionLevel: ExecutionLevel;
+} {
+  if (classification === 'secret') return { confidentiality: 'secret', executionLevel: 'high' };
+  if (classification === 'sensitive') return { confidentiality: 'sensitive', executionLevel: 'medium' };
+  return { confidentiality: 'public', executionLevel: 'low' };
+}
+
+/**
+ * 调用点的等级：**端点本身不带分类**（它只有面板侧的 `permission`，那是另一条路，见 §3.7 最后一条），
+ * 所以这里只能给兜底值。这一次调用到底多敏感，由调用方在调用时声明（`CallMeta`）与用户目录覆盖合成
+ * （api-contract §7.1）——注册表里这一栏从来只是"没人声明时的兜底"。
+ */
+const CALL_POINT_LEVEL = { confidentiality: 'public', executionLevel: 'low' } as const;
+
 export class CapabilityRegistry {
   private readonly routes = new Map<string, RouteCapability>();
   private readonly endpoints = new Map<string, EndpointCapability>();
@@ -87,7 +116,40 @@ export class CapabilityRegistry {
     const addEndpoints: EndpointCapability[] = [];
     const addEvents: EventCapability[] = [];
     const addSubs: SubscriptionCapability[] = [];
+    const addPoints: PermissionPoint[] = [];
     const caps: string[] = [];
+
+    /**
+     * 认领一个动态权限点（能力的派生品）。**只在预演阶段调用** —— 冲突在这里就报错，
+     * 于是提交阶段只是把算好的东西放进去，不会半途失败（不变式 1）。
+     *
+     * 同一个 ref 重复认领是允许的（重载幂等：提交时先撤后登）；被**别的 ref 或核心静态点**占着同名点
+     * 才是冲突。点名里含完整引用，理论上撞不上，这条是"万一"的兜底（真撞上说明身份模型破了）。
+     */
+    const claimPoint = (
+      name: string,
+      level: { confidentiality: Confidentiality; executionLevel: ExecutionLevel },
+      spec: { group: string; description: string; kind: string; subject: string },
+    ): void => {
+      const existing = registry.get(name);
+      if (existing && existing.owner !== ref) {
+        throw new SpcError('PLUGIN_EXPORT_INVALID', {
+          pluginId: ref,
+          kind: spec.kind,
+          path: spec.subject,
+          owner: existing.owner ?? '<core>',
+        });
+      }
+      addPoints.push({
+        name,
+        group: spec.group,
+        description: spec.description,
+        scope: 'host',
+        grant: 'install',
+        owner: ref,
+        ...level,
+      });
+    };
 
     for (const r of manifest.exports?.routes ?? []) {
       const owner = this.routes.get(r.path);
@@ -131,6 +193,17 @@ export class CapabilityRegistry {
       }
       addEndpoints.push({ ref, path: a.path, permission: a.permission });
       caps.push(`endpoint:${a.path}`);
+      // 派生点：**谁能调这个端点**。`callPointOf` 会校验 path 能不能进点名，不合法即装载失败 ——
+      // 生成一个谁都声明不了的点，等于给管理员看一条不存在的路。
+      // ⚠️ 今天**每个**端点都会带出这个点：`callable`（"谁能调"）是 §3.7 的第二条门槛，
+      //    与 path 命名空间一起排在调用面本体（`plugins.call`）那一批 —— 在那之前，点是"可授权的候选集"，
+      //    而判定链第 1 步只认"点存不存在"。
+      claimPoint(callPointOf(ref, a.path), CALL_POINT_LEVEL, {
+        group: 'plugins',
+        description: `跨插件调用端点：${ref} ${a.path}`,
+        kind: 'endpoint',
+        subject: a.path,
+      });
     }
 
     for (const e of manifest.exports?.events?.publish ?? []) {
@@ -139,12 +212,24 @@ export class CapabilityRegistry {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
           pluginId: ref,
           kind: 'event',
+          // `path` 是 locale 文案里的占位符（`{kind} {path}`），`topic` 留作结构化字段
+          path: e.topic,
           topic: e.topic,
           owner: owner.ref,
         });
       }
       addEvents.push({ ref, topic: e.topic, classification: e.classification });
       caps.push(`event:${e.topic}`);
+      // 派生点：**谁能听这个 topic**。发布方带出来的点里**不含 `secret`**：
+      // `secret` 的 topic 本来就禁止跨插件（§1.12-2），给它设点等于承诺一条永远走不通的路。
+      if (e.classification !== 'secret') {
+        claimPoint(subscribePointOf(ref, e.topic), subscribeLevel(e.classification), {
+          group: 'events',
+          description: `订阅事件：${ref} ${e.topic}（分类 ${e.classification}）`,
+          kind: 'event',
+          subject: e.topic,
+        });
+      }
     }
 
     for (const s of manifest.exports?.events?.subscribe ?? []) {
@@ -178,6 +263,11 @@ export class CapabilityRegistry {
       list.push(s);
       this.subscriptions.set(s.topic, list);
     }
+    // 动态权限点：先撤后登 ⇒ 同一个 ref 重复登记（重载）不会撞上注册表的重复检查
+    for (const p of addPoints) {
+      registry.unregister(p.name);
+      registry.register(p);
+    }
 
     return caps;
   }
@@ -193,6 +283,9 @@ export class CapabilityRegistry {
       else this.subscriptions.set(k, kept);
     }
     for (const [k, v] of [...this.themes]) if (v.ref === ref) this.themes.delete(k);
+    // 派生的动态权限点：能力没了，那条路就没了。撤销**认 owner、不认点名**——
+    // 没有 owner 的静态点不受影响（否则一个插件的卸载能让全机器的 fs.read.data 消失）。
+    registry.unregisterOwnedBy(ref);
   }
 
   /** 某插件订阅的 topic 清单（意图捕获 §8.5：授出网能力时要把这一屏显示给管理员） */
@@ -214,13 +307,17 @@ export class CapabilityRegistry {
     };
   }
 
-  /** 测试用：清空全部登记 */
+  /** 测试用：清空全部登记（连带**派生的动态权限点**；核心写死的静态点不动） */
   reset(): void {
     this.routes.clear();
     this.endpoints.clear();
     this.published.clear();
     this.subscriptions.clear();
     this.themes.clear();
+    // 有 owner 的就是派生点（静态点没有这一栏）⇒ 精确清掉自己带出来的那些
+    for (const point of registry.all()) {
+      if (point.owner !== undefined) registry.unregister(point.name);
+    }
   }
 }
 

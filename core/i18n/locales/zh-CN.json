@@ -79,6 +79,7 @@
 
   "err.DUPLICATE_POINT": "权限点重复注册：{permission}",
   "err.LEVEL_ORDER_INVALID": "权限点 {permission} 定义错误：执行等级({executionLevel}) 低于保密等级({confidentiality})",
+  "err.PERMISSION_POINT_INVALID": "无法为 {pluginId} 生成权限点名：{value}（{reason}）",
 
   "err.SOURCE_NOT_CONFIGURED": "源未配置或不可用：{origin}（{reason}）",
   "err.SOURCE_DISABLED": "源已停用：{origin}",

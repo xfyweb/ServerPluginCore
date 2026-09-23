@@ -79,6 +79,7 @@
 
   "err.DUPLICATE_POINT": "Duplicate permission registration: {permission}",
   "err.LEVEL_ORDER_INVALID": "Invalid definition for permission {permission}: executionLevel ({executionLevel}) is lower than confidentiality ({confidentiality})",
+  "err.PERMISSION_POINT_INVALID": "Cannot derive a permission point name for {pluginId}: {value} ({reason})",
 
   "err.SOURCE_NOT_CONFIGURED": "Source not configured or unavailable: {origin} ({reason})",
   "err.SOURCE_DISABLED": "Source disabled: {origin}",

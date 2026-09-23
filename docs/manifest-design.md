@@ -73,6 +73,7 @@
 ## 三、关键设计点
 
 1. **请求 / 批准分离（Android 最核心的洞见）**：`permissions[]` 只是插件的**请求**；批准与否由宿主按"`scope` / `grant` 规则 + 管理员对 `explicit` 档的逐点授予"决定——**来源（签名 / 市场 / 本地安装）不参与**。Android 的 `uses-permission` 与系统最终授权是两回事——这是"manifest 声明权限"最成熟的工业先例，直接支撑 D5（manifest 声明是请求，宿主判定才是批准）。**安装清单本身就是同意书**（intent-capture §8.1）：`auto` / `install` 档一次看全即生效，只有 `explicit` 档才逐点问。
+   - **点名的两种写法**（2026-09-23）：**静态点** `<group>.<action>[.<scope>]`（`fs.write.data`、`exec.template.nginx.reload`）；**动态点**由**别人的能力**派生、名字里带**完整引用**——`plugins.call.<origin>/@user/name.<path>`（调它的某个端点）、`events.subscribe.<origin>/@user/name.<topic>`（订阅它发布的某个事件）。两种都**不接受 `*`**（通配声明等于把对方将来新增的端点一次性全授）。见 api-contract §6.1 与 `events-and-hooks-design.md` §3.4。
 
 2. **权限模型三条轴（v4：新增 `grant`）**：
    | 轴 | 字段 | 规则 |

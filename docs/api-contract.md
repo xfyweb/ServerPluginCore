@@ -237,6 +237,34 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 - **权限点不设 identity / trust 类字段**：它只描述"这个能力是什么、有多敏感"，不描述"谁有资格申请"。
 - 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
 
+### 6.1 动态点：由插件的能力派生出来的点
+
+注册表里除了上面那些**核心写死**的静态点，还有一类**运行时派生**的点 —— 它们不是被"定义"出来的，
+而是**某个插件登记了某个能力**时带出来的（`core/plugin/capabilities.ts`、`core/exec/install.ts`）：
+
+| 点 | 谁带出来的 | 档位 | 撤销 |
+|---|---|---|---|
+| `exec.template.<action>.<op>` | 核心模板注册表（装了 git 才有） | `host` / `explicit` | 模板注销 |
+| `plugins.call.<完整引用>.<path>` | **被调方**登记该端点 | `host` / `install` | 被调方卸载 / 重载 / 换源 |
+| `events.subscribe.<完整引用>.<topic>` | **发布方**登记该 topic | `host` / `install` | 发布方卸载 / 重载 / 换源 |
+
+四条不变式（都有用例钉着，见 `core/__tests__/dynamic-points.test.ts`）：
+
+1. **点名是"前缀 + 完整引用 + 尾段"的字面拼接**，含源的理由与单射证明见 `docs/events-and-hooks-design.md` §3.4
+   —— 身份是 `(origin, id)`，点名不带源就等于两个同名插件共用一条授权；
+2. **点必须记着 `owner`**（完整引用），撤销**按 owner 精确回收、不解析点名**；**没有 owner 的静态点永不受影响**
+   —— 否则一个插件的卸载能让全机器的 `fs.read.data` 消失。撤销幂等（卸载 / 重载 / 换源都走同一条路）；
+3. **点必须"可声明"**：尾段不含空白（`permissions[].name` 的 schema 表达不了 ⇒ 会生成一个谁都申请不了的点）、
+   不含 `*`（`matchDeclaration` 会当通配 ⇒ 一次声明把对方**将来新增**的端点/订阅全预授权了）。
+   不满足即**装载失败**（`PERMISSION_POINT_INVALID`），全有或全无，不留半登记；
+4. **等级取被引用方的声明**：订阅点取发布方的 `classification`（`secret` 的 topic **不设点** —— 它本就禁止跨插件，
+   设点等于承诺一条走不通的路）；调用点没有分类可依（端点只有面板侧的 `permission`），取 `public/low` 兜底，
+   这一次调用的真实等级由**调用时声明**与用户目录覆盖合成（§7.1）。
+
+> ⚠️ **`grant: install` 档的点，判定链不读 `grants`**（声明即生效）。所以"插件还在、只收回这一条"这种
+> **逐点/逐 topic 撤销**还没有落地形态 —— 它是 `docs/events-and-hooks-design.md` §4.2-2 的待定项；
+> 今天能收回的粒度是**卸载 / 重载 / 换源**（点随之消失）。
+
 ## 7. 权限判定（三态 + 匹配算法）
 
 判定链（宿主侧强制，D3 单一强制点）：
@@ -247,6 +275,9 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 3  grant = explicit 且管理员未授予    → NOT_GRANTED（auto / install 档免逐点授予，见 intent-capture §8）
 4  通过 → 作用域与参数校验在各方法内层（auto / install 通过时审计记 installed-grant）
 ```
+
+> **第 1 步的"登记"包含两类点**：核心写死的静态点（§6）与**由插件能力派生的动态点**（§6.1）。
+> 动态点随插件生灭 ⇒ 「被调方卸载了」这一步自然变成 `UNKNOWN_POINT`（fail-closed），不需要另写一条规则。
 
 > **✅ 已落地（2026-09，第四批 B）**。两处与早期草案的差别，都是落地时才定死的：
 >
@@ -297,7 +328,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 - `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / **出网类权限点（exec 模板或驱动插件注册的端点）** / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；
-- **声明可用通配，授予不可**：manifest 声明可写 `docker.*` / `*` 图省事；**管理员的授予必须是具体权限点**（不允许通配，防止一次点击等于全授）；
+- **声明与授予都不接受通配**：`permissions[].name` 是**固定分段**的形状（schema 的 pattern），`docker.*` / `*` 连 manifest 校验都过不了；管理员的授予同样必须逐个写具体点（`isValidGrantPoint`）。理由是同一条：**声明的用途是让管理员在安装时看见"这个插件要什么"**，`docker.*` 会把这张清单变成一句口号。⚠️ `core/permissions/check.ts` 的 `matchDeclaration` **仍保留**前缀通配与 `*` 的分支，但今天的 manifest 产生不出这种输入 ⇒ 那条路径**从真实插件走不到**（留着是因为它是判定链的通用能力，别把它当成"清单可以写通配"的依据）；
 - 插件 manifest 声明的是"请求"（uses-permission）；宿主按"`scope` + `grant` 档 + 管理员逐点授予"做出"批准"（请求/批准分离，Android 模型）；
 - **来源（签名 / 市场 / 本地安装）不参与判定**：有源与无源插件在权限面前完全平等（ADR-001 v3）。
 

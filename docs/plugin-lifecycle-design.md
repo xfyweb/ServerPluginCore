@@ -143,6 +143,7 @@ export async function stop(ctx: PluginContext) {
 
 - 登记冲突（路由撞车、topic 撞车、权限点未知）→ `PLUGIN_EXPORT_INVALID`，并**回滚本次已登记的部分**（不留半登记状态）。
 - **登记结果写进安装记录**（`capabilities: string[]`，如 `route:/docker`、`endpoint:/api/docker/*`、`event:backup.done`、`template:mc.start`）：卸载按它精确撤销、CLI/面板可展示、审计可追溯；
+- **派生品：动态权限点**（2026-09-23，见 api-contract §6.1 / `docs/events-and-hooks-design.md` §3.4）——登记端点会带出 `plugins.call.<完整引用>.<path>`（**谁能调它**）、登记发布 topic 会带出 `events.subscribe.<完整引用>.<topic>`（**谁能听它**）。它们跟着 `capabilities.revoke` 一起消失（按点的 `owner` 精确回收，**幂等**），因为"能力没了但点还在"就是一条指向不存在路径的**悬挂授权**。撤销**不解析点名**：来源别名可改，别名进了点名就等于把授权绑在一个会变的名字上。
 - **重载必须幂等**：`reload` 先撤销该插件的全部已登记能力，再重新登记（避免重复绑定/能力叠加）；
 - **`disabled` 不做任何求值**：禁用的插件连 bundle 都不加载（不建沙箱、不执行任何插件代码）。
 
@@ -414,7 +415,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | `core/plugin/records.ts` | 记录读写（`plugins.json`），字段校验，与 P4 字段对齐 |
 | `core/plugin/loader.ts` | 单插件装载：沙箱创建 → 导出校验 → 能力登记 → init/start；以及卸载 |
 | `core/plugin/manager.ts` | **唯一状态机**：多插件、enable/disable/reload、失败重启策略、审计 |
-| `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / endpoints / events / frontend；`execTemplates` 留槽） |
+| `core/plugin/capabilities.ts` | manifest 能力登记与回滚（routes / endpoints / events / frontend；`execTemplates` 留槽；**派生的动态权限点**随登记带出、随 `revoke` 回收） |
 | `core/plugin/config.ts` | 插件配置：`configSchema` 校验、默认值填充、只读快照与落盘 |
 | `core/plugin/theme.ts`（P3） | 主题包装载分支：登记 `theme.json` 令牌与资源；**不建沙箱、豁免 `init`** |
 | `core/config.ts` | 最小配置面（文件 + `SPC_*` 覆盖） |

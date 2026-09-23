@@ -108,7 +108,16 @@ export interface Manifest {
     /** ESM-only 硬约束，必须为 true */
     esm?: true;
   };
-  /** 权限请求：无默认放行，必须显式声明（type=theme 时不需要） */
+  /**
+   * 权限请求：无默认放行，必须显式声明（type=theme 时不需要）。
+   *
+   * 两种写法（schema 的 `pattern` 是语法闸，判定时还有一道语义闸「点名必须已被某个插件登记」）：
+   * - **静态点** `<group>.<action>[.<scope>]`，如 `fs.write.data`、`exec.template.nginx.reload`；
+   * - **动态点**（由别人的能力派生，跨插件引用一律带**完整引用**，见 docs/events-and-hooks-design.md §3.4）：
+   *   - `plugins.call.<origin>/@user/name.<path>` —— 调那个插件的某个端点；
+   *   - `events.subscribe.<origin>/@user/name.<topic>` —— 订阅那个插件发布的某个事件。
+   *   两者都**不接受 `*`**：通配声明 = 把对方**将来**新增的端点/订阅一次性全授了。
+   */
   permissions: {
     name: string;
     reason?: string;

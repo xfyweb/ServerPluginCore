@@ -331,7 +331,8 @@
         "additionalProperties": false,
         "properties": {
           "name": {
-            "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
+            "description": "权限点名。静态点：`<group>.<action>[.<scope>]`（如 fs.write.data）。动态点：核心按**完整引用**生成，只有两种 —— `plugins.call.<origin>/@user/name.<path>`（调用别人的端点）、`events.subscribe.<origin>/@user/name.<topic>`（订阅别人的事件），见 docs/events-and-hooks-design.md §3.4。动态点里**不许出现 `*`**：通配声明会把「新增端点/新增订阅走增量同意」（§3.7）变成一次性全授。语法之外还有一道语义闸：点名必须**已由某个插件登记**，未知即拒绝（UNKNOWN_POINT）",
+            "pattern": "^(?:[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)+|(?:plugins\\.call|events\\.subscribe)\\.[^\\s*]+)$",
             "type": "string"
           },
           "reason": {

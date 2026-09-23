@@ -88,6 +88,57 @@ test('非法：权限点命名不符合层级规范', () => {
   assert.equal(r.ok, false);
 });
 
+// ---- 动态权限点（docs/events-and-hooks-design.md §3.4）----
+//
+// 两种动态点由核心按**完整引用**生成：`plugins.call.<origin>/@user/name.<path>`、
+// `events.subscribe.<origin>/@user/name.<topic>`。它们必须能被**声明**（否则核心登记了一个谁都申请不了的点），
+// 而 `*` 必须继续被挡在门外（通配声明 = 把对方将来新增的端点/订阅一次性全授）。
+
+const withPermissions = (...names: string[]) => ({
+  ...validMinimal,
+  permissions: names.map((name) => ({ name })),
+});
+
+test('合法：动态点（跨插件调用 / 订阅）可以直接声明', () => {
+  for (const name of [
+    'plugins.call.market.spc.xfyweb.cn/@b/backup./api/backup/run',
+    'plugins.call.local:dev-a/@b/backup./api/x',
+    'events.subscribe.local:default/@a/sqlite.refresh.finished',
+    'plugins.call.localhost:8080/@b/backup./api/x',
+  ]) {
+    const r = validateManifest(withPermissions(name));
+    assert.equal(r.ok, true, `${name} 应当合法：${JSON.stringify(r.errors)}`);
+  }
+});
+
+test('非法：动态点里出现 `*`（通配声明会绕过"新增端点走增量同意"）', () => {
+  for (const name of [
+    'plugins.call.local:default/@b/backup.*',
+    'plugins.call.*',
+    'events.subscribe.local:default/@a/sqlite.*',
+    '*',
+  ]) {
+    const r = validateManifest(withPermissions(name));
+    assert.equal(r.ok, false, `${name} 不应通过`);
+  }
+});
+
+test('非法：动态点只有前缀、没有引用与尾段', () => {
+  // ⚠️ 裸的 `plugins.call` 不在此列：它**恰好也是**一个合法的静态点名字（`plugins` + `.call`），
+  // schema 拦不住它 —— 拦它的是语义闸（没登记过 ⇒ UNKNOWN_POINT）。schema 只描述语法。
+  for (const name of ['plugins.call.', 'events.subscribe.']) {
+    const r = validateManifest(withPermissions(name));
+    assert.equal(r.ok, false, `${name} 不应通过`);
+  }
+});
+
+test('静态点的既有约束不变（动态点分支没有把闸门一起放宽）', () => {
+  for (const name of ['Docker.Read', 'fs', 'fs.', '.fs.read', 'plugins.Call.a.b']) {
+    const r = validateManifest(withPermissions(name));
+    assert.equal(r.ok, false, `${name} 不应通过`);
+  }
+});
+
 test('非法：runtime.esm 为 false（ESM-only 硬约束）', () => {
   const r = validateManifest({ ...validMinimal, runtime: { type: 'quickjs', esm: false } });
   assert.equal(r.ok, false);

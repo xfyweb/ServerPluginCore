@@ -10,6 +10,11 @@
 // （`core/permissions/check.ts` 的 `resolveGrant` / `matchDeclaration` / `grants.includes`）——
 // 即 `scope: self` + `grant: auto` 的点免声明免授予，`grant: install|explicit` 的点才要声明与授予。
 // 本文件只登记；**别再按"scope = host ⇒ 未授予即拒绝"理解它**（那是 v3 的口径，已作废）。
+//
+// 动态点（`owner` 那一栏）：`exec.template.*`、`plugins.call.<引用>.<path>`、`events.subscribe.<引用>.<topic>`
+// 不是在这里写死的，而是**某个插件登记了对应能力**时派生出来的（`core/exec/install.ts`、
+// `core/plugin/capabilities.ts`），能力撤销时按 `owner` 一起回收。点名怎么拼、为什么这么拼，
+// 见 `core/permissions/points.ts` 的文件头。
 import { SpcError } from '../errors';
 
 /**
@@ -53,6 +58,17 @@ export interface PermissionPoint {
   confidentiality: Confidentiality;
   /** 默认执行等级 */
   executionLevel: ExecutionLevel;
+  /**
+   * **带出这个点的是谁**（完整引用 `<origin>/<id>`）。核心写死的静态点没有这一栏。
+   *
+   * 动态点（`exec.template.*` / `plugins.call.*` / `events.subscribe.*`）是"某个插件登记了某个能力"的
+   * **派生品**：那个能力撤销时点必须跟着消失，否则会留下"点还在、能力没了"的**悬挂授权**
+   * ——管理员批准的是一条已经不存在的路。所以点自己记着 owner，撤销时按 owner 精确回收，
+   * **不靠解析点名**（`core/permissions/points.ts` 头部说了为什么不反向解析）。
+   *
+   * ⚠️ 它**不参与判定**：判定链只读 `scope` / `grant` / 等级（ADR-001 v3：来源不参与权限判定）。
+   */
+  owner?: string;
 }
 
 /** `grant` 的缺省推导：`self → auto`、`host → explicit`（偏保守；要 `install` 必须显式写） */
@@ -91,6 +107,32 @@ export class PermissionRegistry {
 
   get(name: string): PermissionPoint | undefined {
     return this.points.get(name);
+  }
+
+  /**
+   * 撤销一个点（幂等：本来就没有 → `false`）。
+   * 调用方一般是 `unregisterOwnedBy`；单独用它的场合是"核心自己撤掉一个内置点"。
+   */
+  unregister(name: string): boolean {
+    return this.points.delete(name);
+  }
+
+  /**
+   * **撤销某插件带出来的全部动态点**（卸载 / 重载 / 换源都走这里；幂等），返回撤销条数。
+   *
+   * ⛔ 只撤 `owner` 精确匹配的：没有 owner 的静态点是核心契约的一部分，插件再怎么卸载也不许把它们拖走
+   * （否则一个插件的生命周期就能让全机器的 `fs.read.data` 消失）。
+   */
+  unregisterOwnedBy(owner: string): number {
+    let removed = 0;
+    // 先快照再删：遍历中改 Map 的键集是未定义行为
+    for (const [name, point] of [...this.points]) {
+      if (point.owner === owner) {
+        this.points.delete(name);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   all(): PermissionPoint[] {
