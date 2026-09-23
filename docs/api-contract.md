@@ -26,6 +26,19 @@
   - **全量清单的单一事实源是代码**：`core/errors.ts`（`SpcError`）+ 各模块的 code 类型联合（`PathErrorCode` / `CheckCode` / …）+ locales 的 `err.*`；本节与 module-emulation-design §7 只列举常用码与映射，**不重复维护全量列表**；
 - 超时与并发上限宿主侧强制（防失控，不防恶意）。
 
+### 2.1 面向用户的文案（`core/i18n/locales/*.json`）
+
+CLI 输出与 daemon 日志是**给运维/管理员看的**，`err.*` 是**给插件作者看的**；两者都不是内部设计文档的延伸。
+**规矩**（2026-09-23 定；检查工具 `tools/check-locales.mjs`）：
+
+1. **不引内部坐标**：ADR 编号、`§x`、文档文件名、阶段号（`P2`/`P5`）、内部字段名（`scope=` / `state=`）；
+2. **说清"发生了什么 + 该怎么办"**，**不解释设计理由**（理由归文档：例如"一次点击不该等于全授"属于设计论证，不该出现在管理员的报错里）；
+3. **不用口语**：陈述 + 建议，不用"别只开不关""绝不为一个插件卡住核心"这类；
+4. **占位符必须真被传**：模板里写了 `{x}` 就必须有人传（历史坑：`cli.plugin.line` 里的 `reserved={reserved}` 字段 v2 已删、参数从没传过，于是**界面上原样打出 `reserved={reserved}`**）；
+5. **两份 locale 必须同键同占位符**：`zh-CN.json` 与 `en-US.json` 的键集与 `{x}` 集合逐条一致（同样由那个工具守）。
+
+> 这五条是**机械可查**的：`node tools/check-locales.mjs`（键集/占位符/内部坐标/陈旧字段），进 CI 也不会有噪声。
+
 ## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
 
 > **完整设计见 `docs/events-and-hooks-design.md`**：**§1 事件面（P2 落地）** / **§2 钩子链（结论保留、P2 不做）**。
@@ -293,6 +306,8 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 每条调用落：`{ts, pluginId, ref?, method, target?, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, resultBytes?, suspendedMs?, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。`target` 是动态权限点的解析结果（如 `exec.template.nginx.reload`），`resultBytes` 是结果序列化字节数（exec 的命令输出量），两者都非敏感，便于排障与统计。
 
 > **v4 加 `ref`（只增不改）**：身份是 `(origin, id)` —— 同 id 不同来源是**两个插件**，只记裸 `pluginId` 时两条审计读起来分不清是谁。`ref` = **完整引用** `<origin>/<id>`；`pluginId` 保留原样（历史条目与既有展示仍按它读）。
+>
+> **核心自身的条目**（不是某个插件干的）用 `pluginId: "<core>"`（不可能与插件 id 撞：插件 id 形如 `@user/name`）；目前只有 `core.shutdown` 一条（停机收尾时落，见 management-channel.md §4 的停机契约）。
 
 **生命周期条目**（plugin-lifecycle-design §7）：`lifecycle.load`（求值失败）、`lifecycle.init` / `lifecycle.start` / `lifecycle.stop` / `lifecycle.unload`（每个钩子，`result: ok/error` + durationMs）、`lifecycle.restart`（`failedRestart=auto` 触发，带 `attempts`）；`target` = 插件 ID。**定时器回调**落 `timers.tick`（`target` = timerId，`paramsDigest` = callbackId 摘要）——它不经过宿主桥，所以由沙箱侧显式记账。
 

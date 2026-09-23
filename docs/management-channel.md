@@ -74,8 +74,19 @@ CLI:
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/api/status` | GET | 核心健康、版本、契约版本 |
-| `/api/plugins` | GET | 插件列表（扫描插件目录 + manifest 校验结果） |
+| `/api/plugins` | GET | 插件列表（记录驱动：state/grants/capabilities，不是扫目录） |
 | `/api/audit?tail=N` | GET | 审计日志尾部 |
+| `/api/daemon/shutdown` | POST | **优雅停机**（2026-09-23）：先回 200，再异步走完整停机路径 |
+
+> **停机契约**（`POST /api/daemon/shutdown` 与 `SIGINT`/`SIGTERM` 走**同一条**路径，退出码是契约）：
+> ① 不再接新请求 + **主动断开空闲连接**（`server.closeIdleConnections()` —— 只 `server.close()` 会等
+> keep-alive 连接自然断开，那正是"Ctrl+C 退不掉、只能强杀 255"的根因）；
+> ② `stopAll('shutdown', { budgetMs })`：每个插件的 stop 预算被压成 `min(自己的 stopTimeoutMs, 剩余总预算)`
+> （插件 `stop` 里的死循环会**同步阻塞宿主**，全局定时器轮不上，只能在进沙箱前压预算）；
+> ③ 落一条 `core.shutdown` 审计（actor = `<core>`）+ flush 审计缓冲，然后退出。
+> **退出码**：优雅停完 = `0`；第二次信号 = `130`；停机超时兜底 = `124`；停机自身出错 = `1`。
+> CLI 入口：**`spc daemon stop`**（Windows 上这是唯一优雅的停法：Ctrl+C 只对前台控制台有效、`taskkill` 是硬杀）。
+> 超时可用 `SPC_SHUTDOWN_TIMEOUT_MS` 覆盖（默认 10s）。
 
 后续：`/api/plugins/{id}`（enable/disable/install）、面板专用端点（P3）。
 

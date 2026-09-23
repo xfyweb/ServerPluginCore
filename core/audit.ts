@@ -108,6 +108,30 @@ export function digest(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
 
+/**
+ * 把"写盘失败时攒在内存里的"条目再写一次 —— **停机前必须调**：进程一退，缓冲就没了。
+ *
+ * 为什么之前没有它是个洞：`audit()` 写失败会进缓冲，但没有任何地方把它排空 ——
+ * 也就是说"审计写不进去"这件事在**运行期**是静默的，直到进程退出才发现账丢了。
+ *
+ * @returns 写成功的条数；仍写不进去时返回**负数**（= 还留在缓冲里的条数）
+ */
+export function flushAudit(): number {
+  if (buffer.length === 0) return 0;
+  const pending = buffer;
+  buffer = [];
+  bufferBytes = 0;
+  try {
+    appendFileSync(AUDIT_FILE, pending.join('\n') + '\n', 'utf8');
+    return pending.length;
+  } catch {
+    // 还是写不进去：**放回缓冲**（并累加字节数），让调用方知道账还在手里
+    buffer = pending.concat(buffer);
+    for (const line of pending) bufferBytes += Buffer.byteLength(line);
+    return -pending.length;
+  }
+}
+
 /** 结构化参数 → 摘要（审计用；无参数返回 undefined） */
 export function digestParams(params?: Record<string, string>): string | undefined {
   if (!params || Object.keys(params).length === 0) return undefined;

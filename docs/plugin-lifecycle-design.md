@@ -276,6 +276,20 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 - **`stop` 抛错或超时都继续卸载**（只告警 + 审计）：绝不因一个插件卡住核心停机；
 - 卸载顺序固定：`stop` → 撤销能力登记 → `dispose`（Scope 顺序释放 handle）。
 
+**核心停机契约**（2026-09-23；入口 = `SIGINT`/`SIGTERM` 与 `POST /api/daemon/shutdown`，**同一条路径**）：
+
+| 项 | 约定 |
+|---|---|
+| 收尾顺序 | 不再接新请求 + **主动断开空闲连接** → `stopAll('shutdown', { budgetMs })` → 落 `core.shutdown` 审计 → **flush 审计缓冲** → 退出 |
+| 插件的 stop 预算 | `min(自己的 stopTimeoutMs, 停机剩余总预算)`。**必须有这一条**：插件 `stop` 里的死循环会**同步阻塞宿主**，全局超时定时器根本轮不上（实测 3s 才回来）⇒ 只能在进沙箱前压预算，否则 N 个卡住的插件 = N × stopTimeoutMs |
+| 预算用尽 | 该插件**放弃等待**（进程反正要退），记一条 `lifecycle.shutdown-abandoned` 审计 |
+| 退出码 | 优雅停完 `0` / 第二次信号 `130` / 停机硬超时兜底 `124` / 停机自身出错 `1` |
+| 超时 | `SPC_SHUTDOWN_TIMEOUT_MS`（默认 10s），留给收尾的余量 = `min(500ms, 总预算/4)` |
+
+> 为什么"只 `server.close()`"不够：它会等所有连接自然断开，而 CLI 用的是全局 agent
+> （Node ≥19 默认 `keepAlive: true`）⇒ 回调几秒不来、面板挂着连接时**永不到来**。
+> 这就是"只能 Ctrl+C 且退出码 255"的根因 —— **不是没接信号**（信号早就接了，是收不了尾）。
+
 **错误码**（只增不改）：`PLUGIN_NOT_FOUND`、`PLUGIN_DIR_MISSING`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_NO_ENTRY`、`PLUGIN_EXPORT_INVALID`、`PLUGIN_DEPENDENCY_MISSING`、`PLUGIN_DEPENDENCY_NOT_LOADED`、`PLUGIN_DEPENDENCY_CYCLE`、`PLUGIN_IN_USE`、`PLUGIN_LOAD_FAILED`、`PLUGIN_LOAD_TIMEOUT`、`PLUGIN_INIT_FAILED`、`PLUGIN_INIT_TIMEOUT`、`PLUGIN_START_FAILED`、`PLUGIN_START_TIMEOUT`、`PLUGIN_STOP_TIMEOUT`、`PLUGIN_MEMORY_LIMIT`、`PLUGIN_STACK_LIMIT`、`PLUGIN_JOB_PENDING`、`PLUGIN_BUSY`（同一 VM 已有阶段在跑，`params.busyWith` 说明是谁）、`PLUGIN_CONFIG_INVALID`、`PLUGIN_DISABLED`、`PLUGIN_ALREADY_RUNNING`、`PLUGIN_FILE_MISMATCH`（P4 预留）。~~`PLUGIN_RESERVED`~~ 随 `reserved` 特性一并**退役**（v2，未发布过，不占契约位）。
 
 > **装载失败也分"限额"与"缺陷"**：`runModule` 与钩子共用同一套归类（`classifyVmFailure` + `hookError`），

@@ -143,7 +143,7 @@ test('CLI plugin grant/revoke：只接受具体权限点（通配被拒），并
     env(),
   );
   assert.equal(revoked.code, 0, revoked.stderr);
-  assert.match(revoked.stdout, /⚠ 授权\/配置已变更，需要 reload 才生效/);
+  assert.match(revoked.stdout, /授权或配置已变更：需 reload 后生效/);
 
   const reloaded = await run(['core/cli.ts', 'plugin', 'reload', '@xfy2412/hello'], env());
   assert.equal(reloaded.code, 0, reloaded.stderr);

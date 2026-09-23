@@ -310,7 +310,7 @@ export class PluginManager {
     }
   }
 
-  private async stopAndUnload(ref: string, reason: StopReason): Promise<void> {
+  private async stopAndUnload(ref: string, reason: StopReason, limits = this.limits()): Promise<void> {
     const run = this.loaded.get(ref);
     const record = findRecord(loadRecords(), ref);
     if (!run) {
@@ -322,7 +322,7 @@ export class PluginManager {
       return;
     }
     this.setState(ref, 'stopping');
-    await unloadPlugin(run, reason, this.limits());
+    await unloadPlugin(run, reason, limits);
     this.loaded.delete(ref);
     this.patchRecord(ref, { capabilities: [] });
   }
@@ -540,13 +540,41 @@ export class PluginManager {
     });
   }
 
-  stopAll(reason: StopReason = 'shutdown'): Promise<void> {
+  /**
+   * 停机：逐个 stop → 撤销能力登记 → dispose。**stop 抛错或超时都继续**（一个插件不该拖住核心停机）。
+   *
+   * `opts.budgetMs` = **整场停机的总预算**：每个插件的 stop 预算被压成
+   * `min(它自己的 stopTimeoutMs, 剩余总预算)`。
+   * 为什么必须有这一条：插件的 `stop` 里死循环时，**宿主会被同步阻塞** ——
+   * 那种阻塞连"全局超时定时器"都轮不上（事件循环被占住），所以只能在**进沙箱之前**
+   * 就把这一次的 stop 预算压小；否则 N 个卡住的插件就是 N × stopTimeoutMs，
+   * "停机要等多久"随插件数线性增长。预算用尽的插件**放弃等待**并记一笔审计（进程反正要退）。
+   */
+  stopAll(reason: StopReason = 'shutdown', opts: { budgetMs?: number } = {}): Promise<void> {
     return this.withLock(async () => {
       for (const timer of this.restartTimers) clearTimeout(timer);
       this.restartTimers.clear();
+      const deadline =
+        opts.budgetMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + opts.budgetMs;
+      const base = this.limits();
       for (const ref of [...this.loaded.keys()]) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          console.warn(`[plugin] 停机预算用尽，放弃等待 ${ref}`);
+          audit({
+            ts: Date.now(),
+            pluginId: ref,
+            method: 'lifecycle.shutdown-abandoned',
+            paramsDigest: digestParams({ reason }) ?? digest(ref),
+            result: 'error',
+            error: { code: 'SHUTDOWN_BUDGET_EXHAUSTED' },
+            durationMs: 0,
+          });
+          continue;
+        }
         try {
-          await this.stopAndUnload(ref, reason);
+          const limits = { ...base, stopTimeoutMs: Math.min(base.stopTimeoutMs, remaining) };
+          await this.stopAndUnload(ref, reason, limits);
           const record = findRecord(loadRecords(), ref);
           this.patchRecord(ref, { state: record?.enabled ? 'stopped' : 'disabled' });
         } catch (err) {

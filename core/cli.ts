@@ -238,6 +238,22 @@ async function main() {
     return;
   }
 
+  if (cmd === 'daemon') {
+    const sub = args[0];
+    if (sub !== 'stop') {
+      console.log(t('cli.daemon.usage'));
+      return;
+    }
+    const token = await acquireToken();
+    const r = (await httpJson('POST', '/api/daemon/shutdown', token)) as {
+      status: number;
+      body: { ok?: boolean; pid?: number };
+    };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.daemon.stop.fail');
+    console.log(t('cli.daemon.stop.ok', { pid: String(r.body.pid ?? '?') }));
+    return;
+  }
+
   if (cmd === 'plugin') {
     await pluginCommand(args[0], args.slice(1));
     return;

@@ -86,7 +86,12 @@ pnpm verify:sandbox     # 验证 QuickJS 补丁有效（8/8）
 pnpm daemon                    # 起核心（127.0.0.1，ed25519 握手鉴权）
 pnpm spc plugin list           # 另一个终端
 pnpm spc plugin status @xfy2412/hello
+pnpm spc daemon stop           # 停止核心
 ```
+
+> **停机**：优先用 `pnpm spc daemon stop`（走 HTTP，跨平台一致 —— Windows 上 Ctrl+C 只对前台控制台有效，这是更可靠的方式）。
+> 前台运行时 `Ctrl+C` 也走同一条路径；**连按两次** = 强制退出（退出码 130），
+> 停机超时（默认 10s，`SPC_SHUTDOWN_TIMEOUT_MS` 可覆盖）兜底退出 124。
 
 ## 插件类型
 
