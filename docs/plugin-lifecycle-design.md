@@ -302,10 +302,13 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
     "lastError": null,
     "restartAttempts": 0,
 
-    // ↓ 字段与 plugin-signature-design.md §9 对齐；本地安装为 null（unanchored）
-    "origin": null,
+    // ↓ 字段与 plugin-signature-design.md §9 对齐
+    //   v4 起：本地安装的来源是**具名的本地源**（`local:<名字>`），`unanchored` 指"没有市场签名 / 更新渠道"；
+    //   身份是 `(origin, id)`，另记 `authorFingerprint`（作者公钥指纹，依赖身份判据）
+    "origin": "local:default",
     "signedBy": null,
-    "verifiedMeta": null
+    "verifiedMeta": null,
+    "authorFingerprint": "sha256:<作者公钥指纹>"
   }]
 }
 ```
