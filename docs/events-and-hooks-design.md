@@ -356,7 +356,7 @@ interface EventResult {
 | 能力登记 | `route:` / `api:` / `event:` 用裸 id | **带完整引用**（否则两个同名插件的路由与 path 撞车） |
 | 依赖检查 | `.map(d => d.id)` —— **只比 id** | 按 **`(origin, id)`** + 版本区间 + 作者公钥（§3.5） |
 
-- **本地源的登记**：进 `keyring`，新增一类条目 **`kind: 'local'`**（无公钥、不可轮换、不参与市场验签）—— 管理员只需要在一个地方看"这台机器上有哪些来源（市场 + 本地）"，而 `origin` 字符串要同时被依赖声明、权限点名、reanchor 用到，统一在一处最省事。要放宽两条现有校验（origin 必须是域名、必须带公钥），文档里写明**本地源不提供更新渠道**；
+- **本地来源**（✅ 已落地为**命名空间**）：`local:<名字>` 由 `core/config.ts` 的 `isValidSource` / `sanitizeOrigin` 校验并落成目录段（`local:dev-a` → `local_dev-a`）；`manager.install(dir, { source })` 决定归属，缺省 `local:default`。⚠️ **`keyring` 里的 `kind: 'local'` 条目这一批没做**：今天没有任何代码需要"本地源的元数据"（它不可 fetch、没有公钥、不能轮换），加了就是一个没人读的字段 ⇒ 与"不提前承诺没实现的字段"同一条规矩，留到 **P4 安装流**（那时管理员要在面板上看见源清单）；
 - **存量迁移不做**（还没发布）：老目录按 `<sanitize(origin)>/` 规则重建即可。
 
 ### 3.4 权限点名带源
@@ -525,7 +525,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | `plugin-lifecycle-design.md` §12-4 / §13 | `hook` 钩子形态**已定**（指向本文 §2）；`OnPluginLoadedEvent` 改成 §2.5 的**依赖变更定向通知**（不做广播） |
 | 三处**仓库外引用** | 已改写成无路径形式：`api-contract.md` §7 两处 + `core/__tests__/permissions-meta.test.ts` 一处；另清了 `core/__tests__/emulation-worker-threads.test.ts` 里一处同类措辞 |
 | `sdk/types.ts` / `sdk/host-api.d.ts` | ⏳ **未做（属代码面）**：`publish[].ask`、`request` / `on` / `off` 的类型。⚠️ 现在加类型＝给插件承诺一个还没实现的字段与方法 ⇒ 与事件面本体一起做 |
-| **本文 §3（调用面 + 带源身份）** | ⏳ **未做**（**步骤 ① `endpoints` 改名 ✅ 2026-09-22**）：见 §4.3 的实施顺序；它会牵动 `records`（主键）/ `manager`（依赖检查、安装覆盖）/ CLI / `GET /api/plugins/{id}` 一大片，也要同步 `plugin-signature-design.md`（身份口径）与 `manifest-design.md`（`endpoints` + `callable` + 依赖的 `origin`/`author`） |
+| **本文 §3（调用面 + 带源身份）** | ⏳ **部分未做**：**① `endpoints` 改名 ✅、② 身份主键 `(origin, id)` + 本地来源具名 ✅（2026-09-22）**；剩下的见 §4.3（③ 调用/订阅动态点 → ④ 作者签名 → ⑤ `plugins.call` 本体 → ⑥ reanchor → ⑦ 构建层签名）|
 
 ### 4.2 待定
 
@@ -536,7 +536,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 5. 意见的 `decision` 取值要不要收敛成固定枚举（现在是"约定 + 允许扩展字符串"）；
 6. **`releasedAt` 归谁写**（⚠️ **这条要用户拍**）：元数据由构建工具产出、市场只追加签名 ⇒ 若 `releasedAt` 由构建期填，市场只能"核对后拒签"而不能改写；但它同时是**授权判定锚点**（`market-license-design.md` §3：可下载 ⟺ `releasedAt ≤ maintenanceUntil`）。本文按"**构建期填 + 市场核对/拒签**"写；要让市场自己定这个值，就得改成"市场改写字节 + 作者签名缩小覆盖范围"，代价更大。**将来市场若要加自己的事实，用独立的签名对象，不要改写 meta**；
 7. **作者私钥怎么保管**（`spc keygen` 的形态）：私钥文件格式与路径约定、要不要 passphrase —— 它**永不进包**，文档建议 `chmod 600`；不做 passphrase 也说得过去（它保护的是"身份连续性"，不是数据机密性）；
-8. **本地源在 keyring 的具体形状**：`kind: 'local'` 要放宽"origin 必须是域名"与"必须带公钥"两条校验，写法落定后同步 `plugin-signature-design.md`；
+8. **本地源在 keyring 的具体形状**（**已决定后置到 P4 安装流**）：`kind: 'local'` 要放宽"origin 必须是域名"与"必须带公钥"两条校验；今天没有任何代码需要它（不可 fetch、无公钥、无轮换）⇒ 本批只做了**命名空间**（`local:<名字>` 的校验与目录段），条目留到面板要展示源清单时再加；
 9. **端点 `path` 命名空间的前缀规则**：本文写"以自己完整引用的命名空间开头"，具体是 `/<origin>/@user/name/…` 还是 `/<user>/<name>/…`（后者短但跨源会撞）——落地时定；
 10. **`plugins.call` 这个组名**：暂定，落地前可再议（备选 `peers.call`）。
 
@@ -545,7 +545,8 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | # | 做什么 | 为什么排这儿 |
 |---|---|---|
 | 1 | ~~`endpoints` 改名~~ **✅ 已做（2026-09-22）**；`callable` 与 path 命名空间**移到后面** | 纯重命名**好 review**、先做掉；`callable` 不该在调用面之前加（不承诺没实现的字段），path 命名空间要等 `(origin, id)` 有 origin 可拼 |
-| 2 | **身份主键改 `(origin, id)`**：记录 / 数据目录（`<sanitize(origin)>/`）/ 配置 / CLI / `GET /api/plugins/{id}` / 依赖检查；**本地来源具名** `local:<名字>`（`keyring` 加 `kind: 'local'`）；同 `(origin,id)` 公钥不同 ⇒ **拒装** | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
+| 2 | ~~**身份主键改 `(origin, id)`**~~ **✅ 已做（2026-09-22）**：记录（含 `pluginRef`/`resolveRecord`）/ 数据目录（`<sanitize(origin)>/`）/ 配置 / 能力登记（条目改带 `ref`）/ CLI（`--source` + 打完整引用）/ HTTP（`source` 入参）/ 依赖检查（`dep.origin ?? 自己来源`）/ 生命周期审计与错误的 `pluginId` 改带 ref；本地来源具名 `local:<名字>` | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
+| **2b** | **运行时层的身份**：沙箱 `ctx.pluginId` / `hostApi` 审计仍是**裸 id**（本批刻意没动）⇒ 同 id 不同来源并存时，宿主 API 的审计条目分不清是谁。做法：给沙箱多传一个 `ref`，审计条目带 ref（`pluginId` 保留为兼容/展示） | ② 的必然尾巴；字段是**加**不是改（审计格式只增不改） |
 | 3 | "引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点 | 授权面；与 §3.4 一起钉死 |
 | 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub` + `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖解析比公钥 + 作者名册 `authors.json` | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
 | 5 | **调用本体**：`plugins.call`（投递链 + 有界重试 + 审计 `callId` + 深度上限） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提 |

@@ -118,6 +118,8 @@
   "err.RECORDS_INVALID": "安装记录非法，拒绝启动以免半可信状态：{file}（{reason}）",
 
   "err.PLUGIN_NOT_FOUND": "插件不存在：{pluginId}",
+  "err.PLUGIN_REF_AMBIGUOUS": "插件引用有歧义：{input} 匹配到多个来源（{refs}）——请写完整引用 <来源>/<插件 id>",
+  "err.PLUGIN_SOURCE_INVALID": "来源非法：{origin}（应为 `local:<名字>` 或市场域名）",
   "err.PLUGIN_DIR_MISSING": "插件目录不存在：{dir}",
   "err.PLUGIN_MANIFEST_INVALID": "插件清单非法：{pluginId}（{detail}）",
   "err.PLUGIN_NO_ENTRY": "插件未导出必需的 init 函数：{pluginId}",

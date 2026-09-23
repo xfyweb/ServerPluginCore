@@ -20,8 +20,10 @@ const { createKvStore } = await import('../hostApi.ts');
 
 const id = (n: string) => `@spc/${n}`;
 const sanitized = (p: string) => p.replace(/^@/, '').replace(/\//g, '__');
+// 数据目录按 **(origin, id)** 分层（`<state>/data/plugins/<来源段>/<id 段>/`）：夹具都装在默认本地来源下
+const { DEFAULT_LOCAL_SOURCE, sanitizeOrigin } = await import('../config.ts');
 const dataPath = (pluginId: string, file: string) =>
-  join(TMP, 'data', 'plugins', sanitized(pluginId), file);
+  join(TMP, 'data', 'plugins', sanitizeOrigin(DEFAULT_LOCAL_SOURCE), sanitized(pluginId), file);
 
 function readData(pluginId: string, file: string): string {
   return readFileSync(dataPath(pluginId, file), 'utf8');
@@ -165,7 +167,7 @@ test('fs：越界（数据目录之外）一律 PATH_OUT_OF_SCOPE，插件按 co
     'read=PATH_OUT_OF_SCOPE',
   ]);
   // 逃逸文件绝不能真的被建出来
-  assert.equal(existsSync(join(TMP, 'data', 'plugins', 'escape.txt')), false);
+  assert.equal(existsSync(dataPath(id('fs-escape'), 'escape.txt')), false);
   await manager.disable(id('fs-escape'));
 });
 
@@ -180,7 +182,7 @@ test('fs：读取上限 1MB（FILE_TOO_LARGE）——大内容进不了 32MiB �
      }`,
   );
   // 宿主先造一个 2MB 的文件放进数据目录（模拟"插件自己之前写大的"）
-  const dataDir = join(TMP, 'data', 'plugins', sanitized(id('fs-big')));
+  const dataDir = join(TMP, 'data', 'plugins', sanitizeOrigin(DEFAULT_LOCAL_SOURCE), sanitized(id('fs-big')));
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, 'big.bin'), 'x'.repeat(2 * 1024 * 1024), 'utf8');
   await manager.install(dir);

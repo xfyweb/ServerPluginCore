@@ -98,7 +98,7 @@ test('CLI plugin install：写记录 → 立即装载 → init/start 跑通', as
     env(),
   );
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /已安装：@xfy2412\/hello/);
+  assert.match(r.stdout, /已安装：local:default\/@xfy2412\/hello/);
   assert.match(r.stdout, /@xfy2412\/hello@0\.0\.1 \[running\]/);
   assert.match(r.stdout, /enabled=是/);
   assert.match(r.stdout, /已授予：exec\.template\.git\.version/);

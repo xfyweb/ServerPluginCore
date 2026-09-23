@@ -340,8 +340,7 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 ```jsonc
 // 安装记录（宿主侧）
 {
-  "ref": "market.spc.xfyweb.cn/@xfy2412/docker",   // 本地来源形如 local:dev-a/@xfy2412/docker
-  "origin": "market.spc.xfyweb.cn",       // 具名来源；本地 = "local:<名字>"
+  "origin": "market.spc.xfyweb.cn",       // 具名来源；本地 = "local:<名字>"（**不可为空**，v4）
   "id": "@xfy2412/docker",
   "version": { "code": 12, "name": "1.2.0" },
   "signedBy": "sha256:<市场签名公钥指纹>",
@@ -351,6 +350,9 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
   "grants": ["docker.read", "docker.write"]
 }
 ```
+
+> **完整引用 `<origin>/<id>` 是派生的**（v4：**不落记录**，避免两处真相）：记录的唯一键是 `(origin, id)`
+> 二元组；展示、管理命令与跨插件引用统一走 `pluginRef()`（`core/plugin/records.ts`）。
 
 - **启动时只校验本地文件哈希**（对照 `verifiedMeta.files[]`），**不重验市场签名、不联网**。理由：轮换与泄露处置会移除旧公钥，若启动时重验，换密钥就会让已装插件全部起不来；完整性由"宿主侧保存的已验签 meta + 磁盘文件哈希"保证——期望值存在**插件目录之外**，否则改写包内 meta 即可绕过。
 - **作者签名同理**：加载时**不重验作者签名**（`authorFingerprint` 与 `authors.json` 已在安装 / 换源时核对过）；它只在**安装 / 更新 / reanchor / 依赖解析**时使用。

@@ -11,8 +11,15 @@ import { BRAND } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
 
+/**
+ * 插件视图（CLI 侧的**结构副本**：CLI 走 HTTP、不 import 核心类型）——
+ * ⚠️ 改这里要同步 `core/plugin/manager.ts` 的 `PluginView`。
+ * `ref` = **完整引用** `<origin>/<id>`（身份是 `(origin, id)`，同 id 不同来源是两个插件）。
+ */
 interface PluginView {
+  ref: string;
   id: string;
+  origin: string;
   dir: string;
   version: { code: number; name: string };
   type: string;
@@ -98,7 +105,9 @@ const idPath = (id: string): string => encodeURIComponent(id);
 function printPlugin(p: PluginView): void {
   console.log(
     t('cli.plugin.line', {
-      id: p.id,
+      // 打**完整引用**（身份是 `(origin, id)`）：同 id 不同来源是两个插件，只打裸 id 分不清是谁，
+      // 而且管理员要复制这个字符串去做后续命令
+      id: p.ref,
       version: p.version.name,
       state: p.state,
       enabled: p.enabled ? t('cli.yes') : t('cli.no'),
@@ -132,15 +141,20 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     const dir = args.find((a) => !a.startsWith('--'));
     if (!dir) throw new Error(t('cli.plugin.install.usage'));
     const grants: string[] = [];
+    let source: string | undefined;
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--grant' && args[i + 1]) grants.push(args[i + 1]);
+      // `--source <来源>`：决定**归属**（身份是 `(origin, id)`，同 id 不同源是两个插件）；
+      // 缺省 `local:default`
+      if (args[i] === '--source' && args[i + 1]) source = args[i + 1];
     }
     const r = (await httpJson('POST', '/api/plugins/install', token, {
       dir: resolve(dir),
       grants,
+      ...(source === undefined ? {} : { source }),
     })) as { status: number; body: { plugin: PluginView } };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.install.fail');
-    console.log(t('cli.plugin.installed', { id: r.body.plugin.id, dir: r.body.plugin.dir }));
+    console.log(t('cli.plugin.installed', { id: r.body.plugin.ref, dir: r.body.plugin.dir }));
     printPlugin(r.body.plugin);
     return;
   }

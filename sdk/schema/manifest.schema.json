@@ -494,9 +494,9 @@
                 "pattern": "^@[a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$"
               },
               "origin": {
-                "description": "跨源依赖：源域名（同源依赖省略；本机开发市场用 localhost 或 localhost:port）。缺少的源不会自动添加，只提示管理员",
+                "description": "依赖的**来源**（身份的另一半，见 docs/events-and-hooks-design.md §3.2）：省略 = 同源简写（取依赖方自己的来源）。两类：`local:<名字>`（具名本地来源）或市场域名（可带端口）。`(origin, id)` 才是身份 —— 同名不同来源是两个插件",
                 "type": "string",
-                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\\d{1,5})?$"
+                "pattern": "^(local:[a-z0-9][a-z0-9_-]{0,31}|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?)$"
               },
               "version": {
                 "type": "string",

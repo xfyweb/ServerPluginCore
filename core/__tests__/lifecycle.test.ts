@@ -17,7 +17,7 @@ const { capabilities } = await import('../plugin/capabilities.ts');
 const { SpcError } = await import('../errors.ts');
 const { validatePluginConfig, loadPluginConfig, savePluginConfig } = await import('../plugin/config.ts');
 const { loadRecords, validateRecord } = await import('../plugin/records.ts');
-const { pluginDataDir } = await import('../config.ts');
+const { pluginDataDir, DEFAULT_LOCAL_SOURCE, sanitizeOrigin } = await import('../config.ts');
 
 // ---------------- 夹具 ----------------
 
@@ -74,9 +74,17 @@ function makeTheme(name: string, withEntry = true): string {
 }
 
 const id = (name: string) => `@spc/${name}`;
+
+/**
+ * 夹具插件默认装在 **`local:default`** 这个来源下（`manager.install` 不传 `source` 时）。
+ * 身份是 `(origin, id)` ⇒ 记录 / 能力登记 / 依赖 / 生命周期审计里用的是**完整引用**；
+ * 管理命令仍可传裸 id（唯一匹配才认），所以下面大量 `manager.xxx(id('x'))` 照旧能用。
+ */
+const ref = (name: string) => `${DEFAULT_LOCAL_SOURCE}/${id(name)}`;
 const sanitized = (pluginId: string) => pluginId.replace(/^@/, '').replace(/\//g, '__');
+// 数据目录按 **(origin, id)** 分层（见 core/config.ts 的 pluginDataDir）
 const dataPath = (pluginId: string, file: string) =>
-  join(TMP, 'data', 'plugins', sanitized(pluginId), file);
+  join(TMP, 'data', 'plugins', sanitizeOrigin(DEFAULT_LOCAL_SOURCE), sanitized(pluginId), file);
 
 function readData(pluginId: string, file: string): string {
   return readFileSync(dataPath(pluginId, file), 'utf8');
@@ -243,7 +251,7 @@ test('init 抛错 → PLUGIN_INIT_FAILED，核心不挂，状态 failed', async 
   assert.equal(view.state, 'failed');
   // 能力登记必须已回滚（不留半装载状态）
   assert.deepEqual(view.capabilities, []);
-  assert.equal(capabilities.snapshot().routes.filter((r) => r.pluginId === id('init-throws')).length, 0);
+  assert.equal(capabilities.snapshot().routes.filter((r) => r.ref === ref('init-throws')).length, 0);
 });
 
 test('start 抛错 → PLUGIN_START_FAILED，能力登记回滚', async () => {
@@ -255,7 +263,7 @@ test('start 抛错 → PLUGIN_START_FAILED，能力登记回滚', async () => {
   );
   await rejects(() => manager.install(dir), 'PLUGIN_START_FAILED');
   assert.equal(manager.status(id('start-throws')).state, 'failed');
-  assert.equal(capabilities.snapshot().endpoints.filter((w) => w.pluginId === id('start-throws')).length, 0);
+  assert.equal(capabilities.snapshot().endpoints.filter((w) => w.ref === ref('start-throws')).length, 0);
 });
 
 // ---------------- 9/10 CPU 中断 ----------------
@@ -387,16 +395,104 @@ test('记录：install 写 plugins.json（结构合法）、重复 install 保�
   const rec = file.plugins.find((p) => p.id === id('record'));
   assert.ok(rec);
   assert.deepEqual(validateRecord(rec), []);
-  assert.equal(rec.origin, null);
+  // 身份 = (origin, id)：不传 `--source` 时就落在**默认本地来源**上（v4 起不再是 null）
+  assert.equal(rec.origin, DEFAULT_LOCAL_SOURCE);
+  assert.equal(first.ref, ref('record'));
   assert.equal(rec.signedBy, null);
   assert.equal(rec.verifiedMeta, null);
-  assert.equal(rec.configPath.endsWith(`config/plugins/${sanitized(first.id)}.json`) || rec.configPath.endsWith(`config\\plugins\\${sanitized(first.id)}.json`), true);
+  // 配置路径也带**来源层**（同 id 不同源是两个插件，各存各的）
+  const wantCfg = `config/plugins/${sanitizeOrigin(DEFAULT_LOCAL_SOURCE)}/${sanitized(first.id)}.json`;
+  assert.equal(
+    rec.configPath.endsWith(wantCfg) || rec.configPath.endsWith(wantCfg.replace(/\//g, '\\')),
+    true,
+  );
 
   const second = await manager.install(dir);
   assert.equal(second.state, 'running');
   assert.equal(second.id, first.id);
   assert.equal(loadRecords().plugins.find((p) => p.id === id('record'))?.installedAt, rec.installedAt);
   await manager.disable(id('record'));
+});
+
+// ---------------- 身份 = (origin, id)（v4）----------------
+
+test('同 id 不同来源 = 两个插件：两条记录、两个数据目录、互不影响', async () => {
+  const dir = makePlugin(
+    'dup-id',
+    `import { fs } from '@host/api';
+     export function init(){ fs.write('marker.txt', 'here'); }`,
+  );
+  const a = await manager.install(dir, { source: 'local:dev-a' });
+  const b = await manager.install(dir, { source: 'local:dev-b' });
+  assert.equal(a.ref, `local:dev-a/${id('dup-id')}`);
+  assert.equal(b.ref, `local:dev-b/${id('dup-id')}`);
+
+  // 记录按 (origin, id) 分开：同一个 id 有两条，配置路径各不相同
+  const recs = loadRecords().plugins.filter((p) => p.id === id('dup-id'));
+  assert.equal(recs.length, 2);
+  assert.deepEqual(
+    recs.map((r) => r.origin).sort(),
+    ['local:dev-a', 'local:dev-b'],
+  );
+  assert.notEqual(recs[0].configPath, recs[1].configPath);
+
+  // 数据目录也分开：往 a 的数据目录里放东西，b 的目录里不该有
+  const aDir = pluginDataDir('local:dev-a', id('dup-id'));
+  const bDir = pluginDataDir('local:dev-b', id('dup-id'));
+  assert.notEqual(aDir, bDir);
+  assert.ok(existsSync(join(aDir, 'marker.txt')), 'a 的 init 应写入自己的数据目录');
+  assert.ok(existsSync(join(bDir, 'marker.txt')), 'b 的 init 应写入自己的数据目录');
+  writeFileSync(join(aDir, 'only-a.txt'), 'x');
+  assert.equal(existsSync(join(bDir, 'only-a.txt')), false, 'b 不该看到 a 的数据文件');
+
+  await manager.disable(a.ref);
+  await manager.disable(b.ref);
+});
+
+test('管理命令传**裸 id** 且有两个来源 ⇒ PLUGIN_REF_AMBIGUOUS（不猜），完整引用照常', async () => {
+  const dir = makePlugin('amb', `export function init(){}`);
+  const a = await manager.install(dir, { source: 'local:dev-a' });
+  await manager.install(dir, { source: 'local:dev-b' });
+
+  // 裸 id 歧义：报错而不是"随便挑一个"（挑错了就是在动另一个插件的数据）
+  await rejects(() => manager.disable(id('amb')), 'PLUGIN_REF_AMBIGUOUS');
+  // 完整引用可以精确操作
+  const view = manager.status(a.ref);
+  assert.equal(view.state, 'running');
+  await manager.disable(a.ref);
+  assert.equal(manager.status(a.ref).state, 'disabled');
+  // 另一个来源的副本不受影响
+  assert.equal(manager.status(`local:dev-b/${id('amb')}`).state, 'running');
+  // 裸 id **仍然**歧义：歧义看的是"有几个同名插件"（记录还在），不是"有几个在跑"
+  await rejects(() => manager.status(id('amb')), 'PLUGIN_REF_AMBIGUOUS');
+  await manager.disable(`local:dev-b/${id('amb')}`);
+});
+
+test('来源非法 ⇒ PLUGIN_SOURCE_INVALID（`local:` 必须带合法名字；不接受路径分隔）', async () => {
+  const dir = makePlugin('bad-src', `export function init(){}`);
+  await rejects(() => manager.install(dir, { source: 'local:' }), 'PLUGIN_SOURCE_INVALID');
+  await rejects(() => manager.install(dir, { source: '../etc' }), 'PLUGIN_SOURCE_INVALID');
+  await rejects(() => manager.install(dir, { source: 'has space' }), 'PLUGIN_SOURCE_INVALID');
+});
+
+test('依赖按 (origin, id)：声明里的 origin 决定找哪个来源的副本', async () => {
+  const provider = makePlugin('dep-src-provider', `export function init(){}`);
+  await manager.install(provider, { source: 'local:dev-x' });
+
+  // 依赖声明写明 origin=local:dev-x ⇒ 找得到
+  const consumer = makePlugin('dep-src-consumer', `export function init(){}`, {
+    dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-x' }] },
+  });
+  const view = await manager.install(consumer);
+  assert.equal(view.state, 'running');
+
+  // 同样声明但指向另一个来源 ⇒ 那个来源没有这个插件 ⇒ 依赖未满足（哪怕同名副本存在于 dev-x）
+  const consumer2 = makePlugin('dep-src-consumer2', `export function init(){}`, {
+    dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-y' }] },
+  });
+  await rejects(() => manager.install(consumer2), 'PLUGIN_DEPENDENCY_MISSING');
+
+  await manager.disable(id('dep-src-consumer'));
 });
 
 test('启动自动装载：只装载 enabled 的插件，禁用的连 bundle 都不加载', async () => {
@@ -443,9 +539,9 @@ test('能力登记幂等：连续两次 reload 后登记表与 capabilities 完�
   const after = await manager.reload(id('caps-idem'));
   assert.deepEqual([...after.capabilities].sort(), expected);
   const snap = capabilities.snapshot();
-  assert.equal(snap.routes.filter((r) => r.pluginId === id('caps-idem')).length, 1);
-  assert.equal(snap.endpoints.filter((w) => w.pluginId === id('caps-idem')).length, 1);
-  assert.equal(snap.publishedEvents.filter((e) => e.pluginId === id('caps-idem')).length, 1);
+  assert.equal(snap.routes.filter((r) => r.ref === ref('caps-idem')).length, 1);
+  assert.equal(snap.endpoints.filter((w) => w.ref === ref('caps-idem')).length, 1);
+  assert.equal(snap.publishedEvents.filter((e) => e.ref === ref('caps-idem')).length, 1);
   await manager.disable(id('caps-idem'));
 });
 
@@ -460,7 +556,7 @@ test('能力冲突：两个插件抢同一路由 → PLUGIN_EXPORT_INVALID，且
   await rejects(() => manager.install(b), 'PLUGIN_EXPORT_INVALID');
   const routes = capabilities.snapshot().routes.filter((r) => r.path === '/shared');
   assert.equal(routes.length, 1);
-  assert.equal(routes[0].pluginId, id('caps-a'));
+  assert.equal(routes[0].ref, ref('caps-a'));
   assert.deepEqual(manager.status(id('caps-b')).capabilities, []);
   await manager.disable(id('caps-a'));
 });
@@ -500,7 +596,7 @@ test('反向依赖：被运行中的插件依赖时，uninstall / disable 都被
     }
     assert.ok(caught instanceof SpcError, `${op} 应被拒`);
     assert.equal((caught as InstanceType<typeof SpcError>).code, 'PLUGIN_IN_USE');
-    assert.equal((caught as InstanceType<typeof SpcError>).params.dependents, id('inuse-consumer'));
+    assert.equal((caught as InstanceType<typeof SpcError>).params.dependents, ref('inuse-consumer'));
     assert.equal((caught as InstanceType<typeof SpcError>).params.action, op);
   }
   // provider 仍在运行（拒绝是"什么都没发生"，不是"半途卸载"）
@@ -557,13 +653,14 @@ test('装载顺序：记录顺序把依赖方排在前面，startAll 仍按拓�
   assert.equal(rows.find((r) => r.id === id('topo-provider'))?.state, 'running');
 
   // 顺序证据：审计里最后两次 init 必须是"提供方 → 依赖方"
+  // 注意：生命周期审计的 `pluginId` 字段现在承载**完整引用**（身份 = (origin, id)，见设计 §3.2）
   const inits = auditEntries()
     .filter((e) => e.method === 'lifecycle.init')
-    .filter((e) => e.pluginId === id('topo-consumer') || e.pluginId === id('topo-provider'))
+    .filter((e) => e.pluginId === ref('topo-consumer') || e.pluginId === ref('topo-provider'))
     .map((e) => e.pluginId);
   assert.deepEqual(
     inits.slice(-2),
-    [id('topo-provider'), id('topo-consumer')],
+    [ref('topo-provider'), ref('topo-consumer')],
     `依赖必须先 init，实际序列：${inits.join(' → ')}`,
   );
   await manager.stopAll('shutdown');
@@ -655,12 +752,12 @@ test('插件配置：默认值填充、非法值被拒、ctx.config 是只读快
   assert.equal(mutation, 'threw', '严格模式下改冻结对象应当抛错');
 
   // 落盘层：非法值拒绝保存
-  assert.throws(() => savePluginConfig(id('cfg'), schema, { retries: 100 }), (e: unknown) => {
+  assert.throws(() => savePluginConfig(DEFAULT_LOCAL_SOURCE, id('cfg'), schema, { retries: 100 }), (e: unknown) => {
     assert.equal((e as InstanceType<typeof SpcError>).code, 'PLUGIN_CONFIG_INVALID');
     return true;
   });
-  savePluginConfig(id('cfg'), schema, { greeting: 'hi' });
-  assert.equal(loadPluginConfig(id('cfg'), schema).greeting, 'hi');
+  savePluginConfig(DEFAULT_LOCAL_SOURCE, id('cfg'), schema, { greeting: 'hi' });
+  assert.equal(loadPluginConfig(DEFAULT_LOCAL_SOURCE, id('cfg'), schema).greeting, 'hi');
   await manager.disable(id('cfg'));
 });
 
@@ -702,7 +799,7 @@ test('failedRestart=auto：连续失败到上限后停在 failed，审计记 lif
   assert.equal(view.state, 'failed');
   assert.equal(view.restartAttempts, 3, `重试次数应为 maxAttempts+1=3，实际 ${view.restartAttempts}`);
   const restarts = auditEntries().filter(
-    (e) => e.pluginId === id('restart-auto') && e.method === 'lifecycle.restart',
+    (e) => e.pluginId === ref('restart-auto') && e.method === 'lifecycle.restart',
   );
   assert.ok(restarts.length >= 3, `审计里应有 >=3 条 lifecycle.restart，实际 ${restarts.length}`);
   assert.ok(restarts.some((e) => String(e.paramsDigest).length > 0));
@@ -802,13 +899,13 @@ test('审计：生命周期条目按 lifecycle.init/start/stop/unload 落账（�
   await manager.install(dir);
   await manager.disable(id('audited'));
   const methods = auditEntries()
-    .filter((e) => e.pluginId === id('audited'))
+    .filter((e) => e.pluginId === ref('audited'))
     .map((e) => e.method);
   for (const m of ['lifecycle.init', 'lifecycle.start', 'lifecycle.stop', 'lifecycle.unload']) {
     assert.ok(methods.includes(m), `审计缺少 ${m}（实际：${methods.join(',')}）`);
   }
   const unload = auditEntries().find(
-    (e) => e.pluginId === id('audited') && e.method === 'lifecycle.unload',
+    (e) => e.pluginId === ref('audited') && e.method === 'lifecycle.unload',
   );
   assert.equal(unload?.result, 'ok');
   assert.equal(typeof unload?.durationMs, 'number');
@@ -831,12 +928,12 @@ test('审计：lifecycle.<hook> 条目带 suspendedMs —— 钩子里等宿主 
      export function stop() {}`,
   );
   // 数据目录是宿主建的（`pluginDataDir`），这里先自己建好并放一个文件：装载时会跑 init，读的就是它
-  const pluginData = pluginDataDir(id('suspended'));
+  const pluginData = pluginDataDir(DEFAULT_LOCAL_SOURCE, id('suspended'));
   mkdirSync(pluginData, { recursive: true });
   writeFileSync(join(pluginData, 'a.bin'), 'x'.repeat(256 * 1024), 'utf8');
   await manager.install(dir);
   const init = auditEntries().find(
-    (e) => e.pluginId === id('suspended') && e.method === 'lifecycle.init',
+    (e) => e.pluginId === ref('suspended') && e.method === 'lifecycle.init',
   );
   assert.equal(init?.result, 'ok', `init 审计缺失或失败：${JSON.stringify(init)}`);
   const suspended = init?.suspendedMs;

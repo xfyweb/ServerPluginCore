@@ -153,20 +153,23 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // POST /api/plugins/install { dir, grants?, start? }
+    // POST /api/plugins/install { dir, grants?, start?, source? }
     if (req.method === 'POST' && path === '/api/plugins/install') {
       const body = (await readBody(req)) as {
         dir?: unknown;
         grants?: unknown;
         start?: unknown;
+        source?: unknown;
       };
       if (typeof body.dir !== 'string' || body.dir.length === 0) {
         sendError(res, 400, 'INVALID_ARGS', 'DIR_REQUIRED');
         return;
       }
+      // `source` 决定**归属**（身份是 `(origin, id)`，同 id 不同来源是两个插件）；缺省 `local:default`
       const view = await manager.install(body.dir, {
         grants: asStringArray(body.grants),
         start: body.start !== false,
+        ...(typeof body.source === 'string' ? { source: body.source } : {}),
       });
       sendJson(res, 200, { plugin: view });
       return;

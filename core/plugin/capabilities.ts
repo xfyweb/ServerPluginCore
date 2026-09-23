@@ -13,7 +13,7 @@ import { SpcError } from '../errors';
 import { registry } from '../permissions/registry';
 
 export interface RouteCapability {
-  pluginId: string;
+  ref: string;
   path: string;
   title: string;
   icon?: string;
@@ -31,25 +31,25 @@ export interface RouteCapability {
  * `(origin, id)`（§3.2）之后才有 origin 可拼。
  */
 export interface EndpointCapability {
-  pluginId: string;
+  ref: string;
   path: string;
   permission?: string;
 }
 
 export interface EventCapability {
-  pluginId: string;
+  ref: string;
   topic: string;
   classification: 'public' | 'sensitive' | 'secret';
 }
 
 export interface SubscriptionCapability {
-  pluginId: string;
+  ref: string;
   topic: string;
   mode: 'notify' | 'arbitrate';
 }
 
 export interface ThemeCapability {
-  pluginId: string;
+  ref: string;
   /** 主题 id（约定与插件 id 同形，便于市场上唯一） */
   themeId: string;
   /** theme.json 相对插件目录的入口 */
@@ -75,9 +75,10 @@ export class CapabilityRegistry {
 
   /**
    * 依 manifest 登记插件能力，返回 capabilities 清单。
+   * @param ref **完整引用** `<origin>/<id>`（不是裸 id —— 同 id 不同来源是两个插件，能力归属也必须分开）
    * @param themeEntry 主题包入口（manifest.theme 的解析结果；仅 type=theme 需要）
    */
-  register(pluginId: string, manifest: Manifest, themeEntry?: string): string[] {
+  register(ref: string, manifest: Manifest, themeEntry?: string): string[] {
     const type = manifest.type ?? 'ability';
     const frontendMode: FrontendMode = manifest.frontend?.mode ?? 'declarative';
 
@@ -90,16 +91,16 @@ export class CapabilityRegistry {
 
     for (const r of manifest.exports?.routes ?? []) {
       const owner = this.routes.get(r.path);
-      if (owner && owner.pluginId !== pluginId) {
+      if (owner && owner.ref !== ref) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
-          pluginId,
+          pluginId: ref,
           kind: 'route',
           path: r.path,
-          owner: owner.pluginId,
+          owner: owner.ref,
         });
       }
       addRoutes.push({
-        pluginId,
+        ref,
         path: r.path,
         title: r.title,
         icon: r.icon,
@@ -111,60 +112,60 @@ export class CapabilityRegistry {
 
     for (const a of manifest.exports?.endpoints ?? []) {
       const owner = this.endpoints.get(a.path);
-      if (owner && owner.pluginId !== pluginId) {
+      if (owner && owner.ref !== ref) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
-          pluginId,
+          pluginId: ref,
           kind: 'endpoint',
           path: a.path,
-          owner: owner.pluginId,
+          owner: owner.ref,
         });
       }
       // 声明的权限点必须已在注册表登记（未知即拒绝：不允许"先声明后实现"的悬挂权限）
       if (a.permission !== undefined && !registry.get(a.permission)) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
-          pluginId,
+          pluginId: ref,
           kind: 'endpoint-permission',
           path: a.path,
           permission: a.permission,
         });
       }
-      addEndpoints.push({ pluginId, path: a.path, permission: a.permission });
+      addEndpoints.push({ ref, path: a.path, permission: a.permission });
       caps.push(`endpoint:${a.path}`);
     }
 
     for (const e of manifest.exports?.events?.publish ?? []) {
       const owner = this.published.get(e.topic);
-      if (owner && owner.pluginId !== pluginId) {
+      if (owner && owner.ref !== ref) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
-          pluginId,
+          pluginId: ref,
           kind: 'event',
           topic: e.topic,
-          owner: owner.pluginId,
+          owner: owner.ref,
         });
       }
-      addEvents.push({ pluginId, topic: e.topic, classification: e.classification });
+      addEvents.push({ ref, topic: e.topic, classification: e.classification });
       caps.push(`event:${e.topic}`);
     }
 
     for (const s of manifest.exports?.events?.subscribe ?? []) {
-      addSubs.push({ pluginId, topic: s.topic, mode: s.mode });
+      addSubs.push({ ref, topic: s.topic, mode: s.mode });
       caps.push(`subscribe:${s.topic}`);
     }
 
     if (type === 'theme') {
       if (!themeEntry) {
-        throw new SpcError('PLUGIN_EXPORT_INVALID', { pluginId, kind: 'theme', reason: 'entry-missing' });
+        throw new SpcError('PLUGIN_EXPORT_INVALID', { pluginId: ref, kind: 'theme', reason: 'entry-missing' });
       }
       const owner = this.themes.get(themeEntry);
-      if (owner && owner.pluginId !== pluginId) {
+      if (owner && owner.ref !== ref) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
-          pluginId,
+          pluginId: ref,
           kind: 'theme',
           themeId: themeEntry,
-          owner: owner.pluginId,
+          owner: owner.ref,
         });
       }
-      this.themes.set(themeEntry, { pluginId, themeId: manifest.id, entry: themeEntry });
+      this.themes.set(themeEntry, { ref, themeId: manifest.id, entry: themeEntry });
       caps.push(`theme:${themeEntry}`);
     }
 
@@ -181,24 +182,24 @@ export class CapabilityRegistry {
     return caps;
   }
 
-  /** 撤销该插件的全部登记（重载与卸载都走这里；幂等） */
-  revoke(pluginId: string): void {
-    for (const [k, v] of [...this.routes]) if (v.pluginId === pluginId) this.routes.delete(k);
-    for (const [k, v] of [...this.endpoints]) if (v.pluginId === pluginId) this.endpoints.delete(k);
-    for (const [k, v] of [...this.published]) if (v.pluginId === pluginId) this.published.delete(k);
+  /** 撤销该插件的全部登记（重载与卸载都走这里；幂等）。参数是**完整引用** */
+  revoke(ref: string): void {
+    for (const [k, v] of [...this.routes]) if (v.ref === ref) this.routes.delete(k);
+    for (const [k, v] of [...this.endpoints]) if (v.ref === ref) this.endpoints.delete(k);
+    for (const [k, v] of [...this.published]) if (v.ref === ref) this.published.delete(k);
     for (const [k, list] of [...this.subscriptions]) {
-      const kept = list.filter((s) => s.pluginId !== pluginId);
+      const kept = list.filter((s) => s.ref !== ref);
       if (kept.length === 0) this.subscriptions.delete(k);
       else this.subscriptions.set(k, kept);
     }
-    for (const [k, v] of [...this.themes]) if (v.pluginId === pluginId) this.themes.delete(k);
+    for (const [k, v] of [...this.themes]) if (v.ref === ref) this.themes.delete(k);
   }
 
   /** 某插件订阅的 topic 清单（意图捕获 §8.5：授出网能力时要把这一屏显示给管理员） */
-  topicsOf(pluginId: string): string[] {
+  topicsOf(ref: string): string[] {
     const topics: string[] = [];
     for (const [topic, list] of this.subscriptions) {
-      if (list.some((s) => s.pluginId === pluginId)) topics.push(topic);
+      if (list.some((s) => s.ref === ref)) topics.push(topic);
     }
     return topics.sort();
   }

@@ -1,7 +1,9 @@
 // 安装记录（docs/plugin-lifecycle-design.md §6）：<STATE_DIR>/plugins.json
 //
-// 记录由 daemon 拥有（写操作必须经过 daemon），CLI 只读时可离线读取。
-// 字段与 plugin-signature-design.md §9 对齐：本地安装 origin/signedBy/verifiedMeta 全为 null（unanchored）。
+// 字段与 plugin-signature-design.md §9 对齐。
+// **身份 = `(origin, id)`**（v4）：记录按**完整引用** `<origin>/<id>` 唯一；`origin` **不再可空** ——
+// 本地安装也有具名来源（`local:<名字>`，默认 `local:default`）。`unanchored` 指"没有市场签名 / 更新渠道"，
+// 不是 `origin` 为空。理由与完整引用规则见 docs/events-and-hooks-design.md §3.2/§3.3。
 //
 // 为什么记录与"扫描插件目录"不同（这是 P1.5 的关键变化）：
 //   扫描只能回答"这个目录里有没有合法 manifest"，回答不了 enabled / grants / state / lastError，
@@ -9,7 +11,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import type { Manifest } from '../../sdk/types';
-import { ensureDir, pluginConfigPath, pluginsFile, sanitizePluginId } from '../config';
+import { DEFAULT_LOCAL_SOURCE, ensureDir, isValidSource, pluginConfigPath, pluginsFile, sanitizeOrigin, sanitizePluginId } from '../config';
 import { SpcError } from '../errors';
 
 /** 状态机取值（唯一状态机在 manager；记录里存的是"最后一次已知状态"） */
@@ -59,8 +61,10 @@ export interface PluginRecord {
   lastError: PluginErrorRecord | null;
   /** failedRestart=auto 时的连续失败计数（一次成功 running 后清零） */
   restartAttempts: number;
-  // ↓ 与 plugin-signature-design.md §9 对齐（P4 安装流写入；本地安装为 null）
-  origin: string | null;
+  // ↓ 与 plugin-signature-design.md §9 对齐
+  /** 来源（身份的一半）：`local:<名字>` 或市场域名。**不可为空**（见文件头） */
+  origin: string;
+  /** 市场签名公钥指纹（本地安装为 null ⇒ unanchored：没有更新渠道） */
   signedBy: string | null;
   verifiedMeta: unknown | null;
 }
@@ -109,8 +113,11 @@ export function validateRecord(raw: unknown): string[] {
     errors.push('lastError: object | null required');
   }
   if (!Number.isSafeInteger(r.restartAttempts)) errors.push('restartAttempts: integer required');
-  for (const key of ['origin', 'signedBy'] as const) {
-    if (!(r[key] === null || typeof r[key] === 'string')) errors.push(`${key}: string | null required`);
+  if (typeof r.origin !== 'string' || !isValidSource(r.origin)) {
+    errors.push('origin: 必须是合法来源（`local:<名字>` 或市场域名）');
+  }
+  if (!(r.signedBy === null || typeof r.signedBy === 'string')) {
+    errors.push('signedBy: string | null required');
   }
   if (!('verifiedMeta' in r)) errors.push('verifiedMeta: required (may be null)');
   return errors;
@@ -140,10 +147,11 @@ export function loadRecords(): PluginsFile {
     if (errors.length > 0) {
       throw new SpcError('RECORDS_INVALID', { file, reason: 'record', detail: errors.join('; ') });
     }
-    if (seen.has(rec.id)) {
-      throw new SpcError('RECORDS_INVALID', { file, reason: 'duplicate-id', pluginId: rec.id });
+    const ref = `${rec.origin}/${rec.id}`;
+    if (seen.has(ref)) {
+      throw new SpcError('RECORDS_INVALID', { file, reason: 'duplicate-ref', ref });
     }
-    seen.add(rec.id);
+    seen.add(ref);
   }
   return { pluginsSchema: 1, plugins: root.plugins };
 }
@@ -157,32 +165,62 @@ export function saveRecords(file: PluginsFile): void {
   renameSync(tmp, path);
 }
 
-export function findRecord(file: PluginsFile, id: string): PluginRecord | undefined {
-  return file.plugins.find((p) => p.id === id);
+/**
+ * **完整引用**：`<origin>/<id>`，如 `local:default/@xfy2412/hello`、`market.spc.xfyweb.cn/@a/b`。
+ * 它是**记录的唯一键**，也是管理命令与跨插件引用里指向某个插件的写法（设计 §3.2/§3.4）。
+ * ⚠️ 拼字符串这件事**只在这里做一次**：别处一律传 ref 比较，不要再各拼一份（拼法一变就会各错各的）。
+ */
+export function pluginRef(rec: { origin: string; id: string }): string {
+  return `${rec.origin}/${rec.id}`;
 }
 
-/** 按 id upsert（同一 id 只有一条记录） */
+export function findRecord(file: PluginsFile, ref: string): PluginRecord | undefined {
+  return file.plugins.find((p) => pluginRef(p) === ref);
+}
+
+/**
+ * **管理面输入 → 记录**：先按完整引用精确匹配；否则把它当**裸 id**（以 `@` 开头）做唯一匹配。
+ *
+ * 为什么容错裸 id：管理命令（`spc plugin status @a/b`）手打完整引用太啰嗦，而绝大多数机器上
+ * 同一个 id 只有一个来源。但**歧义必须报错，不能随便挑一个**——"挑错了"就是在动另一个插件的数据。
+ * 跨插件引用（调用目标 / topic / 依赖声明 / 权限点名）**一律用完整引用**，不走这条容错。
+ */
+export function resolveRecord(file: PluginsFile, input: string): PluginRecord | undefined {
+  const exact = findRecord(file, input);
+  if (exact) return exact;
+  if (!input.startsWith('@')) return undefined; // 不像裸 id ⇒ 就是没有
+  const hits = file.plugins.filter((p) => p.id === input);
+  if (hits.length > 1) {
+    throw new SpcError('PLUGIN_REF_AMBIGUOUS', { input, refs: hits.map(pluginRef).join('、') });
+  }
+  return hits[0];
+}
+
+/** 按完整引用 upsert（同一 `(origin, id)` 只有一条记录） */
 export function upsertRecord(file: PluginsFile, rec: PluginRecord): void {
-  const idx = file.plugins.findIndex((p) => p.id === rec.id);
+  const ref = pluginRef(rec);
+  const idx = file.plugins.findIndex((p) => pluginRef(p) === ref);
   if (idx === -1) file.plugins.push(rec);
   else file.plugins[idx] = rec;
 }
 
-export function dropRecord(file: PluginsFile, id: string): boolean {
-  const idx = file.plugins.findIndex((p) => p.id === id);
+export function dropRecord(file: PluginsFile, ref: string): boolean {
+  const idx = file.plugins.findIndex((p) => pluginRef(p) === ref);
   if (idx === -1) return false;
   file.plugins.splice(idx, 1);
   return true;
 }
 
-/** 由 manifest 造一条新记录（install 用） */
+/** 由 manifest 造一条新记录（install 用）。`source` 缺省 = `local:default`（见文件头） */
 export function newRecord(
   manifest: Manifest,
   dir: string,
-  opts: { grants?: string[]; origin?: string | null; signedBy?: string | null } = {},
+  opts: { source?: string; grants?: string[]; signedBy?: string | null } = {},
 ): PluginRecord {
-  // ID 必须先过 sanitize：它同时是数据目录/配置文件名，非法 ID 不能写进记录
+  // ID 与来源都必须先过 sanitize：它们同时是数据目录/配置文件名，非法的不能写进记录
   sanitizePluginId(manifest.id);
+  const origin = opts.source ?? DEFAULT_LOCAL_SOURCE;
+  sanitizeOrigin(origin);
   return {
     id: manifest.id,
     dir: resolve(dir),
@@ -190,12 +228,12 @@ export function newRecord(
     enabled: false,
     grants: opts.grants ?? [],
     capabilities: [],
-    configPath: pluginConfigPath(manifest.id),
+    configPath: pluginConfigPath(origin, manifest.id),
     state: 'installed',
     installedAt: new Date().toISOString(),
     lastError: null,
     restartAttempts: 0,
-    origin: opts.origin ?? null,
+    origin,
     signedBy: opts.signedBy ?? null,
     verifiedMeta: null,
   };

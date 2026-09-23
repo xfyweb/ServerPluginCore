@@ -138,6 +138,30 @@ test('合法：dependencies.npm 只声明 name/version（v2 起无 tier）', () 
   assert.equal(stale.ok, false);
 });
 
+test('合法：dependencies.plugins[].origin 接受 `local:<名字>` 与市场域名（身份 = (origin, id)）', () => {
+  const ok = validateManifest({
+    ...validMinimal,
+    dependencies: {
+      plugins: [
+        { id: '@xfy2412/base', origin: 'local:dev-a' },
+        { id: '@xfy2412/driver', origin: 'market.spc.xfyweb.cn' },
+        { id: '@xfy2412/localhost', origin: 'localhost:8080' },
+        { id: '@xfy2412/same-source' }, // 省略 = 同源简写
+      ],
+    },
+  });
+  assert.equal(ok.ok, true, (ok.errors ?? []).join('; '));
+
+  // **来源是身份的一半**，不能是任意字符串：这些都必须被 schema 拦住
+  for (const bad of ['local:', '../etc', 'Bogus Origin', 'a/b', '']) {
+    const r = validateManifest({
+      ...validMinimal,
+      dependencies: { plugins: [{ id: '@xfy2412/base', origin: bad }] },
+    });
+    assert.equal(r.ok, false, `origin=${JSON.stringify(bad)} 应被拒`);
+  }
+});
+
 test('非法：manifest 里出现 signature 字段（v2 起签名属于交付信封）', () => {
   const r = validateManifest({
     ...validMinimal,

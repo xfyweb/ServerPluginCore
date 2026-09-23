@@ -18,7 +18,7 @@ import { buildHostApi } from '../hostApi';
 import { createSandbox, type Sandbox, type SandboxBridge } from '../sandbox';
 import { capabilities } from './capabilities';
 import { loadPluginConfig } from './config';
-import type { PluginRecord } from './records';
+import { pluginRef, type PluginRecord } from './records';
 
 /** 卸载原因（§12-2：stop 是否接收 reason 尚在待定，这里先用于审计，不注入钩子签名） */
 export type StopReason = 'reload' | 'disable' | 'shutdown' | 'failed' | 'uninstall';
@@ -141,10 +141,14 @@ async function runHook(
 export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<RunningPlugin> {
   const id = record.id;
   const dir = record.dir;
+  // 生命周期层一律用**完整引用**（身份是 `(origin, id)`：同 id 不同来源是两个插件，
+  // 审计与错误里带裸 id 就分不清是谁）。⚠️ 沙箱运行时的 `ctx.pluginId` 仍是裸 id —— 那一层统一改
+  // 是紧随其后的一小批（见 docs/events-and-hooks-design.md §4.3 的 ②b）。
+  const ref = pluginRef(record);
 
   // 1) 目录 / 清单（P4 之后在此加：验签 + verifiedMeta 文件哈希校验）
   if (!existsSync(dir)) {
-    throw new SpcError('PLUGIN_DIR_MISSING', { pluginId: id, dir });
+    throw new SpcError('PLUGIN_DIR_MISSING', { pluginId: ref, dir });
   }
   const manifest = readRecordManifest(record);
   const isTheme = (manifest.type ?? 'ability') === 'theme';
@@ -152,20 +156,22 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
   // 2) 依赖检查（P1.5：只查直接依赖、不解析 version 区间；装载顺序由 manager 的拓扑排序保证）
   //    「已启用」不够——依赖必须**已经在跑**，否则依赖方会进入一个它本不该能进入的状态
   for (const dep of manifest.dependencies?.plugins ?? []) {
-    const status = deps.dependencyStatus(dep.id);
+    // 依赖按**完整引用**找；声明里省略 `origin` ⇒ 同源简写（取依赖方自己的来源，§7.1）
+    const depRef = pluginRef({ origin: dep.origin ?? record.origin, id: dep.id });
+    const status = deps.dependencyStatus(depRef);
     if (status.ok) continue;
     if (status.reason === 'missing') {
-      throw new SpcError('PLUGIN_DEPENDENCY_MISSING', { pluginId: id, dependency: dep.id });
+      throw new SpcError('PLUGIN_DEPENDENCY_MISSING', { pluginId: ref, dependency: depRef });
     }
     throw new SpcError('PLUGIN_DEPENDENCY_NOT_LOADED', {
-      pluginId: id,
-      dependency: dep.id,
+      pluginId: ref,
+      dependency: depRef,
       state: status.state ?? 'unknown',
     });
   }
 
   // 数据目录由宿主创建并保证存在：这是插件唯一可写位置（也是 fs 权限点的作用域）
-  const dataDir = ensureDir(pluginDataDir(id));
+  const dataDir = ensureDir(pluginDataDir(record.origin, id));
   // `os.tmpdir()` 返回的是 **`<dataDir>/tmp`**（设计 §13.1-2：返回宿主 tmp 会让插件一用就 EACCES），
   // 所以这个目录也得**宿主建好**——否则 `tmp`、`fs.mkdtempSync(os.tmpdir()+'/x-')` 这类用法直接 ENOENT
   // （实测：`tmp` 包默认 dir 就是 os.tmpdir()，装载期就炸）。放这儿而不是 os 仿真层：
@@ -178,16 +184,16 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
     if (entry.length === 0 || !existsSync(join(dir, entry))) {
       throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: id, hook: 'theme' });
     }
-    const caps = capabilities.register(id, manifest, entry);
+    const caps = capabilities.register(ref, manifest, entry);
     return { record, manifest, capabilities: caps, dataDir };
   }
 
   // 3) 沙箱 + 四层限额（内存/栈在 createSandbox 里装配；CPU 中断按钩子设 deadline）
-  const config = loadPluginConfig(id, manifest.configSchema);
+  const config = loadPluginConfig(record.origin, id, manifest.configSchema);
   const entry = manifest.entry ?? 'main.ts';
   const entryPath = join(dir, entry);
   if (!existsSync(entryPath)) {
-    throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: id, hook: 'entry', path: entry });
+    throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: ref, hook: 'entry', path: entry });
   }
 
   const bridge: SandboxBridge = {};
@@ -219,20 +225,20 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
     });
     await sandbox.runModule(id, code);
     if (!sandbox.hasFunctionExport('init')) {
-      throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: id, hook: 'init' });
+      throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: ref, hook: 'init' });
     }
 
     // 5) 能力登记（插件不参与；冲突 → PLUGIN_EXPORT_INVALID 且不留半登记状态）
-    caps = capabilities.register(id, manifest);
+    caps = capabilities.register(ref, manifest);
 
     // 6/7) init（准备）→ start（开始工作）；都是可选的 start 除外
-    await runHook(sandbox, 'init', id, deps.limits.initTimeoutMs);
+    await runHook(sandbox, 'init', ref, deps.limits.initTimeoutMs);
     if (sandbox.hasFunctionExport('start')) {
-      await runHook(sandbox, 'start', id, deps.limits.startTimeoutMs);
+      await runHook(sandbox, 'start', ref, deps.limits.startTimeoutMs);
     }
   } catch (err) {
     // 回滚：能力登记先撤（否则重载会叠加），再释放沙箱 handle
-    capabilities.revoke(id);
+    capabilities.revoke(ref);
     try {
       sandbox.dispose();
     } catch {
@@ -253,23 +259,23 @@ export async function unloadPlugin(
   reason: StopReason,
   limits: PluginLimits,
 ): Promise<void> {
-  const id = run.record.id;
+  const ref = pluginRef(run.record);
   const auditParams = digestParams({ reason });
   if (run.sandbox && run.sandbox.hasFunctionExport('stop')) {
     try {
-      await runHook(run.sandbox, 'stop', id, limits.stopTimeoutMs);
+      await runHook(run.sandbox, 'stop', ref, limits.stopTimeoutMs);
     } catch (err) {
       const shape = toErrorShape(err);
       console.warn(
-        `[plugin] ${id} stop 未正常结束（${shape?.code ?? 'PLUGIN_STOP_FAILED'}），继续卸载`,
+        `[plugin] ${ref} stop 未正常结束（${shape?.code ?? 'PLUGIN_STOP_FAILED'}），继续卸载`,
       );
-      auditLifecycle(id, 'lifecycle.stop', 'error', Date.now(), {
+      auditLifecycle(ref, 'lifecycle.stop', 'error', Date.now(), {
         cause: shape?.code,
         paramsDigest: auditParams,
       });
     }
   }
-  capabilities.revoke(id);
+  capabilities.revoke(ref);
   run.sandbox?.dispose();
-  auditLifecycle(id, 'lifecycle.unload', 'ok', Date.now(), { paramsDigest: auditParams });
+  auditLifecycle(ref, 'lifecycle.unload', 'ok', Date.now(), { paramsDigest: auditParams });
 }

@@ -149,6 +149,11 @@ export interface Manifest {
     }[];
     plugins?: {
       id: string;
+      /**
+       * **来源**（身份的另一半，见 docs/events-and-hooks-design.md §3.2）：省略 = **同源简写**
+       * （取依赖方自己的来源）。跨源依赖必须写明 —— `(origin, id)` 才是身份，同名不同来源是**两个插件**。
+       */
+      origin?: string;
       version?: string;
     }[];
   };

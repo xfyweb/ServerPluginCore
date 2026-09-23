@@ -4,8 +4,11 @@
 //   SPC_STATE_DIR（默认 <repo>/.spc）是**基座**，其下：
 //     config.json                     ← 本文件的配置面
 //     plugins.json                    ← 安装记录（core/plugin/records.ts）
-//     config/plugins/<sanitized>.json ← 插件配置值（core/plugin/config.ts）
-//     data/plugins/<sanitized>/       ← 插件数据目录（ctx.dataDir，插件唯一可写位置）
+//     config/plugins/<来源>/<id>.json ← 插件配置值（core/plugin/config.ts）
+//     data/plugins/<来源>/<id>/       ← 插件数据目录（ctx.dataDir，插件唯一可写位置）
+//     （<来源> 目录段 = `local:dev-a` → `local_dev-a`、`market.spc.xfyweb.cn` 原样。
+//       **为什么数据/配置要带来源**：身份是 `(origin, id)`——同 id 不同源是**两个插件**，
+//       少一层来源就会让两个插件共用同一个数据目录。设计见 docs/events-and-hooks-design.md §3.2/§3.3）
 //     audit/audit.jsonl               ← 审计
 //     keyring.json                    ← 源与密钥
 //   SPC_AUDIT_DIR / SPC_KEYRING_DIR / SPC_DATA_DIR 降级为**覆盖项**——避免三套状态目录变量并存。
@@ -63,14 +66,48 @@ export function sanitizePluginId(id: string): string {
   return safe;
 }
 
-/** 插件数据目录（宿主创建并保证存在；插件唯一可写位置） */
-export function pluginDataDir(id: string): string {
-  return join(dataDir(), 'plugins', sanitizePluginId(id));
+/** 默认本地来源（没显式指定 `--source` 时的归属） */
+export const DEFAULT_LOCAL_SOURCE = 'local:default';
+
+/** 本地来源：`local:<名字>`。它**不是市场**——不可 fetch、没有公钥、不提供更新渠道，只做命名空间归属 */
+const LOCAL_SOURCE_RE = /^local:[a-z0-9][a-z0-9_-]{0,31}$/;
+/** 市场来源：域名（可带端口），与 core/sources/keyring.ts 的 `isValidOrigin` 同规则 */
+const MARKET_SOURCE_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$/;
+
+/**
+ * 来源字符串是否合法（身份 `(origin, id)` 的前半）。两类：本地 `local:<名字>`、市场域名（可带端口）。
+ * ⚠️ **本地来源必须具名**：`null`/空会让所有本地安装坍缩到同一个键上，两个不同的人做同名插件必然相撞
+ * （设计 §3.2）。
+ */
+export function isValidSource(origin: string): boolean {
+  return LOCAL_SOURCE_RE.test(origin) || MARKET_SOURCE_RE.test(origin);
 }
 
-/** 插件配置值文件 */
-export function pluginConfigPath(id: string): string {
-  return join(pluginConfigDir(), `${sanitizePluginId(id)}.json`);
+/**
+ * 来源 → 目录段名：`local:dev-a` → `local_dev-a`、`localhost:8080` → `localhost_8080`。
+ * 为什么只换 `:`：目录名里不能有 `:`（Windows 是硬限制），而域名本身只含 `[a-z0-9.-]`。
+ * 与 `sanitizePluginId` 一样，这里是**路径收敛的唯一入口**——所有由来源拼出来的路径都必须过它。
+ */
+export function sanitizeOrigin(origin: string): string {
+  if (!isValidSource(origin)) throw new SpcError('PLUGIN_SOURCE_INVALID', { origin });
+  const safe = origin.replace(/:/g, '_');
+  if (safe.includes('/') || safe.includes('\\') || safe.includes('..') || safe.length === 0) {
+    throw new SpcError('PLUGIN_SOURCE_INVALID', { origin });
+  }
+  return safe;
+}
+
+/**
+ * 插件数据目录（宿主创建并保证存在；插件唯一可写位置）：`data/plugins/<来源>/<id 目录名>`。
+ * ⚠️ **必须带来源**（见文件头）。
+ */
+export function pluginDataDir(origin: string, id: string): string {
+  return join(dataDir(), 'plugins', sanitizeOrigin(origin), sanitizePluginId(id));
+}
+
+/** 插件配置值文件：`config/plugins/<来源>/<id 目录名>.json`（同上，必须带来源） */
+export function pluginConfigPath(origin: string, id: string): string {
+  return join(pluginConfigDir(), sanitizeOrigin(origin), `${sanitizePluginId(id)}.json`);
 }
 
 export function ensureDir(path: string): string {

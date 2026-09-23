@@ -118,6 +118,8 @@
   "err.RECORDS_INVALID": "Invalid install records; refusing to start with half-trusted state: {file} ({reason})",
 
   "err.PLUGIN_NOT_FOUND": "Plugin not found: {pluginId}",
+  "err.PLUGIN_REF_AMBIGUOUS": "Ambiguous plugin reference: {input} matches several sources ({refs}) — use the full reference <origin>/<plugin id>",
+  "err.PLUGIN_SOURCE_INVALID": "Invalid source: {origin} (expected `local:<name>` or a market domain)",
   "err.PLUGIN_DIR_MISSING": "Plugin directory does not exist: {dir}",
   "err.PLUGIN_MANIFEST_INVALID": "Invalid plugin manifest: {pluginId} ({detail})",
   "err.PLUGIN_NO_ENTRY": "Plugin does not export the required init function: {pluginId}",

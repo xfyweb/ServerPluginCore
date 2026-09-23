@@ -96,6 +96,7 @@
 7. **`reason` 字段**：每个权限请求附一行"为什么需要"，安装时展示给用户——安装风险提示的实体内容（对应 Android 安装时的权限用途说明），也是审核时的评审材料（ADR-001 v3 审核）。
 
 8. **`dependencies.npm`（D8 载体）**：npm 依赖**声明**（`{ name, version }`）。**没有 `tier`**——依赖不分信任档（ADR-005 §7 v2）：勾选拦不住内联的依赖、分级又建立在不可信的声明上，所以整套退化成**构建期能力检查**（能带 / 不能带）+ 把**真实闭包**（构建器算出来的，不是声明的）写进产物元数据供人查看。`dependencies.plugins`（插件间依赖）是另一回事，它走运行时检查（plugin-lifecycle-design §5）。
+   **v4：依赖的身份是 `(origin, id)`**（`id` 只是市场内的名字，同名不同来源是**两个插件**）：`dependencies.plugins[]` 写成 `{ id, origin?, version?, author? }`，**省略 `origin` = 同源简写**（取依赖方自己的来源），跨源必须写明（`local:<名字>` 也算一类来源）。旧口径"同源依赖可省略 origin"保持不变，但**判据从 id 改成 `(origin, id)`** —— 只写 id 时，另一个来源的同名副本满足不了它。详见 `docs/events-and-hooks-design.md` §3.2/§3.5。
 
 9. **`configSchema`（插件配置声明，P1.5）**：声明用户可调参数（JSON Schema 子集：`string | number | boolean | enum | array`，带 `default`/`description`，敏感字段标 `secret: true`）。值存在宿主侧 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`，装载时按 schema 校验并补默认值，以**只读快照** `ctx.config` 注入（插件不能改自己的配置）。面板据此渲染配置表单（P3）。详见 plugin-lifecycle-design.md §1.6。
 

@@ -508,6 +508,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | **反向依赖保护** | 被**运行中**的插件依赖时，不许 `uninstall`／`disable`（disable 同样让依赖方失去依赖）。判据是运行态 → 维护模式（不装载）天然无阻拦，不需要旁路开关 | `PLUGIN_IN_USE`（含 `dependents` 参数，直接告诉管理员该先处理谁） |
 | **拓扑排序装载** | `startAll` 对"已启用且未装载"的集合做拓扑排序，**依赖先 init** | — |
 | **依赖环检测** | 环上插件直接判 `failed`，而不是互相报"依赖缺失"（死锁是配置错误，要一眼认出来） | `PLUGIN_DEPENDENCY_CYCLE` |
+| **依赖按 `(origin, id)` 认**（v4） | 依赖的身份是 `(origin, id)`：声明里省略 `origin` = 同源简写（取依赖方自己的来源），跨源必须写明；**另一个来源的同名副本满足不了它**（`id` 只是市场内的名字）。同名不同来源本身也能共存（记录/目录/配置/授权各自独立） | `PLUGIN_DEPENDENCY_MISSING` / `PLUGIN_DEPENDENCY_NOT_LOADED`（参数里给的是**完整引用**） |
 
 **仍不做**（见 §9）：版本区间解析、传递依赖的完整链式报告、依赖失效的运行时通知。
 

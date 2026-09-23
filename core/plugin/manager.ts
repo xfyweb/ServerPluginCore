@@ -10,7 +10,7 @@
 //   两者不重复：state 一律写记录，句柄只在内存。
 import type { PluginType } from '../../sdk/types';
 import { audit, digest, digestParams } from '../audit';
-import { loadConfig, pluginDataDir, type PluginLimits, type SpcConfig } from '../config';
+import { DEFAULT_LOCAL_SOURCE, loadConfig, pluginDataDir, type PluginLimits, type SpcConfig } from '../config';
 import { SpcError, toErrorShape } from '../errors';
 import { isValidGrantPoint } from '../permissions/check';
 import { registry } from '../permissions/registry';
@@ -28,6 +28,8 @@ import {
   findRecord,
   loadRecords,
   newRecord,
+  pluginRef,
+  resolveRecord,
   saveRecords,
   upsertRecord,
   type PluginErrorRecord,
@@ -37,6 +39,8 @@ import {
 
 /** 对外视图（CLI / HTTP / 面板共用同一份；不含沙箱句柄） */
 export interface PluginView {
+  /** **完整引用** `<origin>/<id>` —— 管理命令与跨插件引用都用它（`(origin, id)` 才是身份，见设计 §3.2） */
+  ref: string;
   id: string;
   dir: string;
   version: { code: number; name: string };
@@ -49,7 +53,8 @@ export interface PluginView {
   restartAttempts: number;
   dataDir: string;
   configPath: string;
-  origin: string | null;
+  /** 来源（身份的一半）：`local:<名字>` 或市场域名。**不再是 null** */
+  origin: string;
   /** 授权/配置变更后是否需要 reload 才生效 */
   reloadRequired: boolean;
 }
@@ -58,6 +63,12 @@ export interface InstallOptions {
   grants?: string[];
   /** 安装后是否立即装载（默认 true：安装清单即授权，见 intent-capture §8.1） */
   start?: boolean;
+  /**
+   * 归属来源（**身份的一半**）：`local:<名字>` 或市场域名。缺省 `local:default`。
+   * ⚠️ 同 id 不同来源是**两个插件**——所以这个参数决定数据/配置/授权落在哪一份里，
+   * 不是"元数据备注"（设计 §3.2/§3.3）。
+   */
+  source?: string;
 }
 
 export class PluginManager {
@@ -103,6 +114,7 @@ export class PluginManager {
       type = 'ability';
     }
     return {
+      ref: pluginRef(record),
       id: record.id,
       dir: record.dir,
       version: record.version,
@@ -113,10 +125,10 @@ export class PluginManager {
       capabilities: [...record.capabilities],
       lastError: record.lastError,
       restartAttempts: record.restartAttempts,
-      dataDir: pluginDataDir(record.id),
+      dataDir: pluginDataDir(record.origin, record.id),
       configPath: record.configPath,
       origin: record.origin,
-      reloadRequired: this.needsReload.has(record.id),
+      reloadRequired: this.needsReload.has(pluginRef(record)),
     };
   }
 
@@ -124,25 +136,35 @@ export class PluginManager {
     return loadRecords().plugins.map((r) => this.toView(r));
   }
 
-  status(id: string): PluginView {
-    const record = findRecord(loadRecords(), id);
-    if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
-    return this.toView(record);
+  /**
+   * `input` 可以是**完整引用**（`local:default/@a/b`），也可以是**裸 id**（`@a/b`，唯一匹配才认）。
+   * 歧义 ⇒ `PLUGIN_REF_AMBIGUOUS`；没有 ⇒ `PLUGIN_NOT_FOUND`（见 `resolveRecord`）。
+   */
+  status(input: string): PluginView {
+    return this.toView(this.mustRecord(input));
+  }
+
+  /** 管理面输入 → 记录；找不到就抛 `PLUGIN_NOT_FOUND`（带**原样输入**，方便对照打错的 ref） */
+  private mustRecord(input: string): PluginRecord {
+    const record = resolveRecord(loadRecords(), input);
+    if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: input });
+    return record;
   }
 
   // ---- 记录写入（唯一入口，保证 state 与记录不脱节）----
 
-  private patchRecord(id: string, patch: Partial<PluginRecord>): PluginRecord {
+  /** ⚠️ 参数是**完整引用**（内部一律用 ref 作键；管理面输入要先过 `mustRecord`） */
+  private patchRecord(ref: string, patch: Partial<PluginRecord>): PluginRecord {
     const file = loadRecords();
-    const record = findRecord(file, id);
-    if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
+    const record = findRecord(file, ref);
+    if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: ref });
     Object.assign(record, patch);
     saveRecords(file);
     return record;
   }
 
-  private setState(id: string, state: PluginState, error?: PluginErrorRecord | null): void {
-    this.patchRecord(id, { state, ...(error === undefined ? {} : { lastError: error }) });
+  private setState(ref: string, state: PluginState, error?: PluginErrorRecord | null): void {
+    this.patchRecord(ref, { state, ...(error === undefined ? {} : { lastError: error }) });
   }
 
   // ---- 依赖图：装载顺序 + 反向依赖保护 ----
@@ -153,25 +175,30 @@ export class PluginManager {
   //   · **装载顺序依赖优先**（拓扑排序），环上的插件直接判失败而不是互相报"依赖缺失"。
   //   · **反向保护**：被已启用插件依赖时，不许卸载／禁用。
 
-  /** 直接依赖的插件 id。清单读不出来时返回空并告警——一个坏插件不该阻塞别人的管理操作 */
+  /**
+   * 直接依赖的**完整引用**（不是裸 id）。
+   * 依赖声明里 `origin` 可省略 ⇒ 省略时取**依赖方自己的来源**（同源简写，见 plugin-signature-design §7.1）。
+   * 清单读不出来时返回空并告警——一个坏插件不该阻塞别人的管理操作。
+   */
   private directDeps(record: PluginRecord): string[] {
     try {
-      return (readManifestFromDir(record.dir).dependencies?.plugins ?? []).map((d) => d.id);
+      const deps = readManifestFromDir(record.dir).dependencies?.plugins ?? [];
+      return deps.map((d) => pluginRef({ origin: d.origin ?? record.origin, id: d.id }));
     } catch (err) {
       console.warn(
-        `[plugin] ${record.id} 清单不可读，依赖关系未知：${toErrorShape(err)?.code ?? 'INTERNAL'}`,
+        `[plugin] ${pluginRef(record)} 清单不可读，依赖关系未知：${toErrorShape(err)?.code ?? 'INTERNAL'}`,
       );
       return [];
     }
   }
 
-  /** 依赖是否就绪；不就绪时给出**原因**，让装载期能报准确的码 */
+  /** 依赖是否就绪（参数是**完整引用**）；不就绪时给出**原因**，让装载期能报准确的码 */
   private dependencyStatus = (
-    id: string,
+    ref: string,
   ): { ok: true } | { ok: false; reason: 'missing' | 'not-loaded'; state?: string } => {
-    const record = findRecord(loadRecords(), id);
+    const record = findRecord(loadRecords(), ref);
     if (!record || !record.enabled) return { ok: false, reason: 'missing' };
-    if (!this.loaded.has(id)) return { ok: false, reason: 'not-loaded', state: record.state };
+    if (!this.loaded.has(ref)) return { ok: false, reason: 'not-loaded', state: record.state };
     return { ok: true };
   };
 
@@ -184,23 +211,23 @@ export class PluginManager {
    * 维护模式是**启动形态**（启不启动插件），不是**校验开关**（检查要不要执行）；
    * 检查在任何形态下都照常执行，只是在不装载的形态下它没有对象可拦。
    */
-  private activeDependents(id: string): string[] {
+  private activeDependents(ref: string): string[] {
     const file = loadRecords();
     const users: string[] = [];
-    for (const loadedId of this.loaded.keys()) {
-      if (loadedId === id) continue;
-      const record = findRecord(file, loadedId);
-      if (record && this.directDeps(record).includes(id)) users.push(loadedId);
+    for (const loadedRef of this.loaded.keys()) {
+      if (loadedRef === ref) continue;
+      const record = findRecord(file, loadedRef);
+      if (record && this.directDeps(record).includes(ref)) users.push(loadedRef);
     }
     return users.sort();
   }
 
   /** 被运行中的插件依赖时拒绝卸载／禁用：否则它会毫无察觉地失去依赖 */
-  private assertNotInUse(id: string, action: 'uninstall' | 'disable'): void {
-    const dependents = this.activeDependents(id);
+  private assertNotInUse(ref: string, action: 'uninstall' | 'disable'): void {
+    const dependents = this.activeDependents(ref);
     if (dependents.length > 0) {
       throw new SpcError('PLUGIN_IN_USE', {
-        pluginId: id,
+        pluginId: ref,
         dependents: dependents.join(', '),
         action,
       });
@@ -213,62 +240,62 @@ export class PluginManager {
    * 比让它们各自报一个看不出所以然的 `PLUGIN_DEPENDENCY_MISSING` 清楚得多。
    */
   private resolveLoadOrder(records: PluginRecord[]): { order: PluginRecord[]; cyclic: Set<string> } {
-    const byId = new Map(records.map((r) => [r.id, r]));
+    const byRef = new Map(records.map((r) => [pluginRef(r), r]));
     const state = new Map<string, 'visiting' | 'done'>();
     const order: PluginRecord[] = [];
     const cyclic = new Set<string>();
     const stack: string[] = [];
 
-    const visit = (id: string): void => {
-      const st = state.get(id);
+    const visit = (ref: string): void => {
+      const st = state.get(ref);
       if (st === 'done') return;
       if (st === 'visiting') {
-        // 回边：栈上从该 id 起（含）的都在环里
-        const from = stack.indexOf(id);
+        // 回边：栈上从该 ref 起（含）的都在环里
+        const from = stack.indexOf(ref);
         if (from !== -1) for (const member of stack.slice(from)) cyclic.add(member);
         return;
       }
-      const record = byId.get(id);
+      const record = byRef.get(ref);
       if (!record) return; // 依赖不在本次装载集合里 → 交给装载期报 MISSING / NOT_LOADED
-      state.set(id, 'visiting');
-      stack.push(id);
+      state.set(ref, 'visiting');
+      stack.push(ref);
       for (const dep of this.directDeps(record)) visit(dep);
       stack.pop();
-      state.set(id, 'done');
+      state.set(ref, 'done');
       order.push(record);
     };
 
-    for (const r of records) visit(r.id);
+    for (const r of records) visit(pluginRef(r));
     return { order, cyclic };
   }
 
   // ---- 装载 / 卸载 ----
 
   private async loadAndStart(record: PluginRecord, opts: { isRestart?: boolean } = {}): Promise<void> {
-    const id = record.id;
+    const ref = pluginRef(record);
     // 重入保护：同一插件已在装载中/已装载 → 先干净卸载再装。
     // 没有这一条，"重装同一个插件"或"startAll 撞上已有句柄"就会叠加能力登记 + 泄漏沙箱。
-    if (this.loaded.has(id)) {
-      await this.stopAndUnload(id, 'reload');
+    if (this.loaded.has(ref)) {
+      await this.stopAndUnload(ref, 'reload');
     }
-    this.setState(id, 'loading');
+    this.setState(ref, 'loading');
     let run: RunningPlugin | undefined;
     try {
       run = await loadPlugin(record, {
         limits: this.limits(),
         dependencyStatus: this.dependencyStatus,
-        logger: (level, message) => console[level](`[${id}] ${message}`),
+        logger: (level, message) => console[level](`[${ref}] ${message}`),
       });
-      this.loaded.set(id, run);
+      this.loaded.set(ref, run);
       // 能力清单落记录（撤销依据 + 展示 + 审计追溯）
-      this.setState(id, 'running', null);
-      this.patchRecord(id, {
+      this.setState(ref, 'running', null);
+      this.patchRecord(ref, {
         capabilities: run.capabilities,
         // 一次成功 running 后清零连续失败计数（§2）
         ...(opts.isRestart ? {} : {}),
         restartAttempts: 0,
       });
-      this.needsReload.delete(id);
+      this.needsReload.delete(ref);
     } catch (err) {
       const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
       const pluginError: PluginErrorRecord = {
@@ -276,48 +303,48 @@ export class PluginManager {
         params: shape.params,
         at: Date.now(),
       };
-      this.setState(id, 'failed', pluginError);
-      this.loaded.delete(id);
-      await this.scheduleRestartIfConfigured(id, pluginError);
+      this.setState(ref, 'failed', pluginError);
+      this.loaded.delete(ref);
+      await this.scheduleRestartIfConfigured(ref, pluginError);
       throw new SpcError(shape.code, shape.params);
     }
   }
 
-  private async stopAndUnload(id: string, reason: StopReason): Promise<void> {
-    const run = this.loaded.get(id);
-    const record = findRecord(loadRecords(), id);
+  private async stopAndUnload(ref: string, reason: StopReason): Promise<void> {
+    const run = this.loaded.get(ref);
+    const record = findRecord(loadRecords(), ref);
     if (!run) {
       if (record) {
         // 没装载：能力登记也该是空的（保险：清一次保证幂等）
-        capabilities.revoke(id);
-        this.patchRecord(id, { capabilities: [] });
+        capabilities.revoke(ref);
+        this.patchRecord(ref, { capabilities: [] });
       }
       return;
     }
-    this.setState(id, 'stopping');
+    this.setState(ref, 'stopping');
     await unloadPlugin(run, reason, this.limits());
-    this.loaded.delete(id);
-    this.patchRecord(id, { capabilities: [] });
+    this.loaded.delete(ref);
+    this.patchRecord(ref, { capabilities: [] });
   }
 
   /** 失败重启策略（§2）：默认 manual —— 只落 failed，等管理员 reload */
-  private async scheduleRestartIfConfigured(id: string, error: PluginErrorRecord): Promise<void> {
+  private async scheduleRestartIfConfigured(ref: string, error: PluginErrorRecord): Promise<void> {
     const cfg = this.config().plugin;
     if (cfg.failedRestart !== 'auto') return;
 
     const file = loadRecords();
-    const record = findRecord(file, id);
+    const record = findRecord(file, ref);
     if (!record) return;
     const attempts = record.restartAttempts + 1;
-    this.patchRecord(id, { restartAttempts: attempts });
+    this.patchRecord(ref, { restartAttempts: attempts });
 
     if (attempts > cfg.maxRestartAttempts) {
       audit({
         ts: Date.now(),
-        pluginId: id,
+        pluginId: ref,
         method: 'lifecycle.restart',
-        target: id,
-        paramsDigest: digestParams({ attempts: String(attempts), decision: 'give-up' }) ?? digest(id),
+        target: ref,
+        paramsDigest: digestParams({ attempts: String(attempts), decision: 'give-up' }) ?? digest(ref),
         result: 'error',
         error: { code: error.code },
         durationMs: 0,
@@ -327,11 +354,11 @@ export class PluginManager {
 
     audit({
       ts: Date.now(),
-      pluginId: id,
+      pluginId: ref,
       method: 'lifecycle.restart',
-      target: id,
+      target: ref,
       paramsDigest:
-        digestParams({ attempts: String(attempts), backoffMs: String(cfg.restartBackoffMs) }) ?? digest(id),
+        digestParams({ attempts: String(attempts), backoffMs: String(cfg.restartBackoffMs) }) ?? digest(ref),
       result: 'ok',
       durationMs: 0,
     });
@@ -339,7 +366,7 @@ export class PluginManager {
     const timer = setTimeout(() => {
       this.restartTimers.delete(timer);
       void this.withLock(async () => {
-        const rec = findRecord(loadRecords(), id);
+        const rec = findRecord(loadRecords(), ref);
         if (!rec || !rec.enabled) return;
         try {
           await this.loadAndStart(rec, { isRestart: true });
@@ -356,16 +383,19 @@ export class PluginManager {
 
   /**
    * 安装：读目录 → 校验清单 → 写记录 → （默认）立即装载。
-   * 本地安装 ⇒ origin/signedBy/verifiedMeta 全 null（unanchored，无更新渠道）。
+   * **来源（`opts.source`）决定归属**：身份是 `(origin, id)`，同 id 不同源是**两个插件**（各自的目录/配置/授权）；
+   * 缺省 `local:default`。本地安装 ⇒ `signedBy`/`verifiedMeta` 为 null（unanchored：没有更新渠道）。
    */
   install(dir: string, opts: InstallOptions = {}): Promise<PluginView> {
     return this.withLock(async () => {
       const manifest = readManifestFromDir(dir);
       const file = loadRecords();
-      const existing = findRecord(file, manifest.id);
+      const origin = opts.source ?? DEFAULT_LOCAL_SOURCE;
+      const ref = pluginRef({ origin, id: manifest.id });
+      const existing = findRecord(file, ref);
       const record = newRecord(manifest, dir, {
+        source: origin,
         grants: opts.grants ?? existing?.grants ?? [],
-        origin: existing?.origin ?? null,
         signedBy: existing?.signedBy ?? null,
       });
       // 重新安装保留原 installedAt（"装了什么"的时间不该被覆盖）
@@ -377,64 +407,65 @@ export class PluginManager {
       if (record.enabled) {
         await this.loadAndStart(record);
       }
-      return this.status(record.id);
+      return this.status(ref);
     });
   }
 
-  enable(id: string): Promise<PluginView> {
+  enable(input: string): Promise<PluginView> {
     return this.withLock(async () => {
-      const record = this.patchRecord(id, { enabled: true, state: 'installed', lastError: null });
-      if (!this.loaded.has(id)) {
+      const ref = pluginRef(this.mustRecord(input));
+      const record = this.patchRecord(ref, { enabled: true, state: 'installed', lastError: null });
+      if (!this.loaded.has(ref)) {
         await this.loadAndStart(record);
       }
-      return this.status(id);
+      return this.status(ref);
     });
   }
 
-  disable(id: string): Promise<PluginView> {
+  disable(input: string): Promise<PluginView> {
     return this.withLock(async () => {
+      const ref = pluginRef(this.mustRecord(input));
       // 禁用同样会让依赖方失去依赖（`dependencyStatus` 要求"已启用且已装载"）→ 一并设防
-      this.assertNotInUse(id, 'disable');
-      await this.stopAndUnload(id, 'disable');
-      this.patchRecord(id, { enabled: false, state: 'disabled' });
-      return this.status(id);
+      this.assertNotInUse(ref, 'disable');
+      await this.stopAndUnload(ref, 'disable');
+      this.patchRecord(ref, { enabled: false, state: 'disabled' });
+      return this.status(ref);
     });
   }
 
   /** 重载：整插件 stop → 重新 load（不做模块热替换），也是 failed 的恢复通道 */
-  reload(id: string): Promise<PluginView> {
+  reload(input: string): Promise<PluginView> {
     return this.withLock(async () => {
-      const record = findRecord(loadRecords(), id);
-      if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
-      if (!record.enabled) throw new SpcError('PLUGIN_DISABLED', { pluginId: id });
-      await this.stopAndUnload(id, 'reload');
+      const record = this.mustRecord(input);
+      const ref = pluginRef(record);
+      if (!record.enabled) throw new SpcError('PLUGIN_DISABLED', { pluginId: ref });
+      await this.stopAndUnload(ref, 'reload');
       await this.loadAndStart(record);
-      return this.status(id);
+      return this.status(ref);
     });
   }
 
   /** 卸载：数据目录与配置值保留（§12-3 倾向）；v2 起没有 reserved 例外 */
-  uninstall(id: string): Promise<void> {
+  uninstall(input: string): Promise<void> {
     return this.withLock(async () => {
+      const ref = pluginRef(this.mustRecord(input));
       const file = loadRecords();
-      const record = findRecord(file, id);
-      if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
       // 被别的（已启用）插件依赖时不许卸载：先禁用/卸载依赖方
-      this.assertNotInUse(id, 'uninstall');
-      await this.stopAndUnload(id, 'uninstall');
-      dropRecord(file, id);
+      this.assertNotInUse(ref, 'uninstall');
+      await this.stopAndUnload(ref, 'uninstall');
+      dropRecord(file, ref);
       saveRecords(file);
-      this.needsReload.delete(id);
+      this.needsReload.delete(ref);
     });
   }
 
   /** 逐点授予（精确权限点，拒绝通配；点必须已登记且被插件声明） */
-  grant(id: string, points: string[]): PluginView {
+  grant(input: string, points: string[]): PluginView {
     if (points.length === 0) {
       throw new SpcError('INVALID_ARGS', { reason: 'no-permission-point-given' });
     }
-    const record = findRecord(loadRecords(), id);
-    if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
+    const record = this.mustRecord(input);
+    const ref = pluginRef(record);
     const manifest = readRecordManifest(record);
     const declared = manifest.permissions.map((p) => p.name);
     for (const point of points) {
@@ -451,19 +482,19 @@ export class PluginManager {
       }
     }
     const grants = [...new Set([...record.grants, ...points])].sort();
-    this.patchRecord(id, { grants });
+    this.patchRecord(ref, { grants });
     // 沙箱持有的是装载时的授予快照 → 运行中的插件需要 reload 才生效
-    if (this.loaded.has(id)) this.needsReload.add(id);
-    return this.status(id);
+    if (this.loaded.has(ref)) this.needsReload.add(ref);
+    return this.status(ref);
   }
 
-  revoke(id: string, points: string[]): PluginView {
-    const record = findRecord(loadRecords(), id);
-    if (!record) throw new SpcError('PLUGIN_NOT_FOUND', { pluginId: id });
+  revoke(input: string, points: string[]): PluginView {
+    const record = this.mustRecord(input);
+    const ref = pluginRef(record);
     const remove = new Set(points);
-    this.patchRecord(id, { grants: record.grants.filter((g) => !remove.has(g)) });
-    if (this.loaded.has(id)) this.needsReload.add(id);
-    return this.status(id);
+    this.patchRecord(ref, { grants: record.grants.filter((g) => !remove.has(g)) });
+    if (this.loaded.has(ref)) this.needsReload.add(ref);
+    return this.status(ref);
   }
 
   // ---- 启动 / 停机 ----
@@ -486,22 +517,23 @@ export class PluginManager {
       }
       if (dirty) saveRecords(file);
 
-      const pending = file.plugins.filter((r) => r.enabled && !this.loaded.has(r.id));
+      const pending = file.plugins.filter((r) => r.enabled && !this.loaded.has(pluginRef(r)));
       const { order, cyclic } = this.resolveLoadOrder(pending);
 
-      for (const id of cyclic) {
+      for (const ref of cyclic) {
         const error: PluginErrorRecord = { code: 'PLUGIN_DEPENDENCY_CYCLE', at: Date.now() };
-        this.setState(id, 'failed', error);
-        console.warn(`[plugin] ${id} 处在依赖环上，跳过装载（环成员：${[...cyclic].join(', ')}）`);
+        this.setState(ref, 'failed', error);
+        console.warn(`[plugin] ${ref} 处在依赖环上，跳过装载（环成员：${[...cyclic].join(', ')}）`);
       }
 
       for (const record of order) {
-        if (cyclic.has(record.id) || this.loaded.has(record.id)) continue;
+        const ref = pluginRef(record);
+        if (cyclic.has(ref) || this.loaded.has(ref)) continue;
         try {
           await this.loadAndStart(record);
         } catch (err) {
           const shape = toErrorShape(err);
-          console.warn(`[plugin] ${record.id} 装载失败：${shape?.code ?? 'PLUGIN_LOAD_FAILED'}（继续装载下一个）`);
+          console.warn(`[plugin] ${ref} 装载失败：${shape?.code ?? 'PLUGIN_LOAD_FAILED'}（继续装载下一个）`);
         }
       }
       return this.list();
@@ -512,14 +544,14 @@ export class PluginManager {
     return this.withLock(async () => {
       for (const timer of this.restartTimers) clearTimeout(timer);
       this.restartTimers.clear();
-      for (const id of [...this.loaded.keys()]) {
+      for (const ref of [...this.loaded.keys()]) {
         try {
-          await this.stopAndUnload(id, reason);
-          const record = findRecord(loadRecords(), id);
-          this.patchRecord(id, { state: record?.enabled ? 'stopped' : 'disabled' });
+          await this.stopAndUnload(ref, reason);
+          const record = findRecord(loadRecords(), ref);
+          this.patchRecord(ref, { state: record?.enabled ? 'stopped' : 'disabled' });
         } catch (err) {
           const shape = toErrorShape(err);
-          console.warn(`[plugin] ${id} 卸载异常：${shape?.code ?? 'INTERNAL'}`);
+          console.warn(`[plugin] ${ref} 卸载异常：${shape?.code ?? 'INTERNAL'}`);
         }
       }
     });
