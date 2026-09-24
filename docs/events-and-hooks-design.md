@@ -426,20 +426,41 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 - "**平台构建 / 自行构建**"两种来源因此走**同一套 meta 格式**：自行构建的包就是没有 `plugin.meta.sig` 的无源包（unanchored）；
 - **`spc keygen` + `spc build --key` 只产作者签名**（市场签名是市场代码的事）。
 
-**依赖声明**（形状不变）与解析四步：
+**依赖声明**（形状：2026-09-24 加 `as` / `call`）与解析四步：
 
 ```json
 "dependencies": { "plugins": [
-  { "origin": "market.spc.xfyweb.cn", "id": "@b/backup", "version": ">=1.2.0 <2",
-    "author": { "pub": "<base64 裸公钥>", "fingerprint": "sha256:…" } }
+  { "as": "backup", "id": "@b/backup", "origin": "market.spc.xfyweb.cn", "version": ">=1.2.0 <2",
+    "author": { "pub": "<base64 裸公钥>", "fingerprint": "sha256:…" },
+    "call": ["/api/backup/run"] }
 ]}
 ```
 
-- **`origin`（唯一性锚）与 `author.pub`（同一性证明）都要写**：声明**自足** —— 宿主不必"恰好先见过那个包"就能判定；
+| 字段 | 必填 | 作用 |
+|---|---|---|
+| `id` | ✔ | 插件 id（`@user/name`）——**包内唯一**：同一清单里出现两次就必须给每条写 `as` |
+| `as` | ✘ | **包内别名**：调用句柄（代码里 `plugins.call('backup', …)`）。只在包内有效、与源无关 |
+| `author.pub` | ✔ | 同一性证明（见下） |
+| `origin` | 按目标 | 市场目标必填；本地目标省略（见下面的四格表） |
+| `version` | ✘ | 版本区间（解析待 P2） |
+| `call` | ✘ | **调用面的请求**：我要调它的哪些端点（`path` 列表）。声明跟着依赖走 ⇒ **包内不带源**；授权仍落在带源的实际点位上 |
+
+- **`author.pub` 是必填**（2026-09-24 定）：构建层**强制签名**（不存在无签名包），而 `id` 与 `author.id` **都不唯一** ⇒ 唯一性来自 `origin`、**同一性来自公钥**，两者缺一不可。`origin` 的写法按目标分四格（下表）。
 - `fingerprint` 可选，写了就**必须与 `pub` 自洽**（照 `core/sources/keyring.ts` 的 `assertFingerprint` 先例）；
 - **解析比公钥、不比指纹字符串**（指纹只在展示/审计里用）：这是**功能正确性**问题 —— 比错了会把 A 接到错的 B 上；
 - 宿主侧另存一张**作者名册** `(origin, id) → { pub, fingerprint, firstSeenAt }`：连续性 + 展示 + 审计（不是信任锚，只是"这个名字以前是谁"）。它与 `keyring` 的源条目**共用机制、分开存储**：源由**管理员**锚定、永不自动新增；作者**首见即记**（是识别，不是信任）；
 - 解析四步：① 读 A 的声明取 `author.pub`（+ 可选指纹自洽）→ ② 读已装 B 的 `plugin.meta.json` + `plugin.author.sig`，**用 A 声明的公钥**验签 → ③ 公钥不等或验签失败 ⇒ **依赖不满足** → ④ 比版本区间与 `origin`。
+
+#### `origin` 的写法按**目标**分四格（2026-09-24 定）
+
+| 声明者 → 目标 | 写法 | 为什么 |
+|---|---|---|
+| 任意 → **市场包** | `origin` **必填**（市场域名） | 市场域名是**作者发布时就知道**的稳定标识；同名插件在两个市场就是两个不同的东西 |
+| 本地包 → **本地包**、**省略 `origin`** | **在"本地源范围"内**按 `author.pub + id` **唯一匹配**（0 个 ⇒ 不满足；2 个 ⇒ 歧义拒） | ⚠️ **桶名是"装机的人"起的标签**（`std（小A）`），作者签名时**不可能知道它** ⇒ 写死桶名的声明**本来就不自足**。同桶的情形天然继续工作（唯一匹配就命中它自己那个桶），于是 **[promote 搬运](#36-换源reanchor) 不会打断本地→本地的依赖** |
+| 本地包 → 本地包、**写明 `local:<名字>`** | 精确匹配该桶（照旧） | 作者自愿承担"对不上"的风险 |
+| **市场包 → 本地包** | **禁止**（构建期 / 装载期拒） | 本地源**不存在于别人的机器上**，这种声明在任何别的机器上都不可能满足 |
+
+> 同源简写的原口径（"省略 = 取依赖方自己的来源"）在**市场包之间**不变；上表第 2 行是**本地目标**的扩展 —— 因为对本地包，唯一性实际来自**作者公钥**（`plugin-signature-design.md` §3bis 的"本地源 = 一个作者的桶"）。⏳ **未落地**，随 ④ 一起做。
 
 ### 3.6 换源（reanchor）
 
@@ -452,16 +473,35 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 
 **分不分家由主键定，能不能搬家由公钥证。**
 
+**搬运会动到什么 —— 按"谁指向它 / 谁修得了"分类**（2026-09-24 补，这是搬运设计的判据）：
+
+| 谁指向被搬的插件 | 存在哪 | 搬运之后 | 宿主能单方面修吗 |
+|---|---|---|---|
+| 它自己的数据 / 配置 / 授权 | 自己那条记录 + 磁盘目录 | 一起搬 | ✅ 能 |
+| **别人对它的跨插件授权**（点是它提供的） | **别人的记录**（宿主侧） | 点名随源变 ⇒ 旧授权挂空（`UNKNOWN_POINT`） | ✅ **能**：点名是**生成**出来的，用「旧点名集合 → 新点名集合」映射重写别人的 `grants`（不解析点名，只做字符串替换） |
+| **别人的依赖声明**（`{ origin, id, author }`） | **别人的包里 —— 被签名的字节** | 依赖不满足 ⇒ 依赖方**装载失败** | ❌ **不能**（改一个字节就破签名） |
+| 审计历史里的 `ref` | 审计日志 | 只是历史，正确 | 不适用 |
+
+⇒ 三条硬要求：① **批量原子**（同一个作者的几个一起搬；否则出现"依赖方在新桶、被依赖方在旧桶"的中间态）；
+② **被依赖的插件不许单独搬**（`PLUGIN_IN_USE` 的语义扩展："换个源"也是"抽走" —— 要么连依赖方一起搬，要么先处理依赖方）；
+③ 搬运是**跨记录**操作，必须过 manager 唯一锁 + 落审计（旧/新 origin、公钥指纹、点名映射、会被打断的依赖方清单）。
+而[上表](#origin-的写法按目标分四格2026-09-24-定)第 2 行那条规则（本地目标省略 `origin` ⇒ 本地范围唯一匹配）正是"本地→本地的依赖不会因为 promote 而断"的原因。
+
+**本地侧的典型搬运 = promote**（`plugin-signature-design.md` §3bis）：同一个作者在杂桶里出现第二例时，建一个属于他的源并把这一组搬过去；因为公钥相同，reanchor 的前提天然满足。
+
 ```
 动作：spc plugin reanchor <完整引用> --origin <新来源>        （面板入口属 P3）
 前提：新包的作者公钥 == 记录里的 authorFingerprint
 做：  改 origin / signedBy / verifiedMeta
       + 搬数据目录（<sanitize(旧 origin)>/ → <sanitize(新 origin)>/）
       + 重写记录里的 grants 与 capabilities（§3.4 的点名随源变）
-      + 审计 plugin.reanchor（旧/新 origin、指纹、新旧点名映射）
+      + **重写所有引用它的记录的 grants**（旧点名集合 → 新点名集合，字符串替换）
+      + 审计 plugin.reanchor（旧/新 origin、指纹、新旧点名映射、被牵连的记录）
+⛔ 前置检查：被别的已启用插件**依赖**时不许单独搬（PLUGIN_IN_USE 的扩展）——
+   要么把同一作者的那几个**一起原子搬**，要么先处理依赖方
 ```
 
-**典型场景正是"先本地发放、后上市场"**：`local:dev-a/@a/foo` → `market.spc.xfyweb.cn/@a/foo`（公钥一致即可换源，数据 / 配置 / 授权一起搬过去）。本地源之间也允许（`local:dev-a` → `local:dev-b`，比如按机器重新归属）。
+**典型场景正是"先本地发放、后上市场"**：`local:dev-a/@a/foo` → `market.spc.xfyweb.cn/@a/foo`（公钥一致即可换源，数据 / 配置 / 授权一起搬过去）。本地源之间也允许（`local:dev-a` → `local:dev-b`，比如按机器重新归属，或者 §3bis 的 **promote**：为某个作者单独建源）。
 
 **必须提示管理员**：`unanchored → anchored` 意味着该插件**从此可静默升级**（一次实质的信任升级）；反向（市场 → 本地）同样允许，之后失去更新渠道。
 
@@ -469,15 +509,32 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 
 ### 3.7 调用方法、门槛与失败语义
 
-沙箱内：`plugins.call("<origin>/@user/name", path, paramsJson, bytes?)` → **JSON 文本**（照 `exec.run` 的约定：唯一不自动解码的方法）+ 可选字节槽（与事件面同一条通道）。
+沙箱内：`plugins.call(<依赖句柄>, path, paramsJson, bytes?)` → **JSON 文本**（照 `exec.run` 的约定：唯一不自动解码的方法）+ 可选字节槽（与事件面同一条通道）。
 
-**三条门槛**（与事件面同构）：
+⚠️ **第一个参数不是"完整引用"，是清单里那条依赖的句柄**（2026-09-24 定）：
 
-1. 调用方在 `dependencies.plugins` 里**声明依赖该 `(origin, id)`**；
-2. 被调方的端点声明 `callable` 含 `'plugins'`；
-3. 管理员在动态点 `plugins.call.<引用>.<path>` 上授予（`scope: host`、**`grant: explicit`**）—— ⚠️ **2026-09-23 从 `install` 改成 `explicit`**：`install` 等于"清单里写一行就通"，而插件之间默认隔离，跨过去必须逐条点头。
+- 句柄 = 依赖条目的 **`as`**（包内别名）；没写 `as` 时用 **`id`**。**同一清单里 `id` 必须唯一；重名就必须给每条依赖写 `as`** —— 歧义在**清单校验期**就挡掉，所以代码里永远无歧义，单依赖的常见情形也不用多写一行；
+- **为什么不让代码写源**：本地源的名字是**"装机的人"起的标签**（`std（小A）`，promote 后成 `local:std-a`），作者签名时**不可能知道**它；写进代码就等于"换一次桶，所有调用方全部重建"；
+- ⇒ **包内被签名的字节里不存在本地源名**（只有依赖市场包时才写市场域名，而它天然稳定）；promote / 本地源改名**不需要任何插件重建**。
+
+**锚定解析（宿主侧，装载时一次）**：
+
+```
+句柄 → 清单里那条 dependencies.plugins[] 声明 → 按 (origin?, author.pub, id) 解析成**实际 ref**
+     ⇒ 生成具体点名 plugins.call.<实际 ref>.<path>
+判定 / 授权 / 临时表 全部按**带源的点名**走（管理员批准的是"这个具体的插件"）；
+审计条目与响应信封记**实际 ref**（origin / id / version）—— 源出现在该出现的地方
+```
+
+**四条门槛**（与事件面同构）：
+
+1. 调用方在 `dependencies.plugins` 里**声明依赖它**（句柄只在声明的范围内有效 —— "看不见别的插件"是默认）；
+2. **`path` 在该依赖条目的 `call` 列表里**：**"我要用它什么"是包内被签名的请求**，替代了 `permissions[]` 里那条带源的动态点名（声明不带源、**授权带源**）；
+3. 被调方的端点声明 `callable` 含 `'plugins'`；
+4. 管理员在动态点 `plugins.call.<实际引用>.<path>` 上授予（`scope: host`、**`grant: explicit`**）—— ⚠️ **2026-09-23 从 `install` 改成 `explicit`**：`install` 等于"清单里写一行就通"，而插件之间默认隔离，跨过去必须逐条点头。
 
 **候选集随被调方升级重算**：它删掉的端点自动失去授予（fail-closed），新增的端点走**增量同意**。
+**被调方换源（promote / reanchor）后**：句柄不变、`call` 不变、宿主重新解析；**只有管理员的授权要跟着重写**（点名随源变，§3.6）—— 这是搬运唯一需要宿主动手的地方。
 
 **失败语义**：
 
@@ -544,7 +601,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 5. 意见的 `decision` 取值要不要收敛成固定枚举（现在是"约定 + 允许扩展字符串"）；
 6. **`releasedAt` 归谁写**（⚠️ **这条要用户拍**）：元数据由构建工具产出、市场只追加签名 ⇒ 若 `releasedAt` 由构建期填，市场只能"核对后拒签"而不能改写；但它同时是**授权判定锚点**（`market-license-design.md` §3：可下载 ⟺ `releasedAt ≤ maintenanceUntil`）。本文按"**构建期填 + 市场核对/拒签**"写；要让市场自己定这个值，就得改成"市场改写字节 + 作者签名缩小覆盖范围"，代价更大。**将来市场若要加自己的事实，用独立的签名对象，不要改写 meta**；
 7. **作者私钥怎么保管**（`spc keygen` 的形态）：私钥文件格式与路径约定、要不要 passphrase —— 它**永不进包**，文档建议 `chmod 600`；不做 passphrase 也说得过去（它保护的是"身份连续性"，不是数据机密性）；
-8. **本地源在 keyring 的具体形状**（**已决定后置到 P4 安装流**）：`kind: 'local'` 要放宽"origin 必须是域名"与"必须带公钥"两条校验；今天没有任何代码需要它（不可 fetch、无公钥、无轮换）⇒ 本批只做了**命名空间**（`local:<名字>` 的校验与目录段），条目留到面板要展示源清单时再加；
+8. ~~**本地源在 keyring 的具体形状**~~ **✅ 语义已定（2026-09-24）**：本地源 = **一个作者的桶**（身份 = 那把作者公钥，名字只是标签）+ `local:default` **杂桶** + 同钥第二例**建议独立成源（promote）**；条目带可选 `authorAnchor`（市场源不许带）。**条目落地 P4**（`spc source` CLI + 面板源清单）；promote 的搬运复用 **⑥ reanchor**（§3.6，批量 / 原子 / 列全会被打断的依赖方）。细节见 `plugin-signature-design.md` §3bis 与 §5 末；
 9. **端点 `path` 命名空间的前缀规则**：本文写"以自己完整引用的命名空间开头"，具体是 `/<origin>/@user/name/…` 还是 `/<user>/<name>/…`（后者短但跨源会撞）——落地时定；
 10. **`plugins.call` 这个组名**：**2026-09-23 已按它落地**（备选 `peers.call` 未采用）。它同时是**权限点前缀**（`plugins.call.<引用>.<path>`）与注册表的 `group`；真要改，改三处即可 —— `core/permissions/points.ts` 的 `CALL_POINT_PREFIX`、`sdk/schema/manifest.schema.json` 的 pattern 动态分支、用例里的字面量（`grep plugins.call`）。
 
@@ -556,8 +613,8 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | 2 | ~~**身份主键改 `(origin, id)`**~~ **✅ 已做（2026-09-22）**：记录（含 `pluginRef`/`resolveRecord`）/ 数据目录（`<sanitize(origin)>/`）/ 配置 / 能力登记（条目改带 `ref`）/ CLI（`--source` + 打完整引用）/ HTTP（`source` 入参）/ 依赖检查（`dep.origin ?? 自己来源`）/ 生命周期审计与错误的 `pluginId` 改带 ref；本地来源具名 `local:<名字>` | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
 | **2b** | ~~**运行时层的身份**~~ **✅ 已做（2026-09-22）**：`AuditEntry` 加 `ref?`（**只增不改**，`pluginId` 保留）；`sandbox.ts` 用就地包装 `auditOwn` 让十几处审计一次到位；`hostApi.ts` 同理（`PluginHostContext.ref`）；`loader` 把 `ref` 同时传给 `buildHostApi` 与 `createSandbox`；判别用例：同 id 两来源的 `fs.write` 审计两条，`pluginId` 相同、`ref` 分得开 | ② 的必然尾巴（字段是**加**不是改，符合"审计格式只增不改"） |
 | 3 | ~~"引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点~~ **✅ 已做（2026-09-23，09-24 定型）**：`core/permissions/points.ts`（校验 + 单射，非法即 `PERMISSION_POINT_INVALID`）；两族点放在**临时表**里 —— 从当前活着的插件**派生**（`core/permissions/source.ts`），**不写冻结的注册表**（判定查"冻结表 ∪ 临时表"）；两族都是 `explicit` 档（插件间默认隔离）；`permissions[].name` 的 schema 放宽出动态分支；用例 `core/__tests__/dynamic-points.test.ts` | 授权面；与 §3.4/§3.7 一起钉死 |
-| 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub` + `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖解析比公钥 + 作者名册 `authors.json` | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
-| 5 | **调用本体**：`plugins.call`（投递链 + 有界重试 + 审计 `callId` + 深度上限） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提 |
+| 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub`（metaSchema 1→2）+ `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖声明 `author` **必填** + 依赖解析比公钥 + 作者名册 `authors.json` + **本地包 TOFU（打印"归入哪个源 + 首见指纹"，冲突给两条出路）** + `--accept-key-change` + **本地目标的 `origin` 省略规则**（§3.5 四格表的第 2 行）；⚠️ 顺带修 `verify.ts` 两处现状（`metaSchema` 硬编 1、`walk()` 只跳两个信封文件） | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
+| 5 | **调用本体**：`plugins.call`（句柄锚定解析 + 投递链 + 有界重试 + 审计 `callId` + 深度上限）；清单面加 `dependencies.plugins[].as` / `.call`（schema + 类型 + 装载期物化） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提。⚠️ 函数签名与清单字段由 §3.7 定死（**句柄不是引用**） |
 | 6 | **reanchor 动作**（CLI；面板入口属 P3） | 前面都就位后才谈得上"搬家" |
 | 7 | **构建层**（P2 尾）：`spc keygen` + `spc build --key` —— **产出 `plugin.meta.json`（含 `authorPub`）与 `plugin.author.sig`，只出作者签名**（市场签名由市场代码追加） | 与构建层那一批合流；在此之前仓库内 fixtures 用**测试密钥**签名（明确标注不是真身份），市场侧的追加签名流程属 P4 |
 

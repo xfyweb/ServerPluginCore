@@ -92,12 +92,21 @@
 
 5. **`compat.minCore/targetCore`（对应 minSdk/targetSdk）**：解决插件与核心的版本耦合——`minCore` = 运行所需的核心 API 下限；`targetCore` = 开发针对的核心版本。核心 API 契约 semver + 废弃期（api-contract §6）由此可判定"此插件能否在此核心版本上运行 / 是否需要警告"。这是生态一旦建立就最难改的部分，第一天就要定。
 
-6. **插件间可见性（对应 Android 11+ `<queries>`）**：插件默认看不见其他插件；要订阅他人事件或调用他人 Web API，必须在 `dependencies.plugins` 显式声明（同源依赖省略 `origin`，跨源依赖必须写明；**缺少的源不会被自动添加**，只提示管理员，见 plugin-signature-design.md §7.1）。顺带解决了 api-contract §12 的待定项"事件 topic 授权模型（通配 vs 枚举）"——用显式声明替代通配：**订阅他人事件必须先声明依赖发布方**，见 `docs/events-and-hooks-design.md` §1.7。
+6. **插件间可见性（对应 Android 11+ `<queries>`）**：插件默认看不见其他插件；要订阅他人事件或调用他人 Web API，必须在 `dependencies.plugins` 显式声明（**`author.pub` 必填**；`origin` 的写法按目标分四格 —— 市场目标必填域名、**本地目标可省略**（在本地源范围内按 `author.pub + id` 唯一匹配）、**市场包不许依赖本地源**，见表下）。顺带解决了 api-contract §12 的待定项"事件 topic 授权模型（通配 vs 枚举）"——用显式声明替代通配：**订阅他人事件必须先声明依赖发布方**，见 `docs/events-and-hooks-design.md` §1.7。
+
+   | 声明者 → 目标 | `origin` | 为什么 |
+   |---|---|---|
+   | 任意 → 市场包 | **必填**（市场域名） | 域名是作者发布时就知道的稳定标识 |
+   | 本地包 → 本地包 | **省略** ⇒ 本地源范围内按 `author.pub + id` 唯一匹配 | 本地桶名是**装机人**起的标签（`std（小A）`），作者签名时不可能知道 ⇒ 于是 **promote 搬运不会打断本地→本地的依赖** |
+   | 本地包 → 本地包（写明 `local:<名字>`） | 精确匹配该桶 | 作者自愿承担"对不上"的风险 |
+   | 市场包 → 本地包 | **禁止** | 本地源不存在于别人的机器上 |
 
 7. **`reason` 字段**：每个权限请求附一行"为什么需要"，安装时展示给用户——安装风险提示的实体内容（对应 Android 安装时的权限用途说明），也是审核时的评审材料（ADR-001 v3 审核）。
 
 8. **`dependencies.npm`（D8 载体）**：npm 依赖**声明**（`{ name, version }`）。**没有 `tier`**——依赖不分信任档（ADR-005 §7 v2）：勾选拦不住内联的依赖、分级又建立在不可信的声明上，所以整套退化成**构建期能力检查**（能带 / 不能带）+ 把**真实闭包**（构建器算出来的，不是声明的）写进产物元数据供人查看。`dependencies.plugins`（插件间依赖）是另一回事，它走运行时检查（plugin-lifecycle-design §5）。
-   **v4：依赖的身份是 `(origin, id)`**（`id` 只是市场内的名字，同名不同来源是**两个插件**）：`dependencies.plugins[]` 写成 `{ id, origin?, version?, author? }`，**省略 `origin` = 同源简写**（取依赖方自己的来源），跨源必须写明（`local:<名字>` 也算一类来源）。旧口径"同源依赖可省略 origin"保持不变，但**判据从 id 改成 `(origin, id)`** —— 只写 id 时，另一个来源的同名副本满足不了它。详见 `docs/events-and-hooks-design.md` §3.2/§3.5。
+   **v4：依赖的身份是 `(origin, id)` + 作者公钥**（`id` 只是市场内的名字，同名不同来源是**两个插件**）：`dependencies.plugins[]` 写成 `{ as?, id, origin?, version?, author: { pub, fingerprint? }, call? }`，**`author.pub` 必填**（构建层强制签名 ⇒ 不存在无签名包；`id` 与 `author.id` 都不唯一，唯一性来自 `origin`、**同一性来自公钥**）。`origin` 省略的语义**按目标分**（见要点 6 的表）：市场目标省略 = 同源简写（照旧），**本地目标省略 = 本地源范围唯一匹配**。
+   **2026-09-24 加两个字段**：`as` = **包内别名**（调用句柄；同一清单内 `id` 必须唯一，重名就必须给每条写 `as`，于是代码里 `plugins.call('backup', …)` 永远无歧义）；`call` = **调用面的请求**（"我要调它的哪些端点"）。
+   ⇒ **包内被签名的字节里不含本地源名**：作者只声明"依赖谁、要调什么"，**宿主在装载时锚定解析成实际 ref**、生成带源的点名；**授权带源、声明不带源**，审计记实际锚定结果。详见 `docs/events-and-hooks-design.md` §3.2/§3.5/§3.7 与 `plugin-signature-design.md` §3bis。
 
 9. **`configSchema`（插件配置声明，P1.5）**：声明用户可调参数（JSON Schema 子集：`string | number | boolean | enum | array`，带 `default`/`description`，敏感字段标 `secret: true`）。值存在宿主侧 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`，装载时按 schema 校验并补默认值，以**只读快照** `ctx.config` 注入（插件不能改自己的配置）。面板据此渲染配置表单（P3）。详见 plugin-lifecycle-design.md §1.6。
 

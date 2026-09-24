@@ -291,6 +291,10 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 3. **点必须"可声明"**：尾段不含空白（`permissions[].name` 的 schema 表达不了 ⇒ 会生成一个谁都申请不了的点）、
    不含 `*`（`matchDeclaration` 会当通配 ⇒ 一次声明把对方**将来新增**的端点/订阅全预授权了）。
    不满足即**装载失败**（`PERMISSION_POINT_INVALID`），全有或全无，不留半登记；
+   ⚠️ **跨插件点的"声明"不由作者写源**（2026-09-24）：调用面的请求写在**依赖条目**的 `call: ['/api/x']` 里、
+   订阅面的请求写在 `exports.events.subscribe[].topic` 里 —— **包内被签名的字节里不含本地源名**
+   （本地桶名是装机人起的标签，作者不可能知道）。宿主在装载时按依赖**锚定解析**成实际 ref、生成带源的点名；
+   **授权（管理员批准的那条）仍然带源**，审计与响应信封记**实际 ref**。见 `events-and-hooks-design.md` §3.7；
 4. **等级取被引用方的声明**：订阅点取发布方的 `classification`（`secret` 的 topic **不派生点** —— 它本就禁止跨插件，
    派生等于承诺一条走不通的路）；调用点没有分类可依（端点只有面板侧的 `permission`），取 `public/low` 兜底，
    这一次调用的真实等级由**调用时声明**与用户目录覆盖合成（§7.1）。
