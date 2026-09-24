@@ -13,7 +13,7 @@
 | `<uses-permission>` | **声明"需要"，不是"拥有"** | `permissions[]`（请求） |
 | `<permission protectionLevel>` | 权限定义 + **授予仪式** | **无对应**——宿主权限注册表（D4）用 `scope`（碰不碰宿主资源）+ `grant`（三档授予方式）+ 等级（提示强度），见 api-contract §6 |
 | `protectionLevel=normal` | 安装时自动授予 | `grant: auto`：只碰插件自身的数据 → 安装即生效 |
-| `protectionLevel=dangerous` | 需用户同意、可随时撤销 | **按读取/写入再分**：`grant: install`（host 只读与插件自有能力 → 安装清单即生效、可一键收回）／`grant: explicit`（写宿主资源、执行模板、提权、出网 → 默认拒绝 + 逐点授予）；可撤销（D7） |
+| `protectionLevel=dangerous` | 需用户同意、可随时撤销 | **按读取/写入再分**：`grant: install`（host 只读与插件自有能力 → 首次安装播种进白名单，之后与 explicit 同一条道）／`grant: explicit`（写宿主资源、执行模板、提权、出网、**跨插件调用/订阅** → 默认拒绝 + 逐点授予）；可撤销（D7） |
 | `protectionLevel=signature` | 仅同签名应用可用 | **无对应**——来源（签名 / 市场）不参与权限判定（ADR-001 v3）；高敏感点靠 `secret` / `high` 等级的**二次确认** |
 | `protectionLevel=signatureOrSystem` | 同签名或系统应用 | ≈ 内置插件（面板本身） |
 | `android:exported` | 组件默认私有，显式导出才对外 | `exports` 块：Web API/路由/事件默认私有 |
@@ -79,7 +79,7 @@
    | 轴 | 字段 | 规则 |
    |---|---|---|
    | 碰不碰宿主资源 | `scope`：`self` / `host` | `self`（只碰插件自身的数据目录 / kv / 定时器）；`host`（碰宿主管理的资源）；注册期约束 `self ⇒ grant: auto` |
-   | 要不要管理员点头 | `grant`：`auto` / `install` / `explicit` | `auto` 安装即生效；`install`（host 只读 + 插件自有能力）安装清单即生效、可一键收回；`explicit`（写宿主资源 / 执行模板 / 提权 / 出网）默认拒绝 + 逐点授予 |
+   | 要不要管理员点头 | `grant`：`auto` / `install` / `explicit` | `auto` 安装即生效、**不可撤也不需要撤**；`install`（host 只读 + 插件自有能力）**首次安装时按清单播种进白名单**，之后与 `explicit` 同一条道；`explicit`（写宿主资源 / 执行模板 / 提权 / 出网 / 跨插件调用与订阅）默认拒绝 + 逐点授予 |
    | 要多大的动静 | `confidentiality` / `executionLevel` | 决定授予时的提示强度与二次确认、审计分级；`effective = max(...)` 只升不降 |
    - 例：`fs.write.data` → `self` + `auto`（不问）；`docker.read` → `host` + `install`（安装清单即生效）；`docker.write` → `host` + `explicit` + `sensitive/medium`（逐点授予 + 提示）；secrets / 任意 fs 读写 → `host` + `explicit` + `secret/high`（逐点授予 + 二次确认）。
    - **为什么删掉 protectionLevel**：它在本仓库里从未被判定逻辑读取（装饰性字段）；其中 `signature` 档把身份塞进权限定义，与"来源不参与权限判定"冲突；`normal` / `dangerous` 真正表达的是"够不着别人"与"要不要点头"，用 `scope` + `grant` 表达更准确（api-contract §6）。

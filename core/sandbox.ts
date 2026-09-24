@@ -14,7 +14,7 @@ import { DEFAULT_LIMITS, type PluginLimits } from './config';
 import { buildEnvFacts } from './emulated-env';
 import { SpcError, toErrorShape } from './errors';
 import { checkPermission } from './permissions/check';
-import { registry } from './permissions/registry';
+import { pointSource } from './permissions/source';
 import {
   applyLimits,
   classifyVmFailure,
@@ -412,7 +412,7 @@ export interface SandboxOptions {
   ref?: string;
   /** manifest.permissions 提取的权限请求（可含通配） */
   permissions: string[];
-  /** 管理员逐点授予的权限点（精确；宿主侧唯一真相，见 plugin-signature-design.md §9） */
+  /** 管理员授予的权限点（精确；宿主侧唯一真相，见 plugin-signature-design.md §9） */
   grants?: string[];
   /** 四层限额（缺省用 DEFAULT_LIMITS） */
   limits?: PluginLimits;
@@ -750,7 +750,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       }
 
       // ② 权限判定（宿主侧强制 + 审计）；判定只记码与参数摘要，不记本地化文本
-      const check = checkPermission(registry, requested, options.permissions, options.grants ?? []);
+      // `pointSource` = **冻结表 ∪ 临时表**：静态点来自注册表，跨插件调用/订阅的点从
+      // 当前活着的插件派生（对端卸载 ⇒ 它当场消失 ⇒ 第 1 步就 UNKNOWN_POINT，fail-closed）
+      const check = checkPermission(pointSource, requested, options.permissions, options.grants ?? []);
       if (check.decision === 'deny') {
         auditOwn({
           ts: Date.now(),

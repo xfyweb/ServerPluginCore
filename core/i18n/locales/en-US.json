@@ -123,6 +123,7 @@
 
   "err.CONFIG_INVALID": "Invalid core config: {key} ({reason})",
   "err.GRANT_WILDCARD": "Grants do not accept wildcards or empty points: {permission} (list concrete permission points)",
+  "err.GRANT_NOT_APPLICABLE": "Permission point {permission} is in the {grant} tier: it applies on install and cannot be granted or revoked (disable or uninstall the plugin to stop it)",
   "err.RECORDS_INVALID": "Invalid install records; refusing to start: {file} ({reason})",
 
   "err.PLUGIN_NOT_FOUND": "Plugin not found: {pluginId}",

@@ -11,6 +11,10 @@
 // ⚠️ **本测试必须对"机器上装了什么"不敏感**：`exec.template.*` 是内置模板**运行时**按
 // `resolveExecutable` 的结果注册的（装了 git 才有 `exec.template.git.*`）⇒ 断言里
 // **不能出现具体的模板点名字**，只能断言"这类点必须是 host/explicit"。
+//
+// ⚠️ **它也守着"注册表是冻结的"**（2026-09-24）：`registry.all()` 只有核心静态点 + 驱动注册点，
+// **不含**跨插件调用/订阅那些**动态点**（它们在临时表里，从当前活着的插件派生 —— `core/permissions/source.ts`）。
+// 所以这份逐项相等**不许**再为了给谁让路而 `continue`：一旦有人在运行期往注册表里塞东西，这条立刻红。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registry } from '../permissions/registry';
@@ -46,17 +50,11 @@ const API_POINTS: Record<string, { scope: Scope; grant: Grant }> = {
 };
 
 const isExecPoint = (name: string) => name.startsWith('exec.template.');
-/**
- * 动态点（`plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<topic>`，见
- * docs/events-and-hooks-design.md §3.4）：**由某个插件登记了端点/事件**带出来的，因此同样
- * "与机器上装了什么有关"——本测试对它们只断言档位不变式（下面那条），不比显式清单。
- */
-const isDynamicPoint = (name: string) => name.startsWith('plugins.call.') || name.startsWith('events.subscribe.');
 
 test('API 面权限点：注册表与显式清单**逐项相等**（改 scope/grant 必须改这张表）', () => {
   const actual: Record<string, { scope: Scope; grant: Grant }> = {};
   for (const p of registry.all()) {
-    if (isExecPoint(p.name) || isDynamicPoint(p.name)) continue; // 见各自说明
+    if (isExecPoint(p.name)) continue; // 模板点按机器不同（见文件头）
     actual[p.name] = { scope: p.scope, grant: p.grant ?? 'auto' };
   }
   assert.deepEqual(actual, API_POINTS, 'API 面档位与显式清单不一致（见本文件顶部说明）');
@@ -77,20 +75,6 @@ test('`exec.template.*`（机器相关）：**必须是 host/explicit**——命
     assert.equal(p.grant, 'explicit', `${p.name}：exec 必须逐点授予（默认拒绝）`);
   }
   // 一个都没有也算通过（机器上没装 git/nginx 时就是这个状态）
-});
-
-test('动态点（机器相关）：**必须 host/install 且记着 owner**，名字必须是可声明的形状', () => {
-  const dyn = registry.all().filter((p) => isDynamicPoint(p.name));
-  for (const p of dyn) {
-    assert.equal(p.scope, 'host', `${p.name}：跨插件引用碰的是别人，必须是 host`);
-    assert.equal(p.grant, 'install', `${p.name}：要声明、安装清单即生效（§3.7 第 3 条门槛）`);
-    // 没有 owner 就撤不掉：能力没了点还在 = 一条指向不存在路径的悬挂授权
-    assert.ok(p.owner, `${p.name}：动态点必须记着是谁带出来的`);
-    // 可声明的形状：与 sdk/schema/manifest.schema.json 的 permissions.pattern 动态分支一致
-    // （含空白 ⇒ 谁都声明不了；含 `*` ⇒ 通配声明绕过增量同意）
-    assert.match(p.name, /^(?:plugins\.call|events\.subscribe)\.[^\s*]+$/, `${p.name}：形状不可声明`);
-  }
-  // 一个都没有也算通过（没装任何声明端点/事件的插件时就是这个状态）
 });
 
 test('不变式：`self ⇒ auto`（注册期已挡，这里确认注册结果自洽）', () => {  for (const p of registry.all()) {

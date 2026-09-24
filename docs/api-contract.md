@@ -223,8 +223,8 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 | 字段 | 管什么 | 规则 |
 |---|---|---|
-| `scope` | **碰不碰宿主资源**（资源作用域，用于路径收敛与文案） | `self` = 只碰插件自身（自己的数据目录 / kv / 定时器）；`host` = 碰宿主管理的资源。注册期一致性约束：**`self` 只能是 `auto`**（违反 → `SCOPE_GRANT_INVALID`），与既有的 `executionLevel ≥ confidentiality` 同属注册期校验 |
-| `grant` | **要不要管理员逐点授予**（判定链第 3 步读取） | `auto` 安装即生效；`install` 读安装清单即生效、可一键收回；`explicit` 默认拒绝、**必须逐点授予**（intent-capture §8.1） |
+| `scope` | **碰不碰宿主资源**（资源作用域，用于路径收敛与文案） | `self` = 只碰插件自身（自己的数据目录 / kv / 定时器）；`host` = 碰宿主管理的资源。注册期两条一致性约束：**`self` 只能是 `auto`**、**`host` 不能是 `auto`**（违反 → `SCOPE_GRANT_INVALID`），与既有的 `executionLevel ≥ confidentiality` 同属注册期校验 |
+| `grant` | **要不要管理员逐点授予**（判定链第 3 步读取） | `auto` 安装即生效、**不可撤也不需要撤**（够不着别人，也没有承载授权的载体）；`install` = **首次安装时按清单播种进白名单**，之后与 `explicit` **完全一样**；`explicit` 默认拒绝、**必须逐点授予**（intent-capture §8.1）。两者都在 `grants` 里 —— 判定链只有**一条白名单**，"撤回"就是把点移出它 |
 | `confidentiality` / `executionLevel` | **权限点的默认等级（兜底）** + `effective` 合成的输入之一 | `effective = max(调用方/核心声明, 用户目录覆盖, 权限点默认)`，**只升不降**；不变式 `executionLevel ≥ confidentiality`（封死仲裁旁路）。⚠️ **等级不是"每个权限点写死一个值"**：真正决定它的是**这一次调用碰到了什么**（同一次 `fs.read`，读无关文件是 `public/low`、读管理员的机密目录是 `secret/high`），注册表里那两个字段只是"没人声明时兜底"。落地现状与缺口见 §7 末尾。 |
 
 > v3 修订：**删除 `protectionLevel`**（Android 的"授予仪式"枚举：normal / dangerous / signature）。理由：(1) 它在本仓库里从未被判定逻辑读取，是装饰性字段；(2) 其中 `signature`（仅同签名可申请）把身份塞进权限定义，与"来源不参与权限判定"冲突；(3) `normal` 真正表达的是"这个能力够不着别人"，用 `scope: self` 表达更准确。按信任档分档的 `defaults` 同时删除。
@@ -233,53 +233,94 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 > **被判定链读取**（第 2、3 步都只看它），而 `protectionLevel` 是死字段；`scope` 则从"要不要授予"退为"碰不碰宿主资源"，
 > 并在注册期约束 `grant`。**✅ 已落地（2026-09，第四批 B）**：判定链第 2 步放行 `auto` 档、第 3 步只看 `explicit`，
 > 注册期约束 `self ⇒ auto`（`SCOPE_GRANT_INVALID`）。
+>
+> **⚠️ 2026-09-23/24 权限判定体检，改了三处**：
+> ① **注册期补 `host` 不能是 `auto`**：`auto` = 免声明 + 免授予，一个碰宿主资源却免声明的点会被**直接放行**
+> （fail-open）。此前只有 `permissions-meta.test.ts` 的一条不变式守着 —— 那是测试层面的，注册期并不报错；
+> ② **`install` 与 `explicit` 合并走同一条白名单**：`install` = **首次安装时按清单播种一次**（`manager.seedGrants`），
+> 之后与 `explicit` 完全一样。在此之前 `install` 档是"声明即生效、`grants` 里根本没有它"，于是
+> **`revoke` 删的是一个不存在的条目 —— 判定照旧放行，而 CLI 打印"已撤销"**（假成功）。
+> 顺带收口了"升级新增的 `install` 档点静默放行"（现在只播一次 ⇒ 新增点要管理员授予 = 增量同意，§8.4）；
+> ③ **`auto` 档的 `grant` / `revoke` 明确报错**（`GRANT_NOT_APPLICABLE`）—— 它够不着别人，
+> 没有承载授权的载体，不该再"成功但什么都不发生"。
+> （中间一度加过判定链第 2 步 `REVOKED`（记录里的 `revoked` 名单）；②落地后它没有存在必要了 ——
+> 撤回与"从未授予"是同一个动作、同一个码，"是谁撤的"由 `plugin.revoke` 审计条目回答。）
 
 - **权限点不设 identity / trust 类字段**：它只描述"这个能力是什么、有多敏感"，不描述"谁有资格申请"。
 - 注册表是审计、管理 UI、测试、驱动插件注册方法时枚举的单一事实源。
 
-### 6.1 动态点：由插件的能力派生出来的点
+#### 6.0 两张表：冻结表与临时表
 
-注册表里除了上面那些**核心写死**的静态点，还有一类**运行时派生**的点 —— 它们不是被"定义"出来的，
-而是**某个插件登记了某个能力**时带出来的（`core/plugin/capabilities.ts`、`core/exec/install.ts`）：
+注册表**不是一张表**（2026-09-24 定）：
 
-| 点 | 谁带出来的 | 档位 | 撤销 |
+| | 谁写 | 什么时候写 | 运行期会变吗 |
 |---|---|---|---|
-| `exec.template.<action>.<op>` | 核心模板注册表（装了 git 才有） | `host` / `explicit` | 模板注销 |
-| `plugins.call.<完整引用>.<path>` | **被调方**登记该端点 | `host` / `install` | 被调方卸载 / 重载 / 换源 |
-| `events.subscribe.<完整引用>.<topic>` | **发布方**登记该 topic | `host` / `install` | 发布方卸载 / 重载 / 换源 |
+| **冻结表**（`core/permissions/registry.ts`） | 核心自己 + **驱动插件** | **只有核心启动阶段**：先核心静态点，再驱动注册点 | **不变**（能力插件加载前就固化） |
+| **临时表**（`core/permissions/source.ts`） | 没人写 —— 从**当前活着的插件**派生 | 随插件装载/卸载即时变化 | 是（跟着"谁在跑"） |
+
+- **驱动插件与能力插件是两个加载阶段**：驱动插件装/卸/禁**必然伴随核心重启**，它注册的点必须在能力插件
+  加载前就位并固化 ⇒ **能力插件看到的点表是稳定的**（这也是"按清单播种"能成立的前提：播种那一刻查得到档位）；
+- **临时表不存储、只派生**：能存的东西就有"点还在、端点早删了"的不一致可能，而 `capabilities` 快照本来就是
+  "当前活着的插件登记了什么"的唯一事实源。判定链查的是 **冻结表 ∪ 临时表**（`pointSource`）；
+- ⚠️ **临时表里的点名不进 `registry.all()`**：早先塞进去过，直接后果是 `permissions-meta.test.ts` 那份
+  需要签字的显式清单得**跳过**它们才能对齐 —— 那是污染的症状。"注册表是冻结的"由那个测试守着。
+
+### 6.1 临时表里的点：跨插件调用与订阅
+
+| 点 | 谁派生出来的 | 档位 | 点什么时候没了 | 授权存在哪 |
+|---|---|---|---|---|
+| `plugins.call.<完整引用>.<path>` | **被调方**登记该端点 | `host` / `explicit` | 被调方卸载 / 重载 / 换源 | 调用方记录的 `grants` |
+| `events.subscribe.<完整引用>.<topic>` | **发布方**登记该 topic | `host` / `explicit` | 发布方卸载 / 重载 / 换源 | 订阅方记录的 `grants` |
+
+⚠️ **两件事要分开看**（之前混在一起，混出过一个假成功）：
+- **点会消失**：被调方卸载/重载/换源 ⇒ 点名查不到 ⇒ 判定第 1 步就 `UNKNOWN_POINT`（fail-closed）；
+- **授权是另一回事**：它存在**调用方**的安装记录里（`grants`，按点名），所以被调方 reload 一次
+  不会把管理员的批准抹掉 —— 点会用同一个名字回来，那条授权照旧对得上。
+
+**为什么这两族是 `explicit` 而不是 `install`**：`install` 的语义是"清单里写一行就生效"，用在跨插件上
+就等于**插件间默认不隔离**（装一个 A，只要它清单里写了、对方又声明了，就通了）。基础模型是插件之间
+**默认隔离**（`exports` 默认私有、看不见别的插件），跨过去必须管理员**逐条**点头 ⇒ 只有 `explicit` 对得上。
+顺带把"逐点 / 逐 topic 撤回"变成现成的（撤的就是 `grants` 里那一条）。
 
 四条不变式（都有用例钉着，见 `core/__tests__/dynamic-points.test.ts`）：
 
 1. **点名是"前缀 + 完整引用 + 尾段"的字面拼接**，含源的理由与单射证明见 `docs/events-and-hooks-design.md` §3.4
    —— 身份是 `(origin, id)`，点名不带源就等于两个同名插件共用一条授权；
-2. **点必须记着 `owner`**（完整引用），撤销**按 owner 精确回收、不解析点名**；**没有 owner 的静态点永不受影响**
-   —— 否则一个插件的卸载能让全机器的 `fs.read.data` 消失。撤销幂等（卸载 / 重载 / 换源都走同一条路）；
+2. **装载/卸载不许动冻结表**（`registry.all()` 逐项不变）—— 临时表是派生的，能力没了点自然就没了，
+   不需要（也不该有）"撤销某个点"这一步；
 3. **点必须"可声明"**：尾段不含空白（`permissions[].name` 的 schema 表达不了 ⇒ 会生成一个谁都申请不了的点）、
    不含 `*`（`matchDeclaration` 会当通配 ⇒ 一次声明把对方**将来新增**的端点/订阅全预授权了）。
    不满足即**装载失败**（`PERMISSION_POINT_INVALID`），全有或全无，不留半登记；
-4. **等级取被引用方的声明**：订阅点取发布方的 `classification`（`secret` 的 topic **不设点** —— 它本就禁止跨插件，
-   设点等于承诺一条走不通的路）；调用点没有分类可依（端点只有面板侧的 `permission`），取 `public/low` 兜底，
+4. **等级取被引用方的声明**：订阅点取发布方的 `classification`（`secret` 的 topic **不派生点** —— 它本就禁止跨插件，
+   派生等于承诺一条走不通的路）；调用点没有分类可依（端点只有面板侧的 `permission`），取 `public/low` 兜底，
    这一次调用的真实等级由**调用时声明**与用户目录覆盖合成（§7.1）。
 
-> ⚠️ **`grant: install` 档的点，判定链不读 `grants`**（声明即生效）。所以"插件还在、只收回这一条"这种
-> **逐点/逐 topic 撤销**还没有落地形态 —— 它是 `docs/events-and-hooks-design.md` §4.2-2 的待定项；
-> 今天能收回的粒度是**卸载 / 重载 / 换源**（点随之消失）。
+> ✅ **"插件还在、只收回这一条"已经落地**（2026-09-23/24）：两族点都是 `explicit` 档 ⇒ 收回就是
+> **把点移出调用方记录的 `grants`**（判定链第 3 步读它）。所以不需要另造"批准表"，
+> `docs/events-and-hooks-design.md` §4.2-2 那个待定项由此关闭；授权变更另有 `plugin.revoke` 审计留痕。
 
 ## 7. 权限判定（三态 + 匹配算法）
 
 判定链（宿主侧强制，D3 单一强制点）：
 
 ```
-1  权限点未在注册表登记               → UNKNOWN_POINT（未知即拒绝）
-2  grant != auto 且 manifest 未声明   → NOT_DECLARED（无默认放行；**auto 档免声明**）
-3  grant = explicit 且管理员未授予    → NOT_GRANTED（auto / install 档免逐点授予，见 intent-capture §8）
-4  通过 → 作用域与参数校验在各方法内层（auto / install 通过时审计记 installed-grant）
+1  权限点查不到（冻结表 ∪ 临时表都没有） → UNKNOWN_POINT（未知即拒绝）
+2  grant != auto 且 manifest 未声明     → NOT_DECLARED（无默认放行；**auto 档免声明**）
+3  grant != auto 且不在 `grants` 里     → NOT_GRANTED（auto 档免逐点授予）
+4  通过 → 作用域与参数校验在各方法内层（通过时审计记 grant 档）
 ```
 
-> **第 1 步的"登记"包含两类点**：核心写死的静态点（§6）与**由插件能力派生的动态点**（§6.1）。
-> 动态点随插件生灭 ⇒ 「被调方卸载了」这一步自然变成 `UNKNOWN_POINT`（fail-closed），不需要另写一条规则。
+> **只有一条白名单**（`install` 与 `explicit` 共用）：`install` 档的那条授权由**首次安装时按清单播种**
+> （`manager.seedGrants`）写进 `grants`，之后两者在判定上**没有任何差别**。所以"撤回"= 把点移出 `grants`，
+> 与"从未授予"同一个动作、同一个码。⚠️ 中间一度加过第 2 步 `REVOKED`（记录里的 `revoked` 名单）——
+> 那是为"`install` 档声明即生效、`grants` 里根本没有它"的旧语义打的补丁；合并白名单之后它没有存在必要：
+> **"是谁撤的、什么时候撤的"由 `plugin.grant` / `plugin.revoke` 审计条目回答**，不靠状态字段。
+> `auto` 档没有承载授权的载体 ⇒ `grant` / `revoke` 对它直接报 `GRANT_NOT_APPLICABLE`，不再假装成功。
 
-> **✅ 已落地（2026-09，第四批 B）**。两处与早期草案的差别，都是落地时才定死的：
+> **第 1 步查两张表**：冻结表（核心静态点 + 驱动注册点，见 §6）与临时表（跨插件调用/订阅的点，见 §6.1）。
+> 临时表里的点随对端插件生灭 ⇒「被调方卸载了」自然变成 `UNKNOWN_POINT`（fail-closed），不需要另写规则。
+
+> **✅ 已落地（2026-09，第四批 B；2026-09-23/24 权限体检修三处）**。几处与早期草案的差别，都是落地时才定死的：
 >
 > ① **第 2 步也看 `grant`，不再看 `scope`**。`scope` 回答"够不够得着别人"（资源语义），
 > "要不要在 manifest 里自报家门"是**摩擦**问题——两者混在一个字段里正是 v3 "self 也要声明"
@@ -288,16 +329,24 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 > 再按 `grant` 档决定要不要逐点授予。
 >
 > ② **`grant` 缺省按 `scope` 推导**（`self → auto`、`host → explicit`），推导结果就是注册期校验的规则
-> （`self` 只允许 `auto`，违反 → `SCOPE_GRANT_INVALID`）。老调用点不写 `grant` 也不会松动：
+> （`self` 只允许 `auto`、`host` 不许 `auto`，违反 → `SCOPE_GRANT_INVALID`）。老调用点不写 `grant` 也不会松动：
 > `host` 兜到 `explicit` 是 fail-closed 的方向。**注册时存解析后的值**，判定链只读这一处。
+>
+> ③ **驱动器注册的点，档位与等级由驱动自己定**（2026-09-24 定）：注册 API 本来就收 `scope` / `grant` /
+> 等级，核心不替它选 —— 就像发布事件时保密等级按**本次内容**给，而不是清单写死。缺省 `host → explicit`
+> 的 fail-closed 方向不变，所以"驱动想省事"不会意外放宽。
 >
 > 当前档位分布（`core/__tests__/permissions-meta.test.ts` 把它钉成显式清单）：
 > **17 个 API 点全是 `self`/`auto`（免声明）**；`exec.template.*` 是 `host`/`explicit`
-> （机器上装了 git/nginx 才有，数量随机器变，但档位不变）。
+> （机器上装了 git/nginx 才有，数量随机器变，但档位不变）；**`install` 档今天一个点都没有** ——
+> 它是留给"宿主资源、但资源本来就属于该插件"那类点的中间档（如驱动注册的 `docker.read`：
+> 一次播种即可用，之后与 `explicit` 同一条道）。
 >
 > ⚠️ **`fs.read.data` / `fs.write.data` 暂留 `self`**：它们碰的是宿主文件系统里的真实文件，
 > 按 `scope` 的定义更像 `host`（`grant: install` 那一档）。「内容式权限」（按路径/内容而不是按
 > 方法名划权）要单独讨论——在那之前保持现状，不引入新摩擦（缺口表见本节 §7.1；事件侧的门槛接线见 `docs/events-and-hooks-design.md` §1.7）。
+> **推论（2026-09-23 明确）**：既然是 `auto` 档，`spc plugin grant/revoke` 对它们会**明确报错**
+> （`GRANT_NOT_APPLICABLE`）——"禁止这个插件写自己的数据目录"今天只能靠禁用/卸载整个插件。
 
 ### 7.1 等级（`confidentiality` / `executionLevel`）的落地现状与缺口
 
@@ -326,8 +375,9 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 ⚠️ 不要在仿真层（`node-fs.js`）里塞等级判断：那会让"同一个 `fs.readFileSync` 在不同仿真模块下等级不同"，
 等级必须由**碰资源的那一层**（宿主原语）声明。
 
-- `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`；`install` = host 级只读 + 插件自有能力（安装清单即生效，可一键收回）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / **出网类权限点（exec 模板或驱动插件注册的端点）** / 提权，默认拒绝。**升级新增的 `install`/`explicit` 点必须重新展示（增量同意）**；
+- `grant` 三档（`auto` / `install` / `explicit`）是权限点的属性：`auto` = self 域 + `lifecycle.*`（**免声明免授予、不可撤**）；`install` = host 级只读 + 插件自有能力（**首次安装时播种进白名单**，之后与 `explicit` 同一条道）；`explicit` = 写宿主资源 / `exec.template.*` / `process.*` / **出网类权限点（exec 模板或驱动插件注册的端点）** / **跨插件调用与订阅（`plugins.call.*` / `events.subscribe.*`）** / 提权，默认拒绝、逐点授予。**升级新增的 `install`/`explicit` 点都必须重新展示（增量同意）** —— 合并白名单之后这一条对两档都成立了（`install` 档只播种一次）；
 - 判定结果：`ALLOW / DENY / UNSET→DENY`（Tristate：未设置 = 拒绝）；
+- **授权变更留痕**：`grant` / `revoke` 各落一条审计（`plugin.grant` / `plugin.revoke`，`target` = 变了的那几个点名）—— 权限变更不写日志比"少一个状态字段"严重得多；
 - **声明与授予都不接受通配**：`permissions[].name` 是**固定分段**的形状（schema 的 pattern），`docker.*` / `*` 连 manifest 校验都过不了；管理员的授予同样必须逐个写具体点（`isValidGrantPoint`）。理由是同一条：**声明的用途是让管理员在安装时看见"这个插件要什么"**，`docker.*` 会把这张清单变成一句口号。⚠️ `core/permissions/check.ts` 的 `matchDeclaration` **仍保留**前缀通配与 `*` 的分支，但今天的 manifest 产生不出这种输入 ⇒ 那条路径**从真实插件走不到**（留着是因为它是判定链的通用能力，别把它当成"清单可以写通配"的依据）；
 - 插件 manifest 声明的是"请求"（uses-permission）；宿主按"`scope` + `grant` 档 + 管理员逐点授予"做出"批准"（请求/批准分离，Android 模型）；
 - **来源（签名 / 市场 / 本地安装）不参与判定**：有源与无源插件在权限面前完全平等（ADR-001 v3）。
@@ -421,4 +471,6 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 2. `@host/api` 类型声明的自动生成（从注册表生成 TS 类型，保证 IDE 体验与运行时一致）；
 3. 驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）；
 4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响；
-5. **默认安全边界（已定，见 intent-capture §7/§8）**：确认判据 = ①意图经不可信方转述 或 ②点击时后果不可见；四档 L0–L3；权限点 `grant` 三档 `auto`/`install`/`explicit`；仅 `explicit` 需逐点授予。落地在 P2（`core/permissions/` 加 `grant` 字段 + 判定链第 3 步）与 P3（前端确认 UI）。
+5. **升级新增点的"提示"还没有**（2026-09-24 收敛后剩这一半）：合并白名单之后，升级新增的 `install` / `explicit` 点**都会** fail-closed 要求管理员授予（`install` 档只在首次安装播种一次）——**安全的那一半已经有了**；缺的是**主动性**：新增点不会摆到管理员眼前，只会以插件调用时的 `NOT_GRANTED` 形式出现。要补的是"比对上一版声明的点集合 + 把新增项列出来"（落点：`manager.install` / `reload` 的声明集差分 + 审计 + CLI/面板提示）；
+6. **授权/撤回对运行中的插件不立即生效**（已知并有提示）：沙箱持有的是**装载时**的 `permissions` / `grants` 快照，改动只置 `needsReload` 并打印"需 reload 后生效"。**要不要让 `revoke` 立刻生效**（例如撤回时自动 reload，或把授权改成每次调用都查活记录）留待 P2 收口时定 —— 今天的选择是"不自动重启插件"；
+7. **默认安全边界（已定，见 intent-capture §7/§8）**：确认判据 = ①意图经不可信方转述 或 ②点击时后果不可见；四档 L0–L3；权限点 `grant` 三档 `auto`/`install`/`explicit`；仅 `explicit` 需逐点授予。落地在 P2（`core/permissions/` 加 `grant` 字段 + 判定链第 3 步）与 P3（前端确认 UI）。

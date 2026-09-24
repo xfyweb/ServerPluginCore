@@ -1,13 +1,15 @@
-// 动态权限点（docs/events-and-hooks-design.md §3.4 点名规则 / §3.7 三道门槛 / §1.10 订阅点档位）
+// 权限点两张表：**冻结表**（注册表）与**临时表**（动态点）
+// 设计：docs/events-and-hooks-design.md §3.4/§3.7、docs/api-contract.md §6/§6.1
 //
-// 为什么这些用例必须存在：点名是**授权记录里的主键**。拼错了不会报错，只会让"管理员批准的那条路"
+// 为什么这些用例必须存在：点名是**授权记录里的主键**，拼错了不会报错，只会让"管理员批准的那条路"
 // 与"插件实际走的那条路"悄悄错开 —— 比如不带来源，两个同名插件就共用同一条授权（§3.2）。
-// 所以这里同时钉两件事：**名字怎么拼**（纯函数，含单射与拒绝面）、**点跟着能力生灭**（装载/卸载/重载）。
+// 另一半是**表的分工**：注册表是冻结的（核心启动阶段写完就固化），跨插件调用/订阅的点是**派生的临时表**。
+// 混在一起过一次：那时 `permissions-meta.test.ts` 那份显式清单必须"跳过动态点"才能对齐 —— 那是污染的症状。
 //
 // 隔离：SPC_STATE_DIR / SPC_AUDIT_DIR 必须在**动态 import 之前**设好（见 core/audit.ts 的模块级常量）。
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,7 +19,8 @@ process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
 const { manager } = await import('../plugin/manager.ts');
 const { capabilities } = await import('../plugin/capabilities.ts');
-const { registry, PermissionRegistry } = await import('../permissions/registry.ts');
+const { registry } = await import('../permissions/registry.ts');
+const { pointSource, dynamicPointNames, resolveDynamicPoint } = await import('../permissions/source.ts');
 const { checkPermission } = await import('../permissions/check.ts');
 const { callPointOf, subscribePointOf } = await import('../permissions/points.ts');
 const { SpcError } = await import('../errors.ts');
@@ -68,13 +71,14 @@ async function rejects(fn: () => unknown, code: string): Promise<void> {
   assert.equal((caught as InstanceType<typeof SpcError>).code, code);
 }
 
-/** 注册表里属于某个插件的动态点（点名 → 点），按名字排序，便于整表比对 */
-function pointsOf(owner: string): string[] {
-  return registry
-    .all()
-    .filter((p) => p.owner === owner)
-    .map((p) => p.name)
-    .sort();
+/** 读审计条目（JSONL；只读业务语义需要的字段） */
+function auditEntries(): Record<string, unknown>[] {
+  const file = join(TMP, 'audit', 'audit.jsonl');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
 before(() => {
@@ -109,7 +113,6 @@ test('单射：同 id 不同来源 = 两个点（点名不带源就会共用一�
   const a = callPointOf('local:default/@spc/same', '/api/x');
   const b = callPointOf('local:dev-a/@spc/same', '/api/x');
   assert.notEqual(a, b);
-  // 名字里能直接读出是哪个来源 —— 这正是"不带源就分不开"的反面
   assert.ok(a.includes('local:default/@spc/same'));
   assert.ok(b.includes('local:dev-a/@spc/same'));
 });
@@ -152,65 +155,7 @@ test('非法输入一律拒（fail-closed）：来源/ id 形状、空尾段、�
   }
 });
 
-// ---------------- ② 注册表的 owner 语义 ----------------
-
-test('unregisterOwnedBy：只撤 owner 精确匹配的点，幂等，静态点不受影响', () => {
-  const r = new PermissionRegistry();
-  r.register({
-    name: 'fs.read.data',
-    group: 'fs',
-    description: '静态点（无 owner）',
-    scope: 'self',
-    confidentiality: 'public',
-    executionLevel: 'low',
-  });
-  r.register({
-    name: callPointOf('local:default/@a/b', '/api/x'),
-    group: 'plugins',
-    description: '动态点（A 的端点）',
-    scope: 'host',
-    grant: 'install',
-    owner: 'local:default/@a/b',
-    confidentiality: 'public',
-    executionLevel: 'low',
-  });
-  r.register({
-    name: subscribePointOf('local:default/@c/d', 'e.f'),
-    group: 'events',
-    description: '动态点（C 的事件）',
-    scope: 'host',
-    grant: 'install',
-    owner: 'local:default/@c/d',
-    confidentiality: 'sensitive',
-    executionLevel: 'medium',
-  });
-
-  assert.equal(r.unregisterOwnedBy('local:default/@a/b'), 1);
-  assert.equal(r.unregisterOwnedBy('local:default/@a/b'), 0, '幂等：第二次无可撤');
-  assert.equal(r.get(callPointOf('local:default/@a/b', '/api/x')), undefined);
-  // ⛔ 静态点是核心契约的一部分，不能被任何插件的生命周期拖走
-  assert.ok(r.get('fs.read.data'), '静态点必须还在');
-  assert.ok(r.get(subscribePointOf('local:default/@c/d', 'e.f')), '别的插件的点必须还在');
-});
-
-test('注册表仍拒绝重复登记（所以"先撤后登"是重载幂等的唯一路径）', () => {
-  const r = new PermissionRegistry();
-  const point = {
-    name: 'events.publish',
-    group: 'events',
-    description: 'x',
-    scope: 'self' as const,
-    confidentiality: 'public' as const,
-    executionLevel: 'low' as const,
-  };
-  r.register(point);
-  assert.throws(
-    () => r.register(point),
-    (err: unknown) => err instanceof SpcError && err.code === 'DUPLICATE_POINT',
-  );
-});
-
-// ---------------- ③ 点跟着能力生灭（装载 → 卸载 → 重载） ----------------
+// ---------------- ② 冻结表：注册表在运行期不被插件改动 ----------------
 
 const PUB_ENDPOINT = '/api/points-pub/one';
 // ⚠️ topic 的 schema 是 `^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$`：分段只许小写字母与数字（连字符、下划线都不行）
@@ -231,61 +176,79 @@ function pubFixture(name = 'points-pub'): string {
   });
 }
 
-test('装载带出动态点：调用点 host/install，订阅点等级取发布方分类，secret 不设点', async () => {
+test('**注册表是冻结的**：装载/卸载带端点与事件的插件，都不改 `registry.all()`', async () => {
+  const before = registry.all().map((p) => p.name).sort();
+  await manager.install(pubFixture());
+  const R = ref('points-pub');
+  assert.deepEqual(registry.all().map((p) => p.name).sort(), before, '装载不许往冻结表里加东西');
+  // 动态点**不在**冻结表里 —— 它在临时表（这就是"两张表"的意义）
+  assert.equal(registry.get(callPointOf(R, PUB_ENDPOINT)), undefined);
+  assert.ok(pointSource.get(callPointOf(R, PUB_ENDPOINT)), '但点表里查得到（冻结 ∪ 临时）');
+
+  await manager.disable(R);
+  assert.deepEqual(registry.all().map((p) => p.name).sort(), before, '卸载同样不许动冻结表');
+});
+
+// ---------------- ③ 临时表：跟着"谁在跑"生灭 ----------------
+
+test('临时表：点存在（host/explicit），订阅点等级取发布方分类，secret 不设点', async () => {
   await manager.install(pubFixture());
   const R = ref('points-pub');
 
-  const call = registry.get(callPointOf(R, PUB_ENDPOINT));
-  assert.ok(call, '端点应当带出一个调用点');
-  assert.equal(call.owner, R, '点必须记着是谁带出来的（撤销靠它，不靠解析点名）');
+  const call = pointSource.get(callPointOf(R, PUB_ENDPOINT));
+  assert.ok(call, '端点应当派生出调用点');
   assert.equal(call.scope, 'host');
-  assert.equal(call.grant, 'install', '安装清单即生效、可收回（§3.7 第 3 条门槛的档位）');
+  // 跨插件一律 explicit：插件之间默认隔离 ⇒ 跨过去要管理员逐条点头
+  assert.equal(call.grant, 'explicit');
 
-  const pub = registry.get(subscribePointOf(R, PUB_TOPICS[0]));
+  const pub = pointSource.get(subscribePointOf(R, PUB_TOPICS[0]));
   assert.equal(pub?.confidentiality, 'public');
   assert.equal(pub?.executionLevel, 'low');
-  const sen = registry.get(subscribePointOf(R, PUB_TOPICS[1]));
+  assert.equal(pub?.grant, 'explicit', '订阅也是跨插件 —— 同一档');
+  const sen = pointSource.get(subscribePointOf(R, PUB_TOPICS[1]));
   assert.equal(sen?.confidentiality, 'sensitive', '等级必须与发布方声明的分类同源');
   assert.equal(sen?.executionLevel, 'medium');
   // §1.12-2：secret 的 topic 禁止跨插件 ⇒ 不设点（设了就是承诺一条永远走不通的路）
-  assert.equal(registry.get(subscribePointOf(R, PUB_TOPICS[2])), undefined);
+  assert.equal(pointSource.get(subscribePointOf(R, PUB_TOPICS[2])), undefined);
 
-  assert.deepEqual(pointsOf(R), [
+  assert.deepEqual([...dynamicPointNames()].sort(), [
     subscribePointOf(R, PUB_TOPICS[0]),
     subscribePointOf(R, PUB_TOPICS[1]),
     callPointOf(R, PUB_ENDPOINT),
   ].sort());
+
+  await manager.disable(R);
 });
 
-test('判定链接得上：调用方声明即放行（install 档免逐点授予），不声明即拒', async () => {
+test('临时表随卸载消失：同一个点名从 ALLOWED 变 UNKNOWN_POINT（fail-closed）', async () => {
+  await manager.install(pubFixture());
+  const R = ref('points-pub');
+  const point = callPointOf(R, PUB_ENDPOINT);
+  assert.equal(checkPermission(pointSource, point, [point], [point]).code, 'ALLOWED');
+  await manager.disable(R);
+  assert.equal(pointSource.get(point), undefined);
+  assert.equal(resolveDynamicPoint(point), undefined);
+  assert.deepEqual(dynamicPointNames(), []);
+  assert.equal(checkPermission(pointSource, point, [point], [point]).code, 'UNKNOWN_POINT');
+});
+
+// ---------------- ④ 判定链接得上（声明 + 授予） ----------------
+
+test('判定链接得上：声明 + **逐条授予**才放行；少一样都拒', async () => {
+  await manager.install(pubFixture());
   const point = callPointOf(ref('points-pub'), PUB_ENDPOINT);
-  assert.equal(checkPermission(registry, point, [point]).code, 'ALLOWED');
-  assert.equal(checkPermission(registry, point, []).code, 'NOT_DECLARED');
+  assert.equal(checkPermission(pointSource, point, [point], [point]).code, 'ALLOWED');
+  assert.equal(checkPermission(pointSource, point, [point], []).code, 'NOT_GRANTED', '没批准 ⇒ 拒');
+  assert.equal(checkPermission(pointSource, point, [], [point]).code, 'NOT_DECLARED', '没声明 ⇒ 拒');
   // 别的插件（哪怕同 id 不同源）声明同样的尾段也不算 —— 点名里带的是完整引用
   assert.equal(
-    checkPermission(registry, point, [callPointOf('local:dev-a/@spc/points-pub', PUB_ENDPOINT)]).code,
+    checkPermission(pointSource, point, [callPointOf('local:dev-a/@spc/points-pub', PUB_ENDPOINT)], []).code,
     'NOT_DECLARED',
   );
-});
-
-test('卸载 → 点随之消失，同一个点名从 ALLOWED 变 UNKNOWN_POINT（fail-closed）', async () => {
-  const point = callPointOf(ref('points-pub'), PUB_ENDPOINT);
-  assert.equal(checkPermission(registry, point, [point]).code, 'ALLOWED');
-  await manager.disable(ref('points-pub'));
-  assert.deepEqual(pointsOf(ref('points-pub')), [], '能力没了，派生点必须一起没');
-  assert.equal(checkPermission(registry, point, [point]).code, 'UNKNOWN_POINT');
-});
-
-test('重载幂等：连续两次 reload 后动态点不叠加、也不报重复登记', async () => {
-  await manager.enable(ref('points-pub'));
-  const before = pointsOf(ref('points-pub'));
-  await manager.reload(ref('points-pub'));
-  await manager.reload(ref('points-pub'));
-  assert.deepEqual(pointsOf(ref('points-pub')), before);
   await manager.disable(ref('points-pub'));
 });
 
-test('同 id 两来源：两套点各自独立，停掉其中一个不牵连另一个', async () => {
+test('同 id 两来源：两套临时点各自独立，停掉一个不牵连另一个', async () => {
   const a = 'local:src-a';
   const b = 'local:src-b';
   await manager.install(
@@ -300,26 +263,66 @@ test('同 id 两来源：两套点各自独立，停掉其中一个不牵连另�
     }),
     { source: b },
   );
-  const refA = `${a}/@spc/same`;
-  const refB = `${b}/@spc/same`;
-  const pointA = callPointOf(refA, '/api/same-a');
-  const pointB = callPointOf(refB, '/api/same-b');
-  assert.ok(registry.get(pointA) && registry.get(pointB));
+  const pointA = callPointOf(`${a}/@spc/same`, '/api/same-a');
+  const pointB = callPointOf(`${b}/@spc/same`, '/api/same-b');
+  assert.ok(pointSource.get(pointA) && pointSource.get(pointB));
 
-  await manager.disable(refA);
-  assert.equal(registry.get(pointA), undefined);
-  assert.ok(registry.get(pointB), '撤销按 owner 精确回收 —— 同 id 的另一个来源不受牵连');
-  await manager.disable(refB);
+  await manager.disable(`${a}/@spc/same`);
+  assert.equal(pointSource.get(pointA), undefined);
+  assert.ok(pointSource.get(pointB), '派生的表按 ref 分开 —— 同 id 的另一个来源不受牵连');
+  await manager.disable(`${b}/@spc/same`);
 });
 
-// ---------------- ④ 失败面：不留半登记 ----------------
+// ---------------- ⑤ 授权：撤回就是把点移出白名单（+ 落审计） ----------------
 
-test('init 失败：已经登记过的派生点必须回滚（否则留下"点还在、插件没了"的悬挂授权）', async () => {
+test('管理员授予/撤回跨插件授权：白名单一条道，撤回后判定即拒，且审计留痕', async () => {
+  await manager.install(pubFixture());
+  const callee = ref('points-pub');
+  const point = callPointOf(callee, PUB_ENDPOINT);
+  // 批准是**调用方**的事（被调方只负责把点派生出来）：造一个声明了"我要调 B 的这个端点"的插件 A
+  const caller = ref('points-caller');
+  await manager.install(
+    makePlugin('points-caller', `export function init(){}`, { permissions: [point] }),
+    { start: false },
+  );
+  assert.equal(checkPermission(pointSource, point, [point], manager.status(caller).grants).code, 'NOT_GRANTED');
+
+  const granted = manager.grant(caller, [point]);
+  assert.deepEqual(granted.grants, [point]);
+  assert.equal(checkPermission(pointSource, point, [point], granted.grants).code, 'ALLOWED');
+
+  const revoked = manager.revoke(caller, [point]);
+  assert.deepEqual(revoked.grants, [], '撤回 = 移出白名单（install 与 explicit 同一条道）');
+  assert.equal(
+    checkPermission(pointSource, point, [point], revoked.grants).code,
+    'NOT_GRANTED',
+    '撤回之后判定必须真的拒（修之前 install 档这里是"照旧放行"）',
+  );
+
+  // 授权变更**留痕**：谁在什么时候撤的，从审计里回答（不靠记录里的状态字段）
+  const authz = auditEntries().filter(
+    (e) => e.method === 'plugin.grant' || e.method === 'plugin.revoke',
+  );
+  assert.deepEqual(
+    authz.map((e) => [e.method, e.target, e.pluginId]),
+    [
+      ['plugin.grant', point, caller],
+      ['plugin.revoke', point, caller],
+    ],
+  );
+
+  await manager.uninstall(caller);
+  await manager.disable(callee);
+});
+
+// ---------------- ⑥ 失败面：不留半登记 ----------------
+
+test('init 失败：临时点不能留下（否则就是一条指向不存在端点的授权）', async () => {
   const dir = makePlugin('points-boom', `export function init(){ throw new Error('boom'); }`, {
     exports: { endpoints: [{ path: '/api/points-boom' }] },
   });
   await rejects(() => manager.install(dir), 'PLUGIN_INIT_FAILED');
-  assert.deepEqual(pointsOf(ref('points-boom')), []);
+  assert.deepEqual(dynamicPointNames(), []);
   assert.equal(capabilities.snapshot().endpoints.filter((e) => e.ref === ref('points-boom')).length, 0);
 });
 
@@ -331,7 +334,7 @@ test('端点 path 进不了点名 ⇒ 装载失败，且不留半登记（路由
     },
   });
   await rejects(() => manager.install(dir), 'PERMISSION_POINT_INVALID');
-  assert.deepEqual(pointsOf(ref('points-badpath')), []);
+  assert.deepEqual(dynamicPointNames(), []);
   // 全有或全无：同一个清单里的路由不许单独留下
   assert.equal(capabilities.snapshot().routes.filter((r) => r.ref === ref('points-badpath')).length, 0);
 });

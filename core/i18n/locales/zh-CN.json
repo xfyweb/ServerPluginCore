@@ -123,6 +123,7 @@
 
   "err.CONFIG_INVALID": "核心配置非法：{key}（{reason}）",
   "err.GRANT_WILDCARD": "授权不接受通配或空权限点：{permission}（请逐个写具体权限点）",
+  "err.GRANT_NOT_APPLICABLE": "权限点 {permission} 属于 {grant} 档：安装即用、无需授予，也无法撤回（要停用它请禁用或卸载插件）",
   "err.RECORDS_INVALID": "安装记录非法，拒绝启动：{file}（{reason}）",
 
   "err.PLUGIN_NOT_FOUND": "插件不存在：{pluginId}",

@@ -178,13 +178,11 @@ Linux 在同一件事上的做法可以直接对照（下面几条都来自 Linu
 ### 1.10 权限点与档位
 
 - `events.publish`：**已有**，`scope: self` / `grant: auto`（发布自己的事，够不着别人，保持不动）。
-- **订阅他人事件要新增权限点**：**动态权限点 `events.subscribe.<发布方完整引用>.<topic>`**（带源的理由与拼法见 §3.4 —— 同 id 不同源是两个插件，点名不带源就等于两个发布方共用一条订阅授权），`scope: host`、`grant: install`。
+- **订阅他人事件要新增权限点**：**动态权限点 `events.subscribe.<发布方完整引用>.<topic>`**（带源的理由与拼法见 §3.4 —— 同 id 不同源是两个插件，点名不带源就等于两个发布方共用一条订阅授权），`scope: host`、**`grant: explicit`**。
   - 点由**发布方**登记 topic 时带出（不是订阅方），跟着 `capabilities.revoke` 一起消失：**发布方没了，就没有可听的东西**，授权不该留着；
   - **等级取发布方的 `classification`**（public → low、sensitive → medium）：管理员在安装清单上看到的敏感度与真正会被投递的内容**同源**，两处各写一个值迟早会出现"标着 public、搬的却是敏感数据"；
-  - ⚠️ **`classification: secret` 的 topic 不设点**：它本来就**禁止跨插件**（§1.12-2）⇒ 设点等于承诺一条永远走不通的路（判定时 `UNKNOWN_POINT`，fail-closed）；
-  - 落在 `install` 档的含义：**安装清单即生效、可一键收回、可逐 topic 收回**——正好是"管理员能禁止某插件监听某些事件"这条需求的最小落点；
-  - 撤销只影响**后续投递**（正在跑的链不受影响，靠快照）；
-  - ⚠️ 今天登记的 `subscribe:<topic>` 只是能力标签，**撤销粒度还没有**，要补 —— 本批补的是**随能力生灭**那一半（点存在/回收）；**管理员逐 topic 撤销**的落地形态仍是 §4.2-2 的待定项。
+  - ⚠️ **`classification: secret` 的 topic 不派生点**：它本来就**禁止跨插件**（§1.12-2）⇒ 派生点等于承诺一条永远走不通的路（判定时 `UNKNOWN_POINT`，fail-closed）；
+  - ⚠️ **2026-09-23 从 `install` 改成 `explicit`**（原口径"安装清单即生效、可一键收回"作废）：`install` 的真相是**清单里写一行就通**，而插件之间是**默认隔离**的（`exports` 默认私有、看不见别的插件）—— 监听别人的事件是**跨过去**，必须管理员**逐条**点头。改了之后"逐 topic 收回"也随之变成现成动作（撤的就是订阅方记录里的那条授权，见 §4.2-2）；  - 撤回只影响**后续投递**（正在跑的链不受影响，靠快照）；且**对运行中的插件要 reload 才生效**（装载时快照，见 api-contract §12-6）。
 
 ### 1.11 审计
 
@@ -372,15 +370,15 @@ events.subscribe.<origin>/@user/name.<event>
 
 - "**引用 → 权限点名**"的规范化函数 = `core/permissions/points.ts` 的 `callPointOf` / `subscribePointOf`（**✅ 已落地**，形状照 `core/exec/templates.ts` 的 `permissionPointOf` —— 那是现成先例）；
 - **不转义、不摘要，就是字面拼接**，因为唯一性因此**可证**：origin 不含 `/` 与 `@`，id 恰好一个 `/` 与一个 `@`、名字段不含 `.` ⇒ 引用部分到**第一个 `.`** 为止，切分唯一。副产品是管理员在 CLI / 面板上看到的点名里**直接含插件引用**，可 grep、可与授权记录对照；
-- **不反向解析**：展示层用**源别名 + 插件短名**，**存储与判定用全称**（别名可改 ⇒ 一旦进点名，改别名就会让授权凭空丢失）。撤销也不解析 —— 点自己记着 `owner`（注册表的 `unregisterOwnedBy`）；
+- **不反向解析**：展示层用**源别名 + 插件短名**，**存储与判定用全称**（别名可改 ⇒ 一旦进点名，改别名就会让授权凭空丢失）。撤销也不解析 —— 判定链只查"这个点名现在存不存在"（冻结表 ∪ 临时表，见 api-contract §6.0），授权存在**调用方记录**里，两边都不需要从名字里切回 `(ref, path)`；
 - **点名必须"可声明"**，否则核心会登记一个**谁都申请不了**的点（管理员还能给它授权，却没有任何清单能声明它）。两条下限：
   - 尾段（`path` / `event`）**不含空白**（`permissions[].name` 的 schema 表达不了）——**不满足即装载失败** `PERMISSION_POINT_INVALID`，全有或全无，不留半登记；
   - 尾段**不含 `*`**（会被 `matchDeclaration` 当通配 ⇒ 一次声明就把对方**将来新增**的端点/订阅全预授权了，而 §3.7 要的是**增量同意**）；
   - ⚠️ **代价**：`permissions[].name` 的 schema 因此从"只有静态形状"放宽成**两条分支**（静态 `<group>.<action>[.<scope>]` + 动态 `<前缀>.<完整引用>.<尾段>`）。这是**接受更多输入**（只增不改），不是改既有规则；
-- **点跟着能力生灭**（`core/plugin/capabilities.ts`）：被调方/发布方登记能力时带出点，`revoke` 时按 `owner` 精确回收（卸载 / 重载 / 换源都走它；幂等）。**没有 owner 的静态点不受影响** —— 否则一个插件的生命周期就能让全机器的 `fs.read.data` 消失；
+- **点跟着能力生灭**（`core/permissions/source.ts` + `core/plugin/capabilities.ts`）：被调方/发布方登记能力时**派生**出点，`revoke` 时随登记一起消失（**临时表**，见 api-contract §6.0/§6.1 —— 冻结的注册表运行期不被插件改动）。**判定链查的是两张表的并集**；
 - ⚠️ **ADR-001 v3 的"来源不参与权限判定"仍然成立**：来源出现在**引用**里 ≠ 来源参与**判定** —— 判定仍然只看"你有没有这个点"，同源与无源平等。将来若有人照 v3 的字面把 origin 从点名里删掉，会让两个同名插件无法区分；
 - **爆炸半径很小**：只有"每个目标一条"的动态点带源；`events.publish` 这类基础点、`exec.template.*`（核心模板）、driver 注册的点（`db.query`）都**不受影响**；
-- **仍未做**：管理员**逐点/逐 topic 撤销**的落地形态（进 `grants` 还是单独一张批准表、CLI 动词）仍是待定项（§4.2-2）—— 本批落地的是**随能力生灭**那一半。
+- **仍未做**：无（**随能力生灭**与**管理员逐条撤回**两半都已通）。撤回 = 把点移出调用方记录的 `grants`（`explicit` 档，判定链第 3 步），另有 `plugin.revoke` 审计留痕 —— 见 §4.2-2。
 
 ### 3.5 依赖身份与作者签名
 
@@ -477,7 +475,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 
 1. 调用方在 `dependencies.plugins` 里**声明依赖该 `(origin, id)`**；
 2. 被调方的端点声明 `callable` 含 `'plugins'`；
-3. 管理员在动态点 `plugins.call.<引用>.<path>` 上授予（`scope: host`、`grant: install`）。
+3. 管理员在动态点 `plugins.call.<引用>.<path>` 上授予（`scope: host`、**`grant: explicit`**）—— ⚠️ **2026-09-23 从 `install` 改成 `explicit`**：`install` 等于"清单里写一行就通"，而插件之间默认隔离，跨过去必须逐条点头。
 
 **候选集随被调方升级重算**：它删掉的端点自动失去授予（fail-closed），新增的端点走**增量同意**。
 
@@ -533,14 +531,14 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | `ADR-002` §5 · `ADR-005` §3ter · `manifest-design.md` §27 | `hook` 定义按 §2.1 收敛：**差别是调用方向**（不是"特权"），沙箱内即可，**P2 不做** |
 | `plugin-lifecycle-design.md` §12-4 / §13 | `hook` 钩子形态**已定**（指向本文 §2）；`OnPluginLoadedEvent` 改成 §2.5 的**依赖变更定向通知**（不做广播） |
 | 三处**仓库外引用** | 已改写成无路径形式：`api-contract.md` §7 两处 + `core/__tests__/permissions-meta.test.ts` 一处；另清了 `core/__tests__/emulation-worker-threads.test.ts` 里一处同类措辞 |
-| **动态点这一批（2026-09-23）** | `api-contract.md` 新增 §6.1（动态点：两种族、owner、随能力生灭、可声明性）· `plugin-lifecycle-design.md` §3（登记表带上派生点）· `sdk/types.ts` 的 `permissions` 注释 · `sdk/schema/manifest.schema.json` 的 `permissions[].name`（pattern 放宽 + 说明）|
+| **动态点这一批（2026-09-23，09-24 定型）** | `api-contract.md` 新增 §6.0（冻结表/临时表）与 §6.1（两族点、派生而非登记、可声明性）· `plugin-lifecycle-design.md` §3（登记表不写注册表）· `sdk/types.ts` 的 `permissions` 注释 · `sdk/schema/manifest.schema.json` 的 `permissions[].name`（pattern 放宽 + 说明）|
 | `sdk/types.ts` / `sdk/host-api.d.ts` | ⏳ **未做（属代码面）**：`publish[].ask`、`request` / `on` / `off` 的类型。⚠️ 现在加类型＝给插件承诺一个还没实现的字段与方法 ⇒ 与事件面本体一起做 |
 | **本文 §3（调用面 + 带源身份）** | ⏳ **部分未做**：**① `endpoints` 改名 ✅、② 身份主键 `(origin, id)` + 本地来源具名 ✅（2026-09-22）、③ 动态点 ✅（2026-09-23）**；剩下的见 §4.3（④ 作者签名 → ⑤ `plugins.call` 本体 → ⑥ reanchor → ⑦ 构建层签名）|
 
 ### 4.2 待定
 
 1. ~~**"引用 → 权限点名"的规范化函数放哪**~~ **已办（2026-09-23）**：落在 `core/permissions/points.ts`（`callPointOf` / `subscribePointOf`），形状照 `core/exec/templates.ts` 的 `permissionPointOf`；两个动态点族都已随之落地（详见 §3.4）。**代价已确认**：`permissions[].name` 的 schema 放宽成两条分支；
-2. **逐 topic / 逐端点撤销的落地形态**（⚠️ **仍未定**）：进 `grants` 记录，还是单独一张批准表；CLI 动词（`spc plugin revoke-subscribe` / `revoke-call`？）。**现状**：动态点是 `grant: install` 档 ⇒ 判定链**不读 `grants`**（声明即生效），所以"可一键收回"目前只能靠**卸载/重载**（点随之消失）；要支持"插件还在、只收回这一条"，就得先定这张表；
+2. ~~**逐 topic / 逐端点撤销的落地形态**~~ **✅ 已定（2026-09-23，2026-09-24 收敛）**：**就撤 `grants` 里那一条**（两族点都是 `explicit` 档 ⇒ 判定链第 3 步读它），另有 `plugin.revoke` 审计条目回答"是谁、什么时候撤的"。**不需要另造批准表**，也不需要 `revoke-subscribe` / `revoke-call` 这类新动词 —— 就是已有的 `spc plugin revoke <插件> <权限点>`。⚠️ 撤回对**运行中的**插件要 reload 才生效（装载时快照，见 api-contract §12-6）；
 3. **Web UI 排序的存储**（事件面）：进配置中心（与目录等级映射同处）还是跟着安装记录走；
 4. ~~**Linux 引用的行号基准**~~ **已办**：体检工具加了第四个源码根（Linux 内核树），本文的 Linux 引用已经写成"文件:行号"，基准是 **6.12.110**（工具从工作区那份官方包的包名读出并记进快照基线 `linux=`）。部分子树里缺的文件（`kernel/notifier.c`、`security/security.c`）已从同版本包里补进树；以后再引到别的文件，按同一办法补即可；
 5. 意见的 `decision` 取值要不要收敛成固定枚举（现在是"约定 + 允许扩展字符串"）；
@@ -557,7 +555,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | 1 | ~~`endpoints` 改名~~ **✅ 已做（2026-09-22）**；`callable` 与 path 命名空间**移到后面** | 纯重命名**好 review**、先做掉；`callable` 不该在调用面之前加（不承诺没实现的字段），path 命名空间要等 `(origin, id)` 有 origin 可拼 |
 | 2 | ~~**身份主键改 `(origin, id)`**~~ **✅ 已做（2026-09-22）**：记录（含 `pluginRef`/`resolveRecord`）/ 数据目录（`<sanitize(origin)>/`）/ 配置 / 能力登记（条目改带 `ref`）/ CLI（`--source` + 打完整引用）/ HTTP（`source` 入参）/ 依赖检查（`dep.origin ?? 自己来源`）/ 生命周期审计与错误的 `pluginId` 改带 ref；本地来源具名 `local:<名字>` | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
 | **2b** | ~~**运行时层的身份**~~ **✅ 已做（2026-09-22）**：`AuditEntry` 加 `ref?`（**只增不改**，`pluginId` 保留）；`sandbox.ts` 用就地包装 `auditOwn` 让十几处审计一次到位；`hostApi.ts` 同理（`PluginHostContext.ref`）；`loader` 把 `ref` 同时传给 `buildHostApi` 与 `createSandbox`；判别用例：同 id 两来源的 `fs.write` 审计两条，`pluginId` 相同、`ref` 分得开 | ② 的必然尾巴（字段是**加**不是改，符合"审计格式只增不改"） |
-| 3 | ~~"引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点~~ **✅ 已做（2026-09-23，9 文件）**：`core/permissions/points.ts`（校验 + 单射，非法即 `PERMISSION_POINT_INVALID`）；`PermissionRegistry` 加 `owner` + `unregisterOwnedBy`；`capabilities.register/revoke` 带出与回收点（订阅点等级取发布方 `classification`，`secret` 不设点）；`permissions[].name` 的 schema 放宽出动态分支；判别用例 `core/__tests__/dynamic-points.test.ts`（13 条，含 4 个变异自证） | 授权面；与 §3.4 一起钉死 |
+| 3 | ~~"引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点~~ **✅ 已做（2026-09-23，09-24 定型）**：`core/permissions/points.ts`（校验 + 单射，非法即 `PERMISSION_POINT_INVALID`）；两族点放在**临时表**里 —— 从当前活着的插件**派生**（`core/permissions/source.ts`），**不写冻结的注册表**（判定查"冻结表 ∪ 临时表"）；两族都是 `explicit` 档（插件间默认隔离）；`permissions[].name` 的 schema 放宽出动态分支；用例 `core/__tests__/dynamic-points.test.ts` | 授权面；与 §3.4/§3.7 一起钉死 |
 | 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub` + `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖解析比公钥 + 作者名册 `authors.json` | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
 | 5 | **调用本体**：`plugins.call`（投递链 + 有界重试 + 审计 `callId` + 深度上限） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提 |
 | 6 | **reanchor 动作**（CLI；面板入口属 P3） | 前面都就位后才谈得上"搬家" |

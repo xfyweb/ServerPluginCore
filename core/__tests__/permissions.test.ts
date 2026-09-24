@@ -91,17 +91,22 @@ test('`auto` 档：未声明时也不看授予列表（本来就免授予）', (
   assert.equal(res.decision, 'allow');
 });
 
-test('`host` + `install`：**仍要声明**，但**免逐点授予**', () => {
+test('`host` + `install` 与 `host` + `explicit` **判定上完全一样**：声明了还要在白名单里', () => {
   const r = makeRegistry();
-  // 未声明 → 拒绝（host 资源要在安装时被看见）
-  const undeclared = checkPermission(r, 'fs.read.host', [], []);
-  assert.equal(undeclared.decision, 'deny');
-  assert.equal(undeclared.code, 'NOT_DECLARED');
-  assert.equal(undeclared.params?.grant, 'install');
-  // 已声明、无授予 → 放行（install 档读安装清单即生效）
-  const declared = checkPermission(r, 'fs.read.host', ['fs.read.host'], []);
-  assert.equal(declared.decision, 'allow');
-  assert.equal(declared.params?.grant, 'install');
+  for (const point of ['fs.read.host', 'exec.template.nginx.reload'] as const) {
+    // 未声明 → 拒（host 资源要在安装时被看见）
+    const undeclared = checkPermission(r, point, [], []);
+    assert.equal(undeclared.decision, 'deny');
+    assert.equal(undeclared.code, 'NOT_DECLARED');
+    // 已声明、白名单里没有 → 拒（install 档的那条由**首次安装时播种**写进 grants，不是"免授予"）
+    const notGranted = checkPermission(r, point, [point], []);
+    assert.equal(notGranted.decision, 'deny', `${point}：声明了但没在白名单里应当拒`);
+    assert.equal(notGranted.code, 'NOT_GRANTED');
+    // 在白名单里 → 放行
+    const allowed = checkPermission(r, point, [point], [point]);
+    assert.equal(allowed.decision, 'allow');
+    assert.equal(allowed.params?.grant, point === 'fs.read.host' ? 'install' : 'explicit');
+  }
 });
 
 test('`host` + `explicit`：未声明 → NOT_DECLARED（先报声明这一关）', () => {
@@ -244,6 +249,47 @@ test('`grant` 缺省推导：self → auto、host → explicit（偏保守；ins
   assert.equal(r.get('fs.write.data')?.grant, 'auto');
   assert.equal(r.get('exec.template.nginx.reload')?.grant, 'explicit');
   assert.equal(r.get('fs.read.host')?.grant, 'install');
+});
+
+test('一致性（2026-09-23 补）：`host` + `grant: auto` → SCOPE_GRANT_INVALID', () => {  // 为什么必须在**注册期**挡：`auto` = 免声明 + 免授予，判定链会直接放行 ——
+  // 一个"碰宿主资源却免声明"的点就是 fail-open。此前只有一条测试不变式守着（跑测试才发现），
+  // 现在注册就报错。
+  const r = new PermissionRegistry();
+  assert.throws(
+    () =>
+      r.register({
+        name: 'bad.hostauto',
+        group: 'bad',
+        description: 'host 点免声明 = 没闸',
+        scope: 'host',
+        grant: 'auto',
+        confidentiality: 'public',
+        executionLevel: 'low',
+      }),
+    (err: any) => err.code === 'SCOPE_GRANT_INVALID',
+    'host + auto 应当抛 SCOPE_GRANT_INVALID',
+  );
+  // `host` + 缺省（⇒ explicit）与 `host` + install 照旧合法
+  r.register({
+    name: 'ok.host',
+    group: 'ok',
+    description: 'host 缺省 ⇒ explicit',
+    scope: 'host',
+    confidentiality: 'public',
+    executionLevel: 'low',
+  });
+  assert.equal(r.get('ok.host')?.grant, 'explicit');
+});
+
+// ---- 点表（冻结表 ∪ 临时表）----
+
+test('点表只回答"这个点现在存不存在"：`get` 返回 undefined ⇒ 一律 UNKNOWN_POINT', () => {
+  const empty = { get: () => undefined };
+  const res = checkPermission(empty, 'exec.template.nginx.reload', ['exec.template.nginx.reload'], [
+    'exec.template.nginx.reload',
+  ]);
+  assert.equal(res.decision, 'deny');
+  assert.equal(res.code, 'UNKNOWN_POINT', '对端卸载/点不再存在时就是这个码（fail-closed）');
 });
 
 // ---- 授权记录校验（安装流写入前）----

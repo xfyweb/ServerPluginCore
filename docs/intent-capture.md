@@ -256,21 +256,30 @@ Permissions-Policy: camera=(), microphone=(), geolocation=(), …
 
 | 档 | 覆盖 | 行为 |
 |---|---|---|
-| `auto` | 全部 `scope:self` + `lifecycle.*` | 安装即生效，清单可见 |
-| `install` | host 级**只读** + 插件自有能力（`docker.read`、`events.subscribe`） | **安装清单即生效**，有事可一键收回 |
-| `explicit` | 写宿主资源、`exec.template.*`、`process.*`、驱动插件的出网类端点、提权 | 默认拒绝，逐点授予 |
+| `auto` | 全部 `scope:self` + `lifecycle.*` | 安装即生效，清单可见；**免声明免授予，也撤不动**（够不着别人） |
+| `install` | host 级**只读** + 插件自有能力（`docker.read`） | **首次安装时按清单播种进白名单**（`grants`），之后与 `explicit` **完全一样**；撤回 = 移出白名单（对运行中的插件需 reload 生效） |
+| `explicit` | 写宿主资源、`exec.template.*`、`process.*`、驱动插件的出网类端点、**跨插件调用/订阅（`plugins.call.*` / `events.subscribe.*`）**、提权 | 默认拒绝，逐点授予 |
 
-落地形态：`PermissionPoint` 增加 `grant: 'auto' | 'install' | 'explicit'` 字段。**它与 v3 删除的 `protectionLevel` 本质不同——这个字段被判定链读取**（`protectionLevel` 是死字段，故删）。同时 `scope` 从"要不要授予"退为"碰不碰宿主资源"，并加**注册期**一致性约束 `scope: self ⇒ grant: auto`（违反 → `SCOPE_GRANT_INVALID`），与既有的 `executionLevel ≥ confidentiality` 同属注册期校验——两个字段各有一处读取点，都不会变成装饰。
+> **跨插件为什么是 `explicit`（2026-09-23 定）**：插件之间**默认隔离**（`exports` 默认私有、看不见别的插件），
+> 调用别人的端点、监听别人的事件都是**跨过去**，只有"管理员逐条点头"对得上这个模型。
+> 早先把它们划进 `install` 等于"清单里写一行就通"，与隔离默认相反。
 
-> **目标态尚未落地**：当前代码仍是 `scope = host ⇒ 未授予即拒绝`（`core/permissions/check.ts`）。本节是契约，改动随 **P2 权限层**一起做；在此之前 `install` 档权限点仍需逐点授予。
+落地形态：`PermissionPoint` 增加 `grant: 'auto' | 'install' | 'explicit'` 字段。**它与 v3 删除的 `protectionLevel` 本质不同——这个字段被判定链读取**（`protectionLevel` 是死字段，故删）。同时 `scope` 从"要不要授予"退为"碰不碰宿主资源"，并加**注册期**一致性约束 `scope: self ⇒ grant: auto` **与 `scope: host ⇒ grant ≠ auto`**（违反 → `SCOPE_GRANT_INVALID`），与既有的 `executionLevel ≥ confidentiality` 同属注册期校验——两个字段各有一处读取点，都不会变成装饰。
+
+> **✅ 已落地（2026-09，第四批 B；2026-09-23/24 收敛）**：三档与注册期约束都在代码里（`core/permissions/registry.ts`）。
+> 09-23/24 的体检收敛了三处：**注册期挡住 `host + auto`**（此前只有测试守着）；
+> **`install` 与 `explicit` 合并走同一条白名单**（`install` = 首次安装时**播种**一次 —— 修掉"`revoke` 删一个
+> 不存在的条目、判定照旧放行而 CLI 报成功"的假成功，顺带让升级新增点不再静默生效）；
+> **`auto` 档的 `grant` / `revoke` 明确报 `GRANT_NOT_APPLICABLE`**，不再假装成功。
+> 另：**驱动插件注册的点，档位与等级由驱动自己定**（核心不替它选；缺省 `host ⇒ explicit` 的 fail-closed 方向不变）。
 
 ### 8.2 判定链（替换 api-contract §7 第 3 步）
 
 ```
-1  权限点未在注册表登记                          → UNKNOWN_POINT
+1  权限点查不到（冻结表 ∪ 临时表）                → UNKNOWN_POINT
 2  manifest 未声明该点                           → NOT_DECLARED
-3  grant = explicit 且管理员未授予                → NOT_GRANTED
-4  通过（auto / install 审计记 installed-grant）
+3  grant != auto 且不在 `grants` 里              → NOT_GRANTED
+4  通过（auto / install 审计记 grant 档）
 ```
 
 ### 8.3 为什么读可以放宽（唯一前提）
@@ -280,6 +289,11 @@ Permissions-Policy: camera=(), microphone=(), geolocation=(), …
 ### 8.4 增量同意（升级）
 
 更新时**新增**的 `install` / `explicit` 点必须重新展示并取得同意，不能默认继承旧同意。拒绝授予不影响插件可用性——相关功能报 `NOT_GRANTED`，其余照常。
+
+> ⚠️ **2026-09-24 更新**：这条现在**安全的那一半已经有了** —— `install` 与 `explicit` 合并走同一条白名单，
+> 而 `install` 档只在**首次安装**播种一次 ⇒ 升级新增的点**不会**自动生效，会 fail-closed 停在 `NOT_GRANTED`
+> 等管理员授予。缺的是**主动性**：新增点不会主动摆到管理员眼前（要靠调用失败才发现），落点见
+> `docs/api-contract.md` §12-5。
 
 ### 8.5 事件总线：绕过出口闸门的第二跳
 

@@ -11,10 +11,10 @@
 // 即 `scope: self` + `grant: auto` 的点免声明免授予，`grant: install|explicit` 的点才要声明与授予。
 // 本文件只登记；**别再按"scope = host ⇒ 未授予即拒绝"理解它**（那是 v3 的口径，已作废）。
 //
-// 动态点（`owner` 那一栏）：`exec.template.*`、`plugins.call.<引用>.<path>`、`events.subscribe.<引用>.<topic>`
-// 不是在这里写死的，而是**某个插件登记了对应能力**时派生出来的（`core/exec/install.ts`、
-// `core/plugin/capabilities.ts`），能力撤销时按 `owner` 一起回收。点名怎么拼、为什么这么拼，
-// 见 `core/permissions/points.ts` 的文件头。
+// ⚠️ **这是"冻结表"**（2026-09-24 定）：只有核心启动阶段会写它 —— 先核心静态点，再**驱动插件**注册的点；
+// **能力插件加载前它就固化，运行途中完全不变**（所以本类没有"运行期撤销某个点"这条路）。
+// 跨插件调用/订阅那类**动态点不在本表里**：它们是**临时表**，从当前活着的插件派生
+// （`core/permissions/source.ts`），随装载/卸载即时变化。两表合起来才是判定看到的"点表"。
 import { SpcError } from '../errors';
 
 /**
@@ -25,13 +25,22 @@ import { SpcError } from '../errors';
 export type Scope = 'self' | 'host';
 export type Decision = 'allow' | 'deny';
 /**
- * 授予方式（v4，`grant` 三档，见 docs/api-contract.md §6/§7）：
- * - `auto`：**免声明、免授予、安装即用**（`self` 域：够不着别人）
- * - `install`：**要声明**，读安装清单即生效、可一键收回（宿主资源，但资源本来就属于该插件）
- * - `explicit`：**要声明 + 必须逐点授予**（写宿主资源 / 提权 / 出网 / `exec.template.*` / `process.*`）
+ * 授予方式（v4，`grant` 三档，见 docs/api-contract.md §6/§7）。
+ *
+ * **分界线是"要不要在清单里声明"**，而且这条线同时决定了**能不能撤**：
+ *
+ * | 档 | 要声明吗 | 默认 | 能撤吗 | 为什么 |
+ * |---|---|---|---|---|
+ * | `auto` | 不要（写了也不看） | 安装即用 | **不能，也不需要** | `self` 域：够不着别人（自己的 kv / 自己的定时器），"禁用 crypto.hash"没有意义 |
+ * | `install` | **要** | 安装清单即生效 | **能**（记录里的 `revoked`） | 宿主资源，但资源本来就属于该插件 ⇒ 不给管理员添逐点授予的摩擦，只要求它自报家门 |
+ * | `explicit` | **要** | **默认拒绝** | **能**（从 `grants` 里移出） | 写宿主资源 / 提权 / 出网 / 跨插件（`exec.template.*`、`plugins.call.*`、`events.subscribe.*`） |
+ *
+ * ⇒ **规则一句话：需要声明的，都必须撤得动**（用户 2026-09-23 定）。`auto` 档反过来说：
+ * 它连"声明"都不要求，所以没有承载授权的载体，`grant` / `revoke` 对它一律**报错**而不是假装成功
+ * （`GRANT_NOT_APPLICABLE`）。
  *
  * ⚠️ 与 v3 删掉的 `protectionLevel` 的**本质区别**：这个字段**被判定链读取**
- * （第 2 步"要不要声明"与第 3 步"要不要授予"都只看它），不是装饰。
+ * （第 2 步"要不要声明"、第 3 步"要不要授予"、第 4 步"有没有被撤回"都只看它），不是装饰。
  */
 export type Grant = 'auto' | 'install' | 'explicit';
 /** 保密等级（读门槛）：public < sensitive < secret */
@@ -58,17 +67,6 @@ export interface PermissionPoint {
   confidentiality: Confidentiality;
   /** 默认执行等级 */
   executionLevel: ExecutionLevel;
-  /**
-   * **带出这个点的是谁**（完整引用 `<origin>/<id>`）。核心写死的静态点没有这一栏。
-   *
-   * 动态点（`exec.template.*` / `plugins.call.*` / `events.subscribe.*`）是"某个插件登记了某个能力"的
-   * **派生品**：那个能力撤销时点必须跟着消失，否则会留下"点还在、能力没了"的**悬挂授权**
-   * ——管理员批准的是一条已经不存在的路。所以点自己记着 owner，撤销时按 owner 精确回收，
-   * **不靠解析点名**（`core/permissions/points.ts` 头部说了为什么不反向解析）。
-   *
-   * ⚠️ 它**不参与判定**：判定链只读 `scope` / `grant` / 等级（ADR-001 v3：来源不参与权限判定）。
-   */
-  owner?: string;
 }
 
 /** `grant` 的缺省推导：`self → auto`、`host → explicit`（偏保守；要 `install` 必须显式写） */
@@ -101,38 +99,23 @@ export class PermissionRegistry {
         grant: point.grant,
       });
     }
+    // 一致性约束（v4 补，2026-09-23）：**`host` 不能是 `auto`**。
+    // `auto` = 免声明 + 免授予；一个碰宿主资源的点若是 auto，判定链会**直接放行**，
+    // 于是"管理员该在安装时看见它"这条就没了 —— 那是 fail-open 的方向。
+    // （此前只有 `permissions-meta.test.ts` 的一条不变式在测试层面守着，注册期并不报错。）
+    if (point.scope === 'host' && point.grant === 'auto') {
+      throw new SpcError('SCOPE_GRANT_INVALID', {
+        permission: point.name,
+        scope: point.scope,
+        grant: point.grant,
+      });
+    }
     // 存**解析后**的档位：判定链只读这里，不再各自推导（单一事实源）
     this.points.set(point.name, { ...point, grant: resolveGrant(point.scope, point.grant) });
   }
 
   get(name: string): PermissionPoint | undefined {
     return this.points.get(name);
-  }
-
-  /**
-   * 撤销一个点（幂等：本来就没有 → `false`）。
-   * 调用方一般是 `unregisterOwnedBy`；单独用它的场合是"核心自己撤掉一个内置点"。
-   */
-  unregister(name: string): boolean {
-    return this.points.delete(name);
-  }
-
-  /**
-   * **撤销某插件带出来的全部动态点**（卸载 / 重载 / 换源都走这里；幂等），返回撤销条数。
-   *
-   * ⛔ 只撤 `owner` 精确匹配的：没有 owner 的静态点是核心契约的一部分，插件再怎么卸载也不许把它们拖走
-   * （否则一个插件的生命周期就能让全机器的 `fs.read.data` 消失）。
-   */
-  unregisterOwnedBy(owner: string): number {
-    let removed = 0;
-    // 先快照再删：遍历中改 Map 的键集是未定义行为
-    for (const [name, point] of [...this.points]) {
-      if (point.owner === owner) {
-        this.points.delete(name);
-        removed++;
-      }
-    }
-    return removed;
   }
 
   all(): PermissionPoint[] {

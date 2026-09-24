@@ -8,12 +8,13 @@
 //   · 安装记录（plugins.json）= 持久状态（enabled / grants / state / lastError / restartAttempts）
 //   · `loaded` 内存表 = 活着的沙箱句柄
 //   两者不重复：state 一律写记录，句柄只在内存。
-import type { PluginType } from '../../sdk/types';
+import type { Manifest, PluginType } from '../../sdk/types';
 import { audit, digest, digestParams } from '../audit';
 import { DEFAULT_LOCAL_SOURCE, loadConfig, pluginDataDir, type PluginLimits, type SpcConfig } from '../config';
 import { SpcError, toErrorShape } from '../errors';
 import { isValidGrantPoint } from '../permissions/check';
-import { registry } from '../permissions/registry';
+import { resolveGrant } from '../permissions/registry';
+import { pointSource } from '../permissions/source';
 import { capabilities } from './capabilities';
 import {
   loadPlugin,
@@ -385,6 +386,12 @@ export class PluginManager {
    * 安装：读目录 → 校验清单 → 写记录 → （默认）立即装载。
    * **来源（`opts.source`）决定归属**：身份是 `(origin, id)`，同 id 不同源是**两个插件**（各自的目录/配置/授权）；
    * 缺省 `local:default`。本地安装 ⇒ `signedBy`/`verifiedMeta` 为 null（unanchored：没有更新渠道）。
+   *
+   * **授权播种**（2026-09-24）：`install` 档的点**只在记录第一次被创建时**按清单播种一次（见 `seedGrants`）。
+   * 之后升级新增的 `install` 档点**不自动生效** ⇒ 报 `NOT_GRANTED` 等管理员授予（增量同意，§8.4）。
+   *
+   * `opts.grants`（CLI `--grant` / HTTP body）走与 `grant()` **同一套校验** —— 否则这里就是一条
+   * 绕过"精确 / 已登记 / 已声明 / 可授予"四道闸的后门（2026-09-23 之前它确实是一条直通车道）。
    */
   install(dir: string, opts: InstallOptions = {}): Promise<PluginView> {
     return this.withLock(async () => {
@@ -398,6 +405,13 @@ export class PluginManager {
         grants: opts.grants ?? existing?.grants ?? [],
         signedBy: existing?.signedBy ?? null,
       });
+      if (opts.grants?.length) {
+        // 校验用的是**这次装进来的清单**（声明以新包为准）
+        this.assertPointsOperable(record, opts.grants, true);
+        record.grants = [...new Set([...record.grants, ...opts.grants])].sort();
+      }
+      // 首次安装：把清单里 `install` 档的点播种进白名单（"安装清单即同意书"，只播一次）
+      if (!existing) this.seedGrants(record);
       // 重新安装保留原 installedAt（"装了什么"的时间不该被覆盖）
       if (existing) record.installedAt = existing.installedAt;
       record.enabled = opts.start === false ? (existing?.enabled ?? false) : true;
@@ -408,6 +422,48 @@ export class PluginManager {
         await this.loadAndStart(record);
       }
       return this.status(ref);
+    });
+  }
+
+  /**
+   * 把清单里**属于 `install` 档**的声明播种进 `grants`（只在记录第一次创建时调用一次）。
+   *
+   * 为什么要有这一步：`install` 档的设计意图是"安装清单即同意书"（不用管理员逐点点），
+   * 而判定链只有一条白名单 —— 那就得有人把"同意"**落成一条真授权**。播种的就是它。
+   * 于是 `install` 与 `explicit` **在判定上完全一样**（白名单里有就通），差别只在"谁写第一条"。
+   *
+   * 为什么只播一次：升级时新增的 `install` 档点**不该**静默生效（那是 §8.4 增量同想要挡的），
+   * 播种一次 + 之后按白名单管理，正好把这两件事同时办到。
+   *
+   * ⚠️ 播种要知道档位（`pointSource.get`）—— 驱动插件的点必须在**能力插件安装之前**就已固化，
+   * 这正是"两阶段启动"的约束（`core/permissions/registry.ts` 头部）。查不到的点**不播**（fail-closed）。
+   */
+  private seedGrants(record: PluginRecord): void {
+    let manifest: Manifest;
+    try {
+      manifest = readRecordManifest(record);
+    } catch {
+      return; // 清单读不出来 ⇒ 没有可播的（装载会自己报错）
+    }
+    const seeded: string[] = [];
+    // 主题包没有 `permissions`（schema 豁免）⇒ 必须兜空数组，别让播种把装载路径炸掉
+    for (const declared of manifest.permissions ?? []) {
+      const point = pointSource.get(declared.name);
+      if (point && resolveGrant(point.scope, point.grant) === 'install' && !record.grants.includes(declared.name)) {
+        seeded.push(declared.name);
+      }
+    }
+    if (seeded.length === 0) return;
+    record.grants = [...new Set([...record.grants, ...seeded])].sort();
+    audit({
+      ts: Date.now(),
+      pluginId: pluginRef(record),
+      ref: pluginRef(record),
+      method: 'plugin.grant',
+      target: seeded.join(','),
+      paramsDigest: digestParams({ via: 'install-seed' }) ?? digest(pluginRef(record)),
+      result: 'ok',
+      durationMs: 0,
     });
   }
 
@@ -459,42 +515,104 @@ export class PluginManager {
     });
   }
 
-  /** 逐点授予（精确权限点，拒绝通配；点必须已登记且被插件声明） */
+  /**
+   * 校验一批权限点**能不能被授予 / 撤回**。
+   *
+   * 校验项（`grant` / `revoke` / `install --grant` **共用这一份**，否则三条入口的口径迟早分叉）：
+   * ① 必须精确：通配或空 ⇒ `GRANT_WILDCARD`（管理员最常犯的错是写 `kv.*`，"权限被拒绝"听起来像插件的问题）；
+   * ② 必须查得到（冻结表 ∪ 临时表）⇒ `UNKNOWN_POINT`；
+   * ③ 档位必须**可操作**：`auto` 档够不着别人、也没有承载授权的载体 ⇒ `GRANT_NOT_APPLICABLE`
+   *    （2026-09-23 之前这里不报错，于是"授予/撤销一个 self 点"看起来成功、实际什么都没发生）；
+   * ④ 授予时还要求**这个插件声明过**（`requireDeclared`）⇒ `NOT_DECLARED`（授予没申请的点没有意义，
+   *    通常是打错字）。**撤回不要求**：撤回是收窄，收窄不该被"它现在没声明"挡住
+   *    —— 插件升级后把声明删了，管理员仍然要能把那条陈旧授权清掉。
+   */
+  private assertPointsOperable(record: PluginRecord, points: string[], requireDeclared: boolean): void {
+    const declared = requireDeclared
+      ? readRecordManifest(record).permissions.map((p) => p.name)
+      : [];
+    for (const point of points) {
+      if (!isValidGrantPoint(point)) {
+        throw new SpcError('GRANT_WILDCARD', { permission: point });
+      }
+      const known = pointSource.get(point);
+      if (!known) {
+        throw new SpcError('UNKNOWN_POINT', { permission: point });
+      }
+      if (
+        requireDeclared &&
+        !declared.some((d) => d === point || d === '*' || (d.endsWith('.*') && point.startsWith(d.slice(0, -1))))
+      ) {
+        throw new SpcError('NOT_DECLARED', { permission: point });
+      }
+      const tier = resolveGrant(known.scope, known.grant);
+      if (tier === 'auto') {
+        throw new SpcError('GRANT_NOT_APPLICABLE', { permission: point, grant: tier });
+      }
+    }
+  }
+
+  /**
+   * 逐点授予：**把点加进白名单**（`install` 与 `explicit` 同一条道 —— 判定链只问"在不在 `grants` 里"）。
+   * `auto` 档 ⇒ `GRANT_NOT_APPLICABLE`（够不着别人，没有可授予的东西）。
+   *
+   * 授权变更**落一条审计**（`plugin.grant`）—— 权限变更不留痕是比"少一个状态字段"更严重的问题；
+   * "是谁撤的、什么时候撤的"因此从日志里就能回答，不需要在记录里再存一份"已撤回"名单。
+   */
   grant(input: string, points: string[]): PluginView {
     if (points.length === 0) {
       throw new SpcError('INVALID_ARGS', { reason: 'no-permission-point-given' });
     }
     const record = this.mustRecord(input);
     const ref = pluginRef(record);
-    const manifest = readRecordManifest(record);
-    const declared = manifest.permissions.map((p) => p.name);
-    for (const point of points) {
-      if (!isValidGrantPoint(point)) {
-        // 单独一个码：管理员最常犯的错就是写 `kv.*`，而"权限被拒绝"听起来像是插件的问题
-        throw new SpcError('GRANT_WILDCARD', { permission: point });
-      }
-      if (!registry.get(point)) {
-        throw new SpcError('UNKNOWN_POINT', { permission: point });
-      }
-      // 授予"插件没申请的点"没有意义，而且通常是打错字——直接拒，并给出正确提示
-      if (!declared.some((d) => d === point || d === '*' || (d.endsWith('.*') && point.startsWith(d.slice(0, -1))))) {
-        throw new SpcError('NOT_DECLARED', { permission: point });
-      }
-    }
+    this.assertPointsOperable(record, points, true);
+    const before = new Set(record.grants);
     const grants = [...new Set([...record.grants, ...points])].sort();
     this.patchRecord(ref, { grants });
+    this.auditAuthz(ref, 'plugin.grant', points.filter((p) => !before.has(p)));
     // 沙箱持有的是装载时的授予快照 → 运行中的插件需要 reload 才生效
     if (this.loaded.has(ref)) this.needsReload.add(ref);
     return this.status(ref);
   }
 
+  /**
+   * 逐点撤回：**把点移出白名单**。`auto` 档 ⇒ `GRANT_NOT_APPLICABLE`（它本来就不需要授予，
+   * 也就没有"撤回"可言；要停用它请禁用或卸载插件）。
+   *
+   * 撤回后判定链给出的是 `NOT_GRANTED`（"未授予"）—— 与"从未授予"同一个码。
+   * 想区分"谁在什么时候撤的"看审计（`plugin.revoke`），不靠记录里的状态字段。
+   */
   revoke(input: string, points: string[]): PluginView {
+    if (points.length === 0) {
+      throw new SpcError('INVALID_ARGS', { reason: 'no-permission-point-given' });
+    }
     const record = this.mustRecord(input);
     const ref = pluginRef(record);
+    this.assertPointsOperable(record, points, false);
     const remove = new Set(points);
     this.patchRecord(ref, { grants: record.grants.filter((g) => !remove.has(g)) });
+    this.auditAuthz(ref, 'plugin.revoke', points.filter((p) => record.grants.includes(p)));
     if (this.loaded.has(ref)) this.needsReload.add(ref);
     return this.status(ref);
+  }
+
+  /**
+   * 授权变更审计（`plugin.grant` / `plugin.revoke`）。
+   * 只记**实际变了**的点（重复授予、撤回一个本来就没有的点都不留噪声）；`target` 是点名列表，
+   * 属非敏感信息（点名的形状本就是插件作者写在清单里的东西）。
+   */
+  private auditAuthz(ref: string, method: 'plugin.grant' | 'plugin.revoke', changed: string[]): void {
+    if (changed.length === 0) return;
+    audit({
+      ts: Date.now(),
+      pluginId: ref,
+      ref,
+      method,
+      target: [...changed].sort().join(','),
+      paramsDigest: digestParams({ count: String(changed.length) }) ?? digest(ref),
+      result: 'ok',
+      durationMs: 0,
+    });
   }
 
   // ---- 启动 / 停机 ----

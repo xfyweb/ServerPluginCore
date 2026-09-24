@@ -17,6 +17,7 @@ const { capabilities } = await import('../plugin/capabilities.ts');
 const { SpcError } = await import('../errors.ts');
 const { validatePluginConfig, loadPluginConfig, savePluginConfig } = await import('../plugin/config.ts');
 const { loadRecords, validateRecord } = await import('../plugin/records.ts');
+const { registry } = await import('../permissions/registry.ts');
 const { pluginDataDir, DEFAULT_LOCAL_SOURCE, sanitizeOrigin } = await import('../config.ts');
 
 // ---------------- 夹具 ----------------
@@ -865,12 +866,38 @@ test('内置插件同样是普通插件：可 disable、可 uninstall（v2 取�
 
 // ---------------- 26 授予 ----------------
 
-test('grant：拒绝通配/未知点/未声明点；合法授予写入记录，运行中需要 reload 才生效', async () => {
+/**
+ * 授予/撤回的用例要点：**必须挑一个 `explicit` 或 `install` 档的点**。
+ * 2026-09-23 之前这里用的是 `kv.read`（`self/auto`）—— 那一档本该"免授予、也撤不动"，
+ * 而当时的代码对它的 `grant`/`revoke` 一律返回成功（CLI 打印"已授予/已撤销"、判定毫无变化）。
+ * 现在 `auto` 档会直接抛 `GRANT_NOT_APPLICABLE`，所以下面自带一条那样的断言。
+ *
+ * 2026-09-24 起 `install` 与 `explicit` **判定上完全一样**（白名单），差别只在"谁写第一条"：
+ * `install` 档的点**首次安装时按清单播种**（下一个用例专门测它），`explicit` 只能管理员授予。
+ */
+test('grant/revoke：拒绝通配/未知点/未声明点/**auto 档**；授予与撤回都改白名单', async () => {
+  // 合成一个 install 档的点（生产注册表里今天没有 install 点；这条用例同时守住"install 撤得动"）
+  const POINT = 'demo.read';
+  if (!registry.get(POINT)) {
+    registry.register({
+      name: POINT,
+      group: 'demo',
+      description: '合成 install 档点（测试用）',
+      scope: 'host',
+      grant: 'install',
+      confidentiality: 'sensitive',
+      executionLevel: 'medium',
+    });
+  }
+
   const dir = makePlugin('grantable', `export function init(){}`, {
-    permissions: ['kv.read'],
+    permissions: ['kv.read', POINT],
   });
-  await manager.install(dir);
-  assert.throws(() => manager.grant(id('grantable'), ['kv.*']), (e: unknown) => {
+  // `start: false`：授权只动记录。首次安装会把这一个 install 档点播种进来
+  await manager.install(dir, { start: false });
+  assert.deepEqual(manager.status(id('grantable')).grants, [POINT], '首次安装播种 install 档的点');
+
+  assert.throws(() => manager.grant(id('grantable'), ['demo.*']), (e: unknown) => {
     assert.equal((e as InstanceType<typeof SpcError>).code, 'GRANT_WILDCARD');
     return true;
   });
@@ -886,16 +913,78 @@ test('grant：拒绝通配/未知点/未声明点；合法授予写入记录，�
     assert.equal((e as InstanceType<typeof SpcError>).code, 'INVALID_ARGS');
     return true;
   });
+  // `auto` 档（kv.read 是 self/auto）：既不用授予、也撤不动 ⇒ 两条命令都必须**明确报错**，
+  // 不能再"成功但什么都不发生"
+  for (const op of ['grant', 'revoke'] as const) {
+    assert.throws(
+      () => manager[op](id('grantable'), ['kv.read']),
+      (e: unknown) => {
+        assert.equal((e as InstanceType<typeof SpcError>).code, 'GRANT_NOT_APPLICABLE');
+        return true;
+      },
+      `${op} auto 档应当抛 GRANT_NOT_APPLICABLE`,
+    );
+  }
 
-  const view = manager.grant(id('grantable'), ['kv.read']);
-  assert.deepEqual(view.grants, ['kv.read']);
-  assert.equal(view.reloadRequired, true, '运行中的插件授权后应提示需要 reload');
+  // 撤回 = 移出白名单（install 与 explicit 同一条道）
+  const revokedView = manager.revoke(id('grantable'), [POINT]);
+  assert.deepEqual(revokedView.grants, []);
+  assert.equal(revokedView.reloadRequired, false, '没装载 ⇒ 不需要 reload');
+  // 撤回**不要求当前声明**（插件升级删了声明也要能把陈旧授权清掉）
+  assert.deepEqual(manager.revoke(id('grantable'), [POINT]).grants, []);
+
+  // 再授予 = 放回白名单
+  assert.deepEqual(manager.grant(id('grantable'), [POINT]).grants, [POINT]);
+
+  // 一旦装载过，授权变更就要提示 reload（沙箱持有的是装载时快照）
+  await manager.enable(id('grantable'));
+  assert.equal(manager.revoke(id('grantable'), [POINT]).reloadRequired, true);
   const after = await manager.reload(id('grantable'));
   assert.equal(after.reloadRequired, false);
-
-  const revoked = manager.revoke(id('grantable'), ['kv.read']);
-  assert.deepEqual(revoked.grants, []);
+  assert.deepEqual(after.grants, [], '撤回在 reload 之后依然有效（不是快照一刷就回来）');
   await manager.disable(id('grantable'));
+});
+
+test('授权播种：install 档只在**首次安装**播一次；升级新增的点要管理员授予（增量同意）', async () => {
+  const SEEDED = 'demo.seeded';
+  const LATER = 'demo.later';
+  for (const name of [SEEDED, LATER]) {
+    if (!registry.get(name)) {
+      registry.register({
+        name,
+        group: 'demo',
+        description: `合成 install 档点（测试用）：${name}`,
+        scope: 'host',
+        grant: 'install',
+        confidentiality: 'public',
+        executionLevel: 'low',
+      });
+    }
+  }
+
+  const v1 = makePlugin('seedable', `export function init(){}`, { permissions: [SEEDED] });
+  await manager.install(v1, { start: false });
+  assert.deepEqual(manager.status(id('seedable')).grants, [SEEDED]);
+  // 播种要留痕（谁写的这条授权：安装清单，不是管理员手工点的）
+  assert.ok(
+    auditEntries().some((e) => e.method === 'plugin.grant' && String(e.target).includes(SEEDED)),
+    '播种必须落一条 plugin.grant 审计',
+  );
+
+  // 管理员撤回它 —— 授权是管理员的决定，不该被下一次升级冲掉
+  manager.revoke(id('seedable'), [SEEDED]);
+  // 升级 = 同一个目录换一份新清单（新增了 LATER 这个 install 档点）
+  const v2 = makePlugin('seedable', `export function init(){}`, { permissions: [SEEDED, LATER] });
+  await manager.install(v2, { start: false });
+  assert.deepEqual(
+    manager.status(id('seedable')).grants,
+    [],
+    '重装既不重播已撤回的点，也不自动放行新增的 install 档点（增量同意）',
+  );
+
+  // 新增的点由管理员显式授予
+  assert.deepEqual(manager.grant(id('seedable'), [LATER]).grants, [LATER]);
+  await manager.disable(id('seedable'));
 });
 
 // ---------------- 27 清单与记录一致性 ----------------

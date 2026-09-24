@@ -601,10 +601,12 @@ export function init() {
 });
 
 /**
- * 合成宿主方法：`host` + `explicit` 档的权限点（模拟未来的 `exec.template.*`）。
+ * 合成宿主方法：`host` + `explicit` / `install` 两档的权限点（模拟未来的 `exec.template.*`）。
  *
- * 为什么要一个合成的：**声明这道闸现在只对 host 点生效**，而内置的 host 点
+ * 为什么要合成的：**声明这道闸只对 host 点生效**，而内置的 host 点
  * （`exec.template.git.*`）与"机器上装没装 git"有关 ⇒ 拿它写用例会随机器变红。
+ * `install` 档这一档在生产注册表里**今天一个点都没有**（探针实测：17 self/auto + 7 host/explicit），
+ * 而"撤回"这条路径正是修 2026-09-23 那个假成功时补上的 —— 没有合成点就测不到它。
  */
 function hostPointApi(): HostApi {
   return {
@@ -613,7 +615,30 @@ function hostPointApi(): HostApi {
       fn: () => 'ran',
       // 权限点由测试自己登记（注册表是全局的；`register` 对重复名会抛，所以这里用固定名 + 幂等）
     },
+    'test.installop': {
+      permission: 'test.install.gate',
+      fn: () => 'ran',
+    },
   };
+}
+
+/** 幂等登记一个测试用的合成点（注册表是全局的，重复注册会抛） */
+async function ensurePoint(point: {
+  name: string;
+  scope: 'self' | 'host';
+  grant: 'auto' | 'install' | 'explicit';
+}): Promise<void> {
+  const { registry: live } = await import('../permissions/registry');
+  if (live.get(point.name)) return;
+  live.register({
+    name: point.name,
+    group: 'test',
+    description: '合成点（测试用）',
+    scope: point.scope,
+    grant: point.grant,
+    confidentiality: 'sensitive',
+    executionLevel: 'medium',
+  });
 }
 
 test('host 点：**未声明 → NOT_DECLARED**；声明了但未授予 → **NOT_GRANTED**；授予后才放行', async () => {
@@ -676,6 +701,53 @@ export function init() {
   assert.equal(await call(['test.host.gate'], []), 'DENY PERMISSION_DENIED/NOT_GRANTED');
   // ③ 逐点授予 → 放行
   assert.equal(await call(['test.host.gate'], ['test.host.gate']), 'OK ran');
+});
+
+test('install 档：声明 + **在白名单里**才放行（与 explicit 同一条道；撤回后真的拒）', async () => {
+  await ensurePoint({ name: 'test.install.gate', scope: 'host', grant: 'install' });
+
+  /** 跑一次 `test.installop` 调用并回收结果/错误码 */
+  async function call(permissions: string[], grants: string[]): Promise<string> {
+    const sandbox = await createSandbox(hostPointApi(), {
+      pluginId: '@xfy2412/sandbox-test',
+      permissions,
+      grants,
+    });
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await sandbox.runModule(
+        '@xfy2412/sandbox-test',
+        `
+const H = globalThis.__host;
+export function init() {
+  const parsed = JSON.parse(H['test.installop']());
+  if (parsed && typeof parsed === 'object' && parsed.__spcError) {
+    console.log('DENY ' + parsed.__spcError.code + '/' + (parsed.__spcError.params ? parsed.__spcError.params.reason : ''));
+    return;
+  }
+  console.log('OK ' + String(parsed));
+}
+`,
+      );
+      await sandbox.callHook('init', 3_000);
+    } finally {
+      console.log = orig;
+      sandbox.dispose();
+    }
+    return logs.join('\n').trim();
+  }
+
+  // 未声明 → 拒（install 档**要声明**）
+  assert.equal(await call([], []), 'DENY PERMISSION_DENIED/NOT_DECLARED');
+  // 声明了、白名单里没有 → 拒。**install 与 explicit 在这一步没有区别**：
+  // install 档的那条授权是"首次安装时播种"写进 `grants` 的（`manager.seedGrants`），不是"免授予"
+  assert.equal(await call(['test.install.gate'], []), 'DENY PERMISSION_DENIED/NOT_GRANTED');
+  // 在白名单里 → 放行
+  assert.equal(await call(['test.install.gate'], ['test.install.gate']), 'OK ran');
+  // 撤回 = 移出白名单 ⇒ 真的拒（修之前 install 档撤销是空操作、而 CLI 报成功）
+  assert.equal(await call(['test.install.gate'], []), 'DENY PERMISSION_DENIED/NOT_GRANTED');
 });
 
 test('白名单外的模块被拒（零环境权力的执行点）', async () => {
