@@ -351,9 +351,13 @@ A（读到敏感数据）→ 事件 payload → B（有出网能力）→ 外发
 
 ## 10. CLI 与 TUI 的定位
 
-- 当前 CLI = **插件与主题管理**：`plugin install / enable / disable / reload / status / grant / revoke`、`theme list / enable`、`about / status`；
+- 当前 CLI = **插件与主题管理**：`plugin install / enable / disable / reload / status / grant / revoke`、`source …`、`theme list / enable`、`about / status`；**偏应急与脚本**（一条命令、可管道、可 `--yes`）；
 - **不承载业务操作**：业务操作是用户意图，走核心 REST；
-- 未来 TUI = **前端通道的终端形态**（复用同一批核心 REST），那时业务操作才进 CLI；在此之前 CLI 就保持"只有插件管理"；
+- **未来 TUI = 管理面的终端形态**（2026-09-25 用户定）：只覆盖**管理面**（插件 / 来源 / 授权 / 审计查看 / 主题 / 状态），复用管理通道那批 REST（`/api/plugins*`、`/api/sources*`、`/api/audit`）与现成的本机鉴权路径（daemon 只听 `127.0.0.1` + ed25519 握手换会话 token：`core/handshake.ts` + CLI 的 `acquireToken()`）。
+  - ⛔ **业务面只有一个目标：Web Shell**。TUI **不承载插件前端**（`declarative` / `iframe` 容器都是 Web Shell 的事）⇒ **插件作者不必维护两个 UI**（这是本条的第一理由）；TUI 因此也**不需要**意图捕获那套终端渲染器（确认框 / 提权凭据输入只属业务面）。
+  - ⚠️ **不要**给 TUI 单独造一套 REST —— REST 只有一套，**TUI 与 Web Shell 都只是它的客户端**（"提前做 TUI 就要维护两份契约"是个错误论证，别再用）。
+  - **开工时机 = 与 P3 一起做**（两者可并行：共用 REST，TUI 只多一层终端交互）。
+  - **CLI/TUI 的交互不是禁忌**：可以问（`y/N`、选择列表），硬要求只有"**能关掉**"（`--yes`；非 TTY 时**不问**、直接要求 `--yes`），否则脚本化与 CI 就断了。
 - 管理员预授权（插件通道的长期授权来源）自然落在 CLI。
 
 ## 11. 审计

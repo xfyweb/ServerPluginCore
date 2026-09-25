@@ -121,6 +121,7 @@
 **为什么是核心**：用户意图只能由可信前端捕获（ADR-001 v4），因此 Web Shell 不能是"插件"——面板插件已降级为主题包（ADR-005 v3）。完整模型见 **intent-capture.md**。
 
 - **核心 Web Shell（可信前端）**：路由 / 布局 / 菜单 / i18n / 主题系统 + 组件库；承载登录/auth、仪表盘、插件与主题管理页、审计查看、市场页（P4 后接入）；**可 headless**（关闭 Web 服务，一切回管理 CLI）；
+  ⚠️ **TUI 只做管理面，与 P3 一起做**（2026-09-25 用户定）：覆盖插件 / 来源 / 授权 / 审计 / 主题 / 状态，复用管理通道那批 REST；**业务面只有一个目标 = Web Shell** —— TUI 不承载插件前端（`declarative` / `iframe` 容器都属 Web Shell），**插件作者不必维护两个 UI**。CLI 偏**应急与脚本**。两者可并行开工；**不要**给 TUI 单独造一套业务 REST（它就是个客户端）。
 - **意图捕获 UI**：资源选择器、确认窗口、来源角标、提权凭据输入（样式不可被主题覆盖）；
 - **前端 API（核心 REST）**：`/api/intent/{grant,revoke,forward}` + 核心原生能力端点（api-contract §11）；frontend-token 只存核心前端内存；
 - **插件前端容器**：`declarative`（manifest 组件树 → 核心渲染）与 `iframe`（`sandbox` 无 `allow-same-origin` + CSP 零出网 + `MessageChannel` 代理）；
@@ -131,7 +132,7 @@
 
 ## P4：市场签名与源管理 + 市场
 
-**已提前落地（P4 核心库，随 P1 一起做的）**：`core/sources/{canonical,keys,keyring,status,verify}.ts` —— 规范化 JSON、公钥指纹与验签、keyring（域名主键 + TOFU/手填 + 暂停 + 防回滚高水位）、链式密钥轮换验证、包校验（meta 签名 + `files[]` + manifest 交叉校验 + 作者一致性），26 条测试。**未落地**：registry 服务、安装流接线（含 `verifiedMeta` 与启动哈希校验）、CLI 源管理、市场页面。
+**已提前落地（P4 核心库，随 P1 一起做的）**：`core/sources/{canonical,keys,keyring,status,verify}.ts` —— 规范化 JSON、公钥指纹与验签、keyring（域名主键 + TOFU/手填 + 暂停 + 防回滚高水位）、链式密钥轮换验证、包校验（meta 签名 + `files[]` + manifest 交叉校验 + 作者一致性），26 条测试。**已落地（2026-09-25，⑥a）**：**本地源条目**（`kind: 'local'` + `authorAnchor`）与 **CLI/管理面源管理**（`spc source list|add|remove|enable|disable|alias|anchor`、`/api/sources/*`；`add` 不带 `--pub` 即远程 TOFU，`anchor` 不带 `--pub` 即解绑）。**未落地**：registry 服务、有源安装流接线（含 `verifiedMeta` 与启动哈希校验）、市场页面。
 
 - 签名工具链（ed25519；签名对象 = 规范化元数据，覆盖 manifest 与逐文件哈希，**由市场私钥签名**，见 **plugin-signature-design.md**）；registry 服务（market/，列表 / 上传 / 下载）；客户端安装流（清单校验 + 验签失败拒绝 + **本地安装不验签**）；
 - 源管理：keyring（域名主键 + 可选公钥 + `firstTrust` + `suspended` + 防回滚高水位）、添加源（TOFU 拉公钥 / 离线手填公钥）、状态文档拉取与**链式密钥轮换验证**、`revoked[]` 吊销信息（累计展示与审计，**不参与判定**）、暂停与管理员确认流程、**源信息展示**（含已吊销密钥与原因码）；
