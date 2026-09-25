@@ -100,6 +100,27 @@ export function readManifestFromDir(dir: string): Manifest {
   if (!check.ok) {
     throw new SpcError('PLUGIN_MANIFEST_INVALID', { dir, detail: check.errors.join('; ') });
   }
+  // **宿主还不支持的类型**：明确拒绝，别静默按能力插件跑起来（2026-09-25）。
+  //
+  // 为什么不能"按 ability 跑"：`driver` 要的是**核心进程内特权**（注册权限节点 + API 端点并自行鉴权，
+  // 见 api-contract §10），`hook` 的**调用方向相反**（核心回调它，见 events-and-hooks-design §2）——
+  // 塞进沙箱只会得到一个"看着装上了、实际完全不对"的东西：按核心端写的代码在沙箱里没有 node API，
+  // 按沙箱写的代码又会悄悄变成一个普通能力插件，而管理员以为装的是特权驱动。
+  //
+  // 为什么放在这里（而不是 `sdk/validate.ts` 的清单校验）：这两个类型是**将来合法**的，
+  // 市场与构建层共用的语法闸不该永久拒绝它们；"核心支持不了"是**宿主能力**问题，core 这边必须 fail-closed。
+  //
+  // ⚠️ 码与 `reason` 是临时的（以后实现 driver/hook 时删掉这段），所以**不新增 locale 键**：
+  //    `err.PLUGIN_MANIFEST_INVALID` 的文案是「插件清单非法：{pluginId}（{detail}）」，两个占位符都要真给。
+  const type = (raw as Manifest).type ?? 'ability';
+  if (type === 'driver' || type === 'hook') {
+    throw new SpcError('PLUGIN_MANIFEST_INVALID', {
+      pluginId: (raw as Manifest).id,
+      dir,
+      reason: 'unsupported-type',
+      detail: `type=${type} not supported yet`,
+    });
+  }
   return raw as Manifest;
 }
 

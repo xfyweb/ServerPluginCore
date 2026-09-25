@@ -308,9 +308,9 @@
       "additionalProperties": false,
       "properties": {
         "type": {
+          "description": "运行时后端。**只有 quickjs**（核心进程内的 QuickJS 沙箱）：node-child（子进程档）已于 2026-09-25 砍掉 —— 零实现，且它不是沙箱（有 node API ⇒ 只能靠内核层 Landlock/seccomp 兜底，那套 Windows 上还没有）。枚举保留单值是为了将来真要第二后端时不必动清单格式。",
           "enum": [
-            "quickjs",
-            "node-child"
+            "quickjs"
           ]
         },
         "esm": {

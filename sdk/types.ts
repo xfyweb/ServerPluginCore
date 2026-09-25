@@ -3,11 +3,20 @@
 
 // 插件类型（中文叫法：能力插件/驱动插件/协作插件/主题包）
 //   ability 能力插件（默认）：运行在 QuickJS 沙箱内，挂载管理页面，经 @host/api 调驱动端点
-//   driver  驱动插件：运行在核心端（特权），注册权限节点 + API 端点暴露给沙箱并自行鉴权
-//   hook    协作插件：核心在流程的决策点上回调它、答复进核心决策（中间件；与 ability 的差别是调用方向相反；P2 不做）
+//   driver  驱动插件：**核心进程内**（特权，与核心同进程）注册权限节点 + API 端点并自行鉴权
+//           ⚠️ 尚未实现 ⇒ 宿主装载期拒绝（`PLUGIN_MANIFEST_INVALID` + reason=unsupported-type）
+//   hook    协作插件：核心在流程的决策点上回调它、答复进核心决策（中间件；调用方向与 ability 相反）
+//           ⚠️ P2 不做 ⇒ 同样在装载期拒绝
 //   theme   主题包：声明式设计令牌 + 资源 + 受限样式，无 JS、无沙箱（v3 由"面板插件"降级而来）
 export type PluginType = 'ability' | 'driver' | 'hook' | 'theme';
-export type RuntimeType = 'quickjs' | 'node-child';
+/**
+ * 运行时后端。**只有 `quickjs`**（核心进程内的 QuickJS 沙箱）。
+ *
+ * `node-child`（子进程档）已于 2026-09-25 **砍掉**：零实现（没有任何生产代码读过 `runtime.type`），
+ * 且它**不是沙箱** —— 有 node API ⇒ 只能靠内核层 Landlock/seccomp 兜底，那套 Windows 上还没有。
+ * 枚举保留成单值（而不是删字段）是为了将来真要第二后端时不必动清单格式。
+ */
+export type RuntimeType = 'quickjs';
 /** 前端形态：declarative = 核心渲染组件树；iframe = 插件 bundle 在隔离 iframe 内运行 */
 export type FrontendMode = 'declarative' | 'iframe';
 /** 意图负载形状（核心代理按此校验；资源内容默认不随意图下发） */

@@ -30,6 +30,8 @@ interface FixtureOpts {
   exports?: Record<string, unknown>;
   dependencies?: Record<string, unknown>;
   entry?: string;
+  /** 清单里的 `type`（缺省不写 = ability）；用来验"尚未实现的类型被拒" */
+  type?: 'ability' | 'driver' | 'hook' | 'theme';
   /** 给这个夹具写作者信封（v4：被依赖方必须有可验证的作者身份） */
   authorKey?: TestKey;
 }
@@ -45,6 +47,7 @@ function makePlugin(name: string, code: string, opts: FixtureOpts = {}): string 
     version: { code: 1, name: '0.0.1' },
     runtime: { type: 'quickjs', esm: true },
     permissions: (opts.permissions ?? ['fs.write.data', 'fs.read.data']).map((n) => ({ name: n })),
+    ...(opts.type ? { type: opts.type } : {}),
     ...(opts.configSchema ? { configSchema: opts.configSchema } : {}),
     ...(opts.exports ? { exports: opts.exports } : {}),
     ...(opts.dependencies ? { dependencies: opts.dependencies } : {}),
@@ -604,6 +607,30 @@ test('能力冲突：两个插件抢同一路由 → PLUGIN_EXPORT_INVALID，且
 });
 
 // ---------------- 21 依赖检查 ----------------
+
+test('尚未实现的类型（driver / hook）⇒ 装载期拒绝，且不落记录（绝不静默按能力插件跑）', async () => {
+  // 文档口径：`api-contract.md` §9/§10 —— driver 要核心进程内特权、hook 是"核心回调它"的方向，
+  // 两者塞进沙箱只会得到一个"看着装上了、实际完全不对"的东西 ⇒ 宿主必须 fail-closed。
+  for (const type of ['driver', 'hook'] as const) {
+    const name = `unsupported-${type}`;
+    const dir = makePlugin(name, `export function init(){}`, { type });
+    let caught: unknown;
+    try {
+      await manager.install(dir);
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught instanceof SpcError, `${type} 应当被拒`);
+    assert.equal((caught as InstanceType<typeof SpcError>).code, 'PLUGIN_MANIFEST_INVALID');
+    assert.equal((caught as InstanceType<typeof SpcError>).params.reason, 'unsupported-type');
+    // 拒绝发生在**写记录之前** ⇒ 不留任何痕迹（不出现一个 failed 的假记录）
+    assert.equal(
+      loadRecords().plugins.some((r) => r.id === id(name)),
+      false,
+      `${type} 不该在安装记录里留下条目`,
+    );
+  }
+});
 
 test('依赖检查：声明的插件未安装 → PLUGIN_DEPENDENCY_MISSING', async () => {
   const key = newTestKey();

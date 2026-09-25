@@ -56,6 +56,26 @@ test('合法：最小清单通过（type 缺省视为 ability，esm 缺省视为
   assert.equal(r.ok, true, JSON.stringify(r.errors));
 });
 
+test('非法：runtime.type 只有 quickjs（子进程档已砍）⇒ node-child 被 schema 拒', () => {
+  const r = validateManifest({ ...validMinimal, runtime: { type: 'node-child' } });
+  assert.equal(r.ok, false);
+  assert.ok(
+    r.errors.some((e) => e.includes('/runtime/type')),
+    `期望报 /runtime/type，实际：${r.errors.join('; ')}`,
+  );
+});
+
+test('合法：type=driver / hook 在 **schema 层是合法的**（拒绝发生在核心装载期，不在语法闸）', () => {
+  // 为什么这条也要钉住：driver/hook 是**将来合法**的类型，市场与构建层共用的清单校验器不该永久拒绝它们；
+  // "核心支持不了"是宿主能力问题 ⇒ 由 `core/plugin/loader.ts` 的 `readManifestFromDir` 报
+  // `PLUGIN_MANIFEST_INVALID` + `reason=unsupported-type`（见 core/__tests__/lifecycle.test.ts）。
+  // 谁把这条 gate 挪进 schema，这条用例就会红。
+  for (const type of ['driver', 'hook'] as const) {
+    const r = validateManifest({ ...validMinimal, type });
+    assert.equal(r.ok, true, `schema 不该拒 ${type}：${r.errors.join('; ')}`);
+  }
+});
+
 test('合法：esm 显式 true 通过', () => {
   const r = validateManifest({ ...validMinimal, runtime: { type: 'quickjs', esm: true } });
   assert.equal(r.ok, true, JSON.stringify(r.errors));
