@@ -66,6 +66,13 @@ export interface PluginRecord {
   origin: string;
   /** 市场签名公钥指纹（本地安装为 null ⇒ unanchored：没有更新渠道） */
   signedBy: string | null;
+  /**
+   * **作者公钥指纹**（`sha256:…`）—— 依赖身份的判据（`plugin-signature-design.md` §3bis）。
+   * - `null` = 这个包**没有作者身份**（本地包没带信封）；它满足不了任何带 `author.pub` 的依赖声明；
+   * - 有值时与作者名册（`core/sources/authors.ts`）里 `(origin, id)` 的条目一致；
+   *   同 `(origin, id)` 换了钥 ⇒ 拒装（`PLUGIN_AUTHOR_MISMATCH`），除非管理员显式接受换钥。
+   */
+  authorFingerprint: string | null;
   verifiedMeta: unknown | null;
 }
 
@@ -119,6 +126,11 @@ export function validateRecord(raw: unknown): string[] {
   if (!(r.signedBy === null || typeof r.signedBy === 'string')) {
     errors.push('signedBy: string | null required');
   }
+  // `authorFingerprint` 是**后加字段**：老记录没有它 ⇒ 缺省当 null（不因它拒绝启动）；
+  // 但**写了就必须是 string | null**（半可信的记录会让依赖身份判定出现未定义行为）。
+  if ('authorFingerprint' in r && !(r.authorFingerprint === null || typeof r.authorFingerprint === 'string')) {
+    errors.push('authorFingerprint: string | null required when present');
+  }
   if (!('verifiedMeta' in r)) errors.push('verifiedMeta: required (may be null)');
   return errors;
 }
@@ -142,11 +154,15 @@ export function loadRecords(): PluginsFile {
     throw new SpcError('RECORDS_INVALID', { file, reason: 'shape' });
   }
   const seen = new Set<string>();
-  for (const rec of root.plugins) {
-    const errors = validateRecord(rec);
+  for (const raw of root.plugins) {
+    // 用交叉类型读"后加字段"：它在磁盘上可能不存在（老记录），归一化后再交给下游
+    const rec = raw as PluginRecord & { authorFingerprint?: string | null };
+    const errors = validateRecord(raw);
     if (errors.length > 0) {
       throw new SpcError('RECORDS_INVALID', { file, reason: 'record', detail: errors.join('; ') });
     }
+    // 后加字段的归一化：老记录没有 `authorFingerprint` ⇒ 补 null，让读的人不必各自兜 undefined
+    if (rec.authorFingerprint === undefined) rec.authorFingerprint = null;
     const ref = `${rec.origin}/${rec.id}`;
     if (seen.has(ref)) {
       throw new SpcError('RECORDS_INVALID', { file, reason: 'duplicate-ref', ref });
@@ -215,7 +231,7 @@ export function dropRecord(file: PluginsFile, ref: string): boolean {
 export function newRecord(
   manifest: Manifest,
   dir: string,
-  opts: { source?: string; grants?: string[]; signedBy?: string | null } = {},
+  opts: { source?: string; grants?: string[]; signedBy?: string | null; authorFingerprint?: string | null } = {},
 ): PluginRecord {
   // ID 与来源都必须先过 sanitize：它们同时是数据目录/配置文件名，非法的不能写进记录
   sanitizePluginId(manifest.id);
@@ -235,6 +251,7 @@ export function newRecord(
     restartAttempts: 0,
     origin,
     signedBy: opts.signedBy ?? null,
+    authorFingerprint: opts.authorFingerprint ?? null,
     verifiedMeta: null,
   };
 }

@@ -396,6 +396,15 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 **生命周期条目**（plugin-lifecycle-design §7）：`lifecycle.load`（求值失败）、`lifecycle.init` / `lifecycle.start` / `lifecycle.stop` / `lifecycle.unload`（每个钩子，`result: ok/error` + durationMs）、`lifecycle.restart`（`failedRestart=auto` 触发，带 `attempts`）；`target` = 插件 ID。**定时器回调**落 `timers.tick`（`target` = timerId，`paramsDigest` = callbackId 摘要）——它不经过宿主桥，所以由沙箱侧显式记账。
 
+**授权与身份条目**（2026-09-25 补）：
+| `method` | 何时 | `target` |
+|---|---|---|
+| `plugin.grant` | `spc plugin grant` / 首次安装**播种** `install` 档点（`paramsDigest` 带 `via: install-seed`） | 变了的那几个权限点（逗号分隔） |
+| `plugin.revoke` | `spc plugin revoke` | 同上 |
+| `plugin.key-change` | 管理员用 `--accept-key-change` 接受换钥 | **新的**作者公钥指纹（旧的在 `paramsDigest` 里） |
+
+> ⚠️ 这三条是"**谁在什么时候改了授权/身份**"的唯一出处 —— 撤回不靠记录里的状态字段，靠这里的日志。
+
 ## 9. manifest（schema 2）
 
 > `type` 声明插件类型（ability/driver/hook/theme），缺省 `ability`。四类定义见 README「插件类型」与 ADR-005 v3；type 目前不改变核心加载行为（**现状**档位仍由 id 前缀推导；**目标态**：**来源只决定更新渠道与安装界面，与加载和权限无关**，见 plugin-signature-design.md），P2/P3 起按类型分派运行档与安装流程（`theme` 无沙箱、豁免 `init`）。

@@ -161,22 +161,25 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // POST /api/plugins/install { dir, grants?, start?, source? }
+    // POST /api/plugins/install { dir, grants?, start?, source?, acceptKeyChange? }
     if (req.method === 'POST' && path === '/api/plugins/install') {
       const body = (await readBody(req)) as {
         dir?: unknown;
         grants?: unknown;
         start?: unknown;
         source?: unknown;
+        acceptKeyChange?: unknown;
       };
       if (typeof body.dir !== 'string' || body.dir.length === 0) {
         sendError(res, 400, 'INVALID_ARGS', 'DIR_REQUIRED');
         return;
       }
       // `source` 决定**归属**（身份是 `(origin, id)`，同 id 不同来源是两个插件）；缺省 `local:default`
+      // `acceptKeyChange` = 管理员**显式接受换钥**（否则同 (origin,id) 换钥一律拒装）
       const view = await manager.install(body.dir, {
         grants: asStringArray(body.grants),
         start: body.start !== false,
+        acceptKeyChange: body.acceptKeyChange === true,
         ...(typeof body.source === 'string' ? { source: body.source } : {}),
       });
       sendJson(res, 200, { plugin: view });

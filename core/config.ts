@@ -84,6 +84,15 @@ export function isValidSource(origin: string): boolean {
 }
 
 /**
+ * 是不是**本地来源**（`local:<名字>`）。
+ * 用途：依赖声明的 `origin` 四格规则（`core/plugin/deps.ts`）—— 市场包不许依赖本地源；
+ * 本地包省略 `origin` 时要在**本地源范围内**按作者公钥唯一定位。
+ */
+export function isLocalSource(origin: string): boolean {
+  return LOCAL_SOURCE_RE.test(origin);
+}
+
+/**
  * 来源 → 目录段名：`local:dev-a` → `local_dev-a`、`localhost:8080` → `localhost_8080`。
  * 为什么只换 `:`：目录名里不能有 `:`（Windows 是硬限制），而域名本身只含 `[a-z0-9.-]`。
  * 与 `sanitizePluginId` 一样，这里是**路径收敛的唯一入口**——所有由来源拼出来的路径都必须过它。

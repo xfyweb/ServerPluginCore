@@ -17,6 +17,8 @@ import {
   type KeyStatusDoc,
 } from '../sources/status';
 import { loadPackageDir, metaSigningBytes, sha256Hex, verifyPackage, type MetaDoc } from '../sources/verify';
+// 作者信封用共享助手生成（本文件自己那份 `TestKey` 是**市场**钥，语义不同，所以别名导入）
+import { newTestKey as newAuthorKey } from './helpers/signed-plugin';
 
 // ---------- 工具 ----------
 
@@ -260,7 +262,8 @@ test('轮换：文档结构非法 / origin 不符 → KEY_STATUS_MALFORMED', () 
 
 // ---------- 包校验（§7.1）----------
 
-function writePackage(dir: string, k: TestKey, over: { manifestId?: string; authorId?: string; extraFile?: boolean; breakMain?: boolean; metaType?: string } = {}) {
+function writePackage(dir: string, k: TestKey, over: { manifestId?: string; authorId?: string; extraFile?: boolean; breakMain?: boolean; metaType?: string; authorKey?: ReturnType<typeof newAuthorKey>; metaSchema?: number; dropAuthorSig?: boolean; breakAuthorSig?: boolean; noAuthorPub?: boolean } = {}) {
+  const authorKey = over.authorKey ?? newAuthorKey();
   const manifest = {
     schema: 2,
     id: over.manifestId ?? '@xfy2412/demo',
@@ -274,11 +277,12 @@ function writePackage(dir: string, k: TestKey, over: { manifestId?: string; auth
   const manifestBytes = Buffer.from(canonicalize(manifest), 'utf8');
   const mainBytes = Buffer.from('export const x = 1;\n', 'utf8');
   const meta: MetaDoc = {
-    metaSchema: 1,
+    metaSchema: over.metaSchema ?? 2,
     id: manifest.id,
     version: { code: 1, name: '0.0.1' },
     type: over.metaType ?? 'ability',
     compat: { minCore: '0.1.0' },
+    ...(over.noAuthorPub ? {} : { authorPub: authorKey.pub }),
     releasedAt: '2026-09-01T00:00:00Z',
     files: [
       { path: 'manifest.json', sha256: sha256Hex(manifestBytes), size: manifestBytes.length },
@@ -289,6 +293,9 @@ function writePackage(dir: string, k: TestKey, over: { manifestId?: string; auth
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'plugin.meta.json'), metaBytes);
   writeFileSync(join(dir, 'plugin.meta.sig'), edSign(null, metaBytes, k.priv));
+  if (!over.dropAuthorSig) {
+    writeFileSync(join(dir, 'plugin.author.sig'), edSign(null, over.breakAuthorSig ? Buffer.from('tampered') : metaBytes, authorKey.priv));
+  }
   writeFileSync(join(dir, 'manifest.json'), manifestBytes);
   writeFileSync(join(dir, 'main.js'), mainBytes);
   if (over.extraFile) writeFileSync(join(dir, 'sneaky.js'), '// 不在清单里');
@@ -300,6 +307,8 @@ test('包校验：合法包通过', () => {
   try {
     const k = newKey();
     writePackage(dir, k);
+    // 注意这个包**带 `plugin.author.sig`**：它必须不被当成载荷（否则 PACKAGE_EXTRA_FILE）——
+    // 三个信封文件都不进 `files[]`，`walk()` 也要跳过它们（2026-09-25 修的那处）。
     const res = verifyPackage(loadPackageDir(dir), source({ pub: k.pub, fingerprint: k.fingerprint }));
     assert.equal(res.ok, true, JSON.stringify(res));
     if (res.ok) assert.equal(res.meta.id, '@xfy2412/demo');
@@ -369,8 +378,91 @@ test('包校验：作者 ID 与命名空间/源域名不一致 → AUTHOR_MISMAT
   }
 });
 
-test('包校验：源停用 / 暂停 / 未取到公钥 → 各自的码', () => {
+// ---------- 作者签名（v4，§3bis）----------
+
+test('作者签名：缺 `plugin.author.sig` → PACKAGE_AUTHOR_SIG_MISSING（有源包必须有它）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'spc-pkg-'));
+  try {
+    const k = newKey();
+    writePackage(dir, k, { dropAuthorSig: true });
+    const res = verifyPackage(loadPackageDir(dir), source({ pub: k.pub, fingerprint: k.fingerprint }));
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.equal(res.code, 'PACKAGE_AUTHOR_SIG_MISSING');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('作者签名：签名被改 → AUTHOR_SIGNATURE_INVALID（市场签名照样有效，两道闸各自独立）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spc-pkg-'));
+  try {
+    const k = newKey();
+    writePackage(dir, k, { breakAuthorSig: true });
+    const res = verifyPackage(loadPackageDir(dir), source({ pub: k.pub, fingerprint: k.fingerprint }));
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.code, 'AUTHOR_SIGNATURE_INVALID');
+      assert.equal(res.params?.reason, 'signature');
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('作者签名：期望公钥与 meta 自述不符 / 签名不是期望的那把钥签的 → 都拒', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spc-pkg-'));
+  try {
+    const k = newKey();
+    const authorKey = newAuthorKey();
+    writePackage(dir, k, { authorKey });
+    const src = source({ pub: k.pub, fingerprint: k.fingerprint });
+
+    // 宿主记忆里的作者是**另一把钥** ⇒ 拒（换钥要管理员裁决，不在验签层放行）
+    const stranger = newAuthorKey();
+    const mismatch = verifyPackage(loadPackageDir(dir), src, { expectAuthorPub: stranger.pub });
+    assert.equal(mismatch.ok, false);
+    if (!mismatch.ok) {
+      assert.equal(mismatch.code, 'AUTHOR_SIGNATURE_INVALID');
+      assert.equal(mismatch.params?.reason, 'authorPub-mismatch');
+    }
+
+    // 期望值与 meta 一致 ⇒ 通过
+    const ok = verifyPackage(loadPackageDir(dir), src, { expectAuthorPub: authorKey.pub });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('meta 版本与必填字段：metaSchema 不是 2 / 缺 authorPub → PACKAGE_META_MALFORMED', () => {
+  const dirA = mkdtempSync(join(tmpdir(), 'spc-pkg-'));
+  const dirB = mkdtempSync(join(tmpdir(), 'spc-pkg-'));
+  try {
+    const k = newKey();
+    const src = source({ pub: k.pub, fingerprint: k.fingerprint });
+
+    writePackage(dirA, k, { metaSchema: 1 });
+    const resA = verifyPackage(loadPackageDir(dirA), src);
+    assert.equal(resA.ok, false);
+    if (!resA.ok) {
+      assert.equal(resA.code, 'PACKAGE_META_MALFORMED');
+      assert.equal(resA.params?.reason, 'metaSchema');
+    }
+
+    writePackage(dirB, k, { noAuthorPub: true });
+    const resB = verifyPackage(loadPackageDir(dirB), src);
+    assert.equal(resB.ok, false);
+    if (!resB.ok) {
+      assert.equal(resB.code, 'PACKAGE_META_MALFORMED');
+      assert.equal(resB.params?.reason, 'authorPub');
+    }
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test('包校验：源停用 / 暂停 / 未取到公钥 → 各自的码', () => {  const dir = mkdtempSync(join(tmpdir(), 'spc-pkg-'));
   try {
     const k = newKey();
     writePackage(dir, k);

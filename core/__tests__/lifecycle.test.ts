@@ -18,6 +18,8 @@ const { SpcError } = await import('../errors.ts');
 const { validatePluginConfig, loadPluginConfig, savePluginConfig } = await import('../plugin/config.ts');
 const { loadRecords, validateRecord } = await import('../plugin/records.ts');
 const { registry } = await import('../permissions/registry.ts');
+const { signPluginDir, newTestKey } = await import('./helpers/signed-plugin.ts');
+import type { TestKey } from './helpers/signed-plugin.ts';
 const { pluginDataDir, DEFAULT_LOCAL_SOURCE, sanitizeOrigin } = await import('../config.ts');
 
 // ---------------- 夹具 ----------------
@@ -28,6 +30,8 @@ interface FixtureOpts {
   exports?: Record<string, unknown>;
   dependencies?: Record<string, unknown>;
   entry?: string;
+  /** 给这个夹具写作者信封（v4：被依赖方必须有可验证的作者身份） */
+  authorKey?: TestKey;
 }
 
 /** 造一个能力插件目录（manifest 校验通过；插件代码写在 main.ts，entry 只影响 manifest） */
@@ -48,6 +52,7 @@ function makePlugin(name: string, code: string, opts: FixtureOpts = {}): string 
   };
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
   writeFileSync(join(dir, 'main.ts'), code, 'utf8');
+  if (opts.authorKey) signPluginDir(dir, opts.authorKey);
   return dir;
 }
 
@@ -501,19 +506,20 @@ test('来源非法 ⇒ PLUGIN_SOURCE_INVALID（`local:` 必须带合法名字；
 });
 
 test('依赖按 (origin, id)：声明里的 origin 决定找哪个来源的副本', async () => {
-  const provider = makePlugin('dep-src-provider', `export function init(){}`);
+  const devX = newTestKey();
+  const provider = makePlugin('dep-src-provider', `export function init(){}`, { authorKey: devX });
   await manager.install(provider, { source: 'local:dev-x' });
 
-  // 依赖声明写明 origin=local:dev-x ⇒ 找得到
+  // 依赖声明写明 origin=local:dev-x ⇒ 找得到（副本的作者公钥与声明一致）
   const consumer = makePlugin('dep-src-consumer', `export function init(){}`, {
-    dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-x' }] },
+    dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-x', author: { pub: devX.pub } }] },
   });
   const view = await manager.install(consumer);
   assert.equal(view.state, 'running');
 
   // 同样声明但指向另一个来源 ⇒ 那个来源没有这个插件 ⇒ 依赖未满足（哪怕同名副本存在于 dev-x）
   const consumer2 = makePlugin('dep-src-consumer2', `export function init(){}`, {
-    dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-y' }] },
+    dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-y', author: { pub: devX.pub } }] },
   });
   await rejects(() => manager.install(consumer2), 'PLUGIN_DEPENDENCY_MISSING');
 
@@ -589,13 +595,14 @@ test('能力冲突：两个插件抢同一路由 → PLUGIN_EXPORT_INVALID，且
 // ---------------- 21 依赖检查 ----------------
 
 test('依赖检查：声明的插件未安装 → PLUGIN_DEPENDENCY_MISSING', async () => {
+  const key = newTestKey();
   const dir = makePlugin('dep-needs', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/dep-provider' }] },
+    dependencies: { plugins: [{ id: '@spc/dep-provider', author: { pub: key.pub } }] },
   });
   await rejects(() => manager.install(dir), 'PLUGIN_DEPENDENCY_MISSING');
 
-  // 依赖装好之后就能起来
-  const dep = makePlugin('dep-provider', `export function init(){}`);
+  // 依赖装好之后就能起来（v4：被依赖方要带作者信封，声明里的 author.pub 才验得过）
+  const dep = makePlugin('dep-provider', `export function init(){}`, { authorKey: key });
   await manager.install(dep);
   const ok = await manager.install(dir);
   assert.equal(ok.state, 'running');
@@ -604,9 +611,10 @@ test('依赖检查：声明的插件未安装 → PLUGIN_DEPENDENCY_MISSING', as
 });
 
 test('反向依赖：被运行中的插件依赖时，uninstall / disable 都被拒（PLUGIN_IN_USE）', async () => {
-  const provider = makePlugin('inuse-provider', `export function init(){}`);
+  const key = newTestKey();
+  const provider = makePlugin('inuse-provider', `export function init(){}`, { authorKey: key });
   const consumer = makePlugin('inuse-consumer', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/inuse-provider' }] },
+    dependencies: { plugins: [{ id: '@spc/inuse-provider', author: { pub: key.pub } }] },
   });
   await manager.install(provider);
   await manager.install(consumer);
@@ -634,9 +642,10 @@ test('反向依赖：被运行中的插件依赖时，uninstall / disable 都被
 });
 
 test('反向保护只管运行态：全部卸载后（维护态）同一个卸载操作放行', async () => {
-  const provider = makePlugin('maint-provider', `export function init(){}`);
+  const key = newTestKey();
+  const provider = makePlugin('maint-provider', `export function init(){}`, { authorKey: key });
   const consumer = makePlugin('maint-consumer', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/maint-provider' }] },
+    dependencies: { plugins: [{ id: '@spc/maint-provider', author: { pub: key.pub } }] },
   });
   await manager.install(provider);
   await manager.install(consumer);
@@ -654,10 +663,11 @@ test('反向保护只管运行态：全部卸载后（维护态）同一个卸�
 });
 
 test('装载顺序：记录顺序把依赖方排在前面，startAll 仍按拓扑序（依赖先 init）', async () => {
+  const topoKey = newTestKey();
   const consumer = makePlugin('topo-consumer', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/topo-provider' }] },
+    dependencies: { plugins: [{ id: '@spc/topo-provider', author: { pub: topoKey.pub } }] },
   });
-  const provider = makePlugin('topo-provider', `export function init(){}`);
+  const provider = makePlugin('topo-provider', `export function init(){}`, { authorKey: topoKey });
   // 先装依赖方：它会因依赖未满足而失败（但记录已写入，且 enabled=true）
   try {
     await manager.install(consumer);
@@ -692,7 +702,10 @@ test('装载顺序：记录顺序把依赖方排在前面，startAll 仍按拓�
 });
 
 test('依赖已启用但没在跑（failed）→ PLUGIN_DEPENDENCY_NOT_LOADED，而不是 MISSING', async () => {
-  const broken = makePlugin('depbroken', `export function init(){ throw new Error('boom'); }`);
+  const brokenKey = newTestKey();
+  const broken = makePlugin('depbroken', `export function init(){ throw new Error('boom'); }`, {
+    authorKey: brokenKey,
+  });
   try {
     await manager.install(broken);
   } catch {
@@ -702,7 +715,7 @@ test('依赖已启用但没在跑（failed）→ PLUGIN_DEPENDENCY_NOT_LOADED，
   assert.equal(manager.status(id('depbroken')).state, 'failed');
 
   const user = makePlugin('depbroken-user', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/depbroken' }] },
+    dependencies: { plugins: [{ id: '@spc/depbroken', author: { pub: brokenKey.pub } }] },
   });
   let caught: unknown;
   try {
@@ -716,11 +729,15 @@ test('依赖已启用但没在跑（failed）→ PLUGIN_DEPENDENCY_NOT_LOADED，
 });
 
 test('依赖环：环上插件直接判 failed（PLUGIN_DEPENDENCY_CYCLE），不互相报"依赖缺失"', async () => {
+  const xKey = newTestKey();
+  const yKey = newTestKey();
   const x = makePlugin('cyc-x', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/cyc-y' }] },
+    authorKey: xKey,
+    dependencies: { plugins: [{ id: '@spc/cyc-y', author: { pub: yKey.pub } }] },
   });
   const y = makePlugin('cyc-y', `export function init(){}`, {
-    dependencies: { plugins: [{ id: '@spc/cyc-x' }] },
+    authorKey: yKey,
+    dependencies: { plugins: [{ id: '@spc/cyc-x', author: { pub: xKey.pub } }] },
   });
   for (const dir of [x, y]) {
     try {

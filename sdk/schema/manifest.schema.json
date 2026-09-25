@@ -486,7 +486,8 @@
           "items": {
             "type": "object",
             "required": [
-              "id"
+              "id",
+              "author"
             ],
             "additionalProperties": false,
             "properties": {
@@ -495,13 +496,33 @@
                 "pattern": "^@[a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$"
               },
               "origin": {
-                "description": "依赖的**来源**（身份的另一半，见 docs/events-and-hooks-design.md §3.2）：省略 = 同源简写（取依赖方自己的来源）。两类：`local:<名字>`（具名本地来源）或市场域名（可带端口）。`(origin, id)` 才是身份 —— 同名不同来源是两个插件",
+                "description": "依赖的**来源**，写法按目标分（docs/events-and-hooks-design.md §3.5 的四格表）：目标在市场 ⇒ 必填域名；目标是本地源 ⇒ **省略**（在本地源范围内按 author.pub + id 唯一匹配；写明 `local:<名字>` 则精确匹配该桶）；**市场包不许依赖本地源**",
                 "type": "string",
                 "pattern": "^(local:[a-z0-9][a-z0-9_-]{0,31}|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?)$"
               },
               "version": {
                 "type": "string",
                 "maxLength": 64
+              },
+              "author": {
+                "description": "作者公钥（v4，必填）：`id` 与 `author.id` 都不唯一 ⇒ **唯一性来自 origin、同一性来自公钥**。宿主在安装期用名册里的记忆核对，绝不比包内自述",
+                "type": "object",
+                "required": [
+                  "pub"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "pub": {
+                    "description": "base64 裸 32 字节 Ed25519 公钥（44 字符，末尾一个 `=`）",
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9+/]{43}=$"
+                  },
+                  "fingerprint": {
+                    "description": "`sha256:` + 裸公钥的 sha256；写了必须与 pub 自洽（判定比公钥，指纹只用于展示/审计）",
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                }
               }
             }
           }

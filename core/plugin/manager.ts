@@ -15,7 +15,11 @@ import { SpcError, toErrorShape } from '../errors';
 import { isValidGrantPoint } from '../permissions/check';
 import { resolveGrant } from '../permissions/registry';
 import { pointSource } from '../permissions/source';
+import { findAuthor, loadAuthors, rememberAuthor } from '../sources/authors';
+import { fingerprintOf } from '../sources/keys';
+import { loadLocalEnvelope } from '../sources/verify';
 import { capabilities } from './capabilities';
+import { resolveDependency, type DependencyDecl } from './deps';
 import {
   loadPlugin,
   readManifestFromDir,
@@ -56,6 +60,8 @@ export interface PluginView {
   configPath: string;
   /** 来源（身份的一半）：`local:<名字>` 或市场域名。**不再是 null** */
   origin: string;
+  /** 作者公钥指纹（`sha256:…`）；`null` = 这个包没有作者身份（本地包没带信封） */
+  authorFingerprint: string | null;
   /** 授权/配置变更后是否需要 reload 才生效 */
   reloadRequired: boolean;
 }
@@ -70,6 +76,12 @@ export interface InstallOptions {
    * 不是"元数据备注"（设计 §3.2/§3.3）。
    */
   source?: string;
+  /**
+   * **显式接受换钥**（v4）：同 `(origin, id)` 的作者公钥与宿主记忆不符时，默认**拒装**
+   * （`PLUGIN_AUTHOR_MISMATCH` —— 机器分不清"作者换了钥"还是"另一个人"）。
+   * 管理员确认后带这个开关重来：覆盖名册 + 落一条 `plugin.key-change` 审计。
+   */
+  acceptKeyChange?: boolean;
 }
 
 export class PluginManager {
@@ -129,6 +141,7 @@ export class PluginManager {
       dataDir: pluginDataDir(record.origin, record.id),
       configPath: record.configPath,
       origin: record.origin,
+      authorFingerprint: record.authorFingerprint ?? null,
       reloadRequired: this.needsReload.has(pluginRef(record)),
     };
   }
@@ -202,6 +215,13 @@ export class PluginManager {
     if (!this.loaded.has(ref)) return { ok: false, reason: 'not-loaded', state: record.state };
     return { ok: true };
   };
+
+  /**
+   * 依赖声明的解析（v4）：`{ id, origin?, author }` → 实际引用（见 `core/plugin/deps.ts`）。
+   * 需要安装记录与**作者名册**，所以由 manager 提供；解析失败直接抛（fail-closed）。
+   */
+  private resolveDep = (dep: DependencyDecl, self: { origin: string; ref: string }): string =>
+    resolveDependency(dep, self, { records: loadRecords().plugins, authors: loadAuthors() });
 
   /**
    * 哪些**正在运行**的插件依赖它 —— 反向保护的判据。
@@ -285,6 +305,7 @@ export class PluginManager {
       run = await loadPlugin(record, {
         limits: this.limits(),
         dependencyStatus: this.dependencyStatus,
+        resolveDep: this.resolveDep,
         logger: (level, message) => console[level](`[${ref}] ${message}`),
       });
       this.loaded.set(ref, run);
@@ -392,6 +413,11 @@ export class PluginManager {
    *
    * `opts.grants`（CLI `--grant` / HTTP body）走与 `grant()` **同一套校验** —— 否则这里就是一条
    * 绕过"精确 / 已登记 / 已声明 / 可授予"四道闸的后门（2026-09-23 之前它确实是一条直通车道）。
+   *
+   * **作者身份**（2026-09-25，v4）：读可选信封（`plugin.meta.json` + `plugin.author.sig`）→ 验自洽
+   * → 与**宿主记忆**（名字册）比对：首见即记（TOFU）、不符则拒（`PLUGIN_AUTHOR_MISMATCH`，
+   * 除非 `acceptKeyChange` 显式接受并落审计）。没有信封 ⇒ `authorFingerprint = null`
+   * （该包满足不了任何带 `author.pub` 的依赖声明）。
    */
   install(dir: string, opts: InstallOptions = {}): Promise<PluginView> {
     return this.withLock(async () => {
@@ -400,10 +426,22 @@ export class PluginManager {
       const origin = opts.source ?? DEFAULT_LOCAL_SOURCE;
       const ref = pluginRef({ origin, id: manifest.id });
       const existing = findRecord(file, ref);
+      // ① 作者信封（本地路径；有源安装的市场验签流在 P4，见 sources/verify.ts 的 verifyPackage）
+      const envelope = loadLocalEnvelope(dir);
+      if (envelope.kind === 'error') throw new SpcError(envelope.code, envelope.params);
+      const authorPub = envelope.kind === 'ok' ? envelope.authorPub : undefined;
+      // ② 身份闸（在写记录**之前**：被拒就不该留下任何痕迹）
+      const authorFingerprint = this.authorIdentityGate(
+        { origin, id: manifest.id, ref },
+        authorPub,
+        existing?.authorFingerprint ?? null,
+        opts.acceptKeyChange === true,
+      );
       const record = newRecord(manifest, dir, {
         source: origin,
         grants: opts.grants ?? existing?.grants ?? [],
         signedBy: existing?.signedBy ?? null,
+        authorFingerprint,
       });
       if (opts.grants?.length) {
         // 校验用的是**这次装进来的清单**（声明以新包为准）
@@ -423,6 +461,49 @@ export class PluginManager {
       }
       return this.status(ref);
     });
+  }
+
+  /**
+   * 作者身份闸（`plugin-signature-design.md` §3bis 的"期望值解析"）。
+   *
+   * 判据链：**名册首见值 →（名册没有时）记录里的指纹 →（都没有即首见，TOFU）**。
+   * - 一致 / 首见 ⇒ 记名册，返回本次的指纹（写进记录）；
+   * - 不符 ⇒ 抛 `PLUGIN_AUTHOR_MISMATCH`（错误里给两条出路：换个源 / `--accept-key-change`），
+   *   除非管理员显式接受 —— 那时**覆盖名册**并落一条 `plugin.key-change` 审计（旧/新指纹都记）；
+   * - 包没带作者身份（`authorPub === undefined`）⇒ 返回 `null`：**名册不动**（那是宿主记忆，
+   *   不该被一个"没自报家门"的版本抹掉），但这个版本满足不了带 `author.pub` 的依赖声明。
+   */
+  private authorIdentityGate(
+    who: { origin: string; id: string; ref: string },
+    authorPub: string | undefined,
+    recordFingerprint: string | null,
+    acceptKeyChange: boolean,
+  ): string | null {
+    if (authorPub === undefined) return null;
+    const fingerprint = fingerprintOf(authorPub);
+    const known = findAuthor(who.origin, who.id);
+    const expected = known?.fingerprint ?? recordFingerprint;
+    if (expected !== null && expected !== undefined && expected !== fingerprint) {
+      if (!acceptKeyChange) {
+        throw new SpcError('PLUGIN_AUTHOR_MISMATCH', {
+          pluginId: who.ref,
+          expected,
+          actual: fingerprint,
+        });
+      }
+      audit({
+        ts: Date.now(),
+        pluginId: who.ref,
+        ref: who.ref,
+        method: 'plugin.key-change',
+        target: fingerprint,
+        paramsDigest: digestParams({ previous: String(expected) }) ?? digest(who.ref),
+        result: 'ok',
+        durationMs: 0,
+      });
+    }
+    rememberAuthor({ origin: who.origin, id: who.id, pub: authorPub });
+    return fingerprint;
   }
 
   /**

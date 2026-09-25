@@ -29,7 +29,9 @@ const validFull = {
   },
   dependencies: {
     npm: [{ name: 'zod', version: '3.x' }],
-    plugins: [{ id: '@xfy2412/base', version: '>=0.1.0' }],
+    plugins: [
+      { id: '@xfy2412/base', version: '>=0.1.0', author: { pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } },
+    ],
   },
 };
 
@@ -194,10 +196,10 @@ test('合法：dependencies.plugins[].origin 接受 `local:<名字>` 与市场�
     ...validMinimal,
     dependencies: {
       plugins: [
-        { id: '@xfy2412/base', origin: 'local:dev-a' },
-        { id: '@xfy2412/driver', origin: 'market.spc.xfyweb.cn' },
-        { id: '@xfy2412/localhost', origin: 'localhost:8080' },
-        { id: '@xfy2412/same-source' }, // 省略 = 同源简写
+        { id: '@xfy2412/base', origin: 'local:dev-a', author: { pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } },
+        { id: '@xfy2412/driver', origin: 'market.spc.xfyweb.cn', author: { pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } },
+        { id: '@xfy2412/localhost', origin: 'localhost:8080', author: { pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } },
+        { id: '@xfy2412/same-source', author: { pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } }, // 省略 origin = 同源简写（市场目标）
       ],
     },
   });
@@ -207,7 +209,7 @@ test('合法：dependencies.plugins[].origin 接受 `local:<名字>` 与市场�
   for (const bad of ['local:', '../etc', 'Bogus Origin', 'a/b', '']) {
     const r = validateManifest({
       ...validMinimal,
-      dependencies: { plugins: [{ id: '@xfy2412/base', origin: bad }] },
+      dependencies: { plugins: [{ id: '@xfy2412/base', origin: bad, author: { pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } }] },
     });
     assert.equal(r.ok, false, `origin=${JSON.stringify(bad)} 应被拒`);
   }

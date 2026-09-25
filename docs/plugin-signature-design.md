@@ -81,6 +81,14 @@ foo-1.2.0.spc/                  （zip 容器；校验不依赖容器字节）
 
 ## 3bis. 作者签名（v4，只为依赖身份）
 
+> **✅ 已落地（2026-09-25，④）**：`MetaDoc.authorPub` + `META_SCHEMA 2`（`core/sources/verify.ts`）；
+> `plugin.author.sig` 验签（**用期望公钥**，`verifyPackage` 支持 `expectAuthorPub`）；本地包的信封读取
+> （`loadLocalEnvelope`：要么两个都没有，要么两个都在且自洽）；名册 `core/sources/authors.ts`；
+> 记录字段 `authorFingerprint`；安装期的身份闸（TOFU / 拒 / `--accept-key-change` + `plugin.key-change` 审计）；
+> 依赖解析的身份比对与"本地范围唯一匹配"（`core/plugin/deps.ts`）。
+> ⏳ **仍未做**：有源安装流的**接线**（市场验签 → 安装记录：`signedBy`/`verifiedMeta` 的写入）属 P4；
+> 目前只有 `verifyPackage` 这一层（市场路径的用例已就位）。
+
 **它是什么**：作者用**自己的密钥**对**同一份 `plugin.meta.json`** 签一次（`plugin.author.sig`），于是"这份代码"与"这把公钥"被绑在一起。
 
 - ⚠️ **为什么不是"只签三元组"**：只签 `(id, author.id, version)` 的签名**可以整段复制**到另一个包里（那几个值照样成立）⇒ 它不绑定任何东西，连"连续性"都保不住；
@@ -371,6 +379,12 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 | `KEY_ROTATION_UNVERIFIABLE` | 本地已信任节点不在 `keys[]` 中（含泄露后被移除） | 暂停源 + 告警 |
 | `KEY_STATUS_ROLLBACK` | 状态文档早于本地高水位 | 暂停源 + 告警 |
 | `KEY_STATUS_MALFORMED` | 状态文档结构非法（区别于网络失败 / 404） | 暂停源 + 告警 |
+| `AUTHOR_SIGNATURE_INVALID` | `plugin.author.sig` 验不过，或 `meta.authorPub` 与**期望公钥**不符 | 拒（`params.reason` 区分 `signature` / `authorPub-mismatch`） |
+| `PACKAGE_AUTHOR_SIG_MISSING` | 有源包缺 `plugin.author.sig`（信封文件） | 拒 |
+| `PACKAGE_ENVELOPE_INCOMPLETE` | 本地包**只给了信封的一半**（meta 或 sig 缺一个） | 拒（要么两个都给，要么都不给） |
+| `AUTHORS_INVALID` | 作者名册（`<STATE_DIR>/authors.json`）损坏 / 结构非法 / 指纹与公钥不自洽 | **拒**（绝不"当空名册继续跑"：那会把已知作者降级成首见 ⇒ 换一把钥就能静默装进来） |
+| `PLUGIN_DEPENDENCY_IDENTITY` | 依赖目标的作者身份不符（`params.reason` = `author-mismatch` / `author-unknown`） | 依赖不满足 ⇒ 拒载 |
+| `PLUGIN_DEPENDENCY_SOURCE` | 依赖声明本身不成立（如**市场包依赖本地源**） | 拒绝该声明 |
 
 ## 8. 身份与引用
 

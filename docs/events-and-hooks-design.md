@@ -460,7 +460,8 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | 本地包 → 本地包、**写明 `local:<名字>`** | 精确匹配该桶（照旧） | 作者自愿承担"对不上"的风险 |
 | **市场包 → 本地包** | **禁止**（构建期 / 装载期拒） | 本地源**不存在于别人的机器上**，这种声明在任何别的机器上都不可能满足 |
 
-> 同源简写的原口径（"省略 = 取依赖方自己的来源"）在**市场包之间**不变；上表第 2 行是**本地目标**的扩展 —— 因为对本地包，唯一性实际来自**作者公钥**（`plugin-signature-design.md` §3bis 的"本地源 = 一个作者的桶"）。⏳ **未落地**，随 ④ 一起做。
+> 同源简写的原口径（"省略 = 取依赖方自己的来源"）在**市场包之间**不变；上表第 2 行是**本地目标**的扩展 —— 因为对本地包，唯一性实际来自**作者公钥**（`plugin-signature-design.md` §3bis 的"本地源 = 一个作者的桶"）。
+> **✅ 已落地（2026-09-25，④）**：`core/plugin/deps.ts` 的 `resolveDependency`（含 `PLUGIN_DEPENDENCY_IDENTITY` / `PLUGIN_DEPENDENCY_SOURCE` / 本地范围歧义三条拒载路径），用例见 `core/__tests__/author-identity.test.ts`。
 
 ### 3.6 换源（reanchor）
 
@@ -613,7 +614,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | 2 | ~~**身份主键改 `(origin, id)`**~~ **✅ 已做（2026-09-22）**：记录（含 `pluginRef`/`resolveRecord`）/ 数据目录（`<sanitize(origin)>/`）/ 配置 / 能力登记（条目改带 `ref`）/ CLI（`--source` + 打完整引用）/ HTTP（`source` 入参）/ 依赖检查（`dep.origin ?? 自己来源`）/ 生命周期审计与错误的 `pluginId` 改带 ref；本地来源具名 `local:<名字>` | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
 | **2b** | ~~**运行时层的身份**~~ **✅ 已做（2026-09-22）**：`AuditEntry` 加 `ref?`（**只增不改**，`pluginId` 保留）；`sandbox.ts` 用就地包装 `auditOwn` 让十几处审计一次到位；`hostApi.ts` 同理（`PluginHostContext.ref`）；`loader` 把 `ref` 同时传给 `buildHostApi` 与 `createSandbox`；判别用例：同 id 两来源的 `fs.write` 审计两条，`pluginId` 相同、`ref` 分得开 | ② 的必然尾巴（字段是**加**不是改，符合"审计格式只增不改"） |
 | 3 | ~~"引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点~~ **✅ 已做（2026-09-23，09-24 定型）**：`core/permissions/points.ts`（校验 + 单射，非法即 `PERMISSION_POINT_INVALID`）；两族点放在**临时表**里 —— 从当前活着的插件**派生**（`core/permissions/source.ts`），**不写冻结的注册表**（判定查"冻结表 ∪ 临时表"）；两族都是 `explicit` 档（插件间默认隔离）；`permissions[].name` 的 schema 放宽出动态分支；用例 `core/__tests__/dynamic-points.test.ts` | 授权面；与 §3.4/§3.7 一起钉死 |
-| 4 | **作者签名（全包）**：`plugin.meta.json` 加 `authorPub`（metaSchema 1→2）+ `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖声明 `author` **必填** + 依赖解析比公钥 + 作者名册 `authors.json` + **本地包 TOFU（打印"归入哪个源 + 首见指纹"，冲突给两条出路）** + `--accept-key-change` + **本地目标的 `origin` 省略规则**（§3.5 四格表的第 2 行）；⚠️ 顺带修 `verify.ts` 两处现状（`metaSchema` 硬编 1、`walk()` 只跳两个信封文件） | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
+| 4 | ~~**作者签名（全包）**~~ **✅ 已做（2026-09-25）**：`plugin.meta.json` 加 `authorPub`（metaSchema 1→2）+ `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖声明 `author` **必填** + 依赖解析比公钥 + 作者名册 `authors.json` + **本地包 TOFU（打印"归入哪个源 + 首见指纹"，冲突给两条出路）** + `--accept-key-change` + **本地目标的 `origin` 省略规则**（§3.5 四格表的第 2 行）；顺带修了 `verify.ts` 两处现状（`metaSchema` 硬编 1、`walk()` 只跳两个信封文件 ⇒ `plugin.author.sig` 会被判 `PACKAGE_EXTRA_FILE`）。⚠️ **有源安装流的接线**（市场验签 → 安装记录）仍属 P4，今天只有 `verifyPackage` 这一层 | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
 | 5 | **调用本体**：`plugins.call`（句柄锚定解析 + 投递链 + 有界重试 + 审计 `callId` + 深度上限）；清单面加 `dependencies.plugins[].as` / `.call`（schema + 类型 + 装载期物化） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提。⚠️ 函数签名与清单字段由 §3.7 定死（**句柄不是引用**） |
 | 6 | **reanchor 动作**（CLI；面板入口属 P3） | 前面都就位后才谈得上"搬家" |
 | 7 | **构建层**（P2 尾）：`spc keygen` + `spc build --key` —— **产出 `plugin.meta.json`（含 `authorPub`）与 `plugin.author.sig`，只出作者签名**（市场签名由市场代码追加） | 与构建层那一批合流；在此之前仓库内 fixtures 用**测试密钥**签名（明确标注不是真身份），市场侧的追加签名流程属 P4 |

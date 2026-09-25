@@ -26,6 +26,8 @@ interface PluginView {
   enabled: boolean;
   state: string;
   grants: string[];
+  /** 作者公钥指纹（`sha256:…`）；null = 这个包没有作者身份（本地包没带信封） */
+  authorFingerprint: string | null;
   capabilities: string[];
   lastError: { code: string; at: number } | null;
   restartAttempts: number;
@@ -115,6 +117,7 @@ function printPlugin(p: PluginView): void {
     }),
   );
   if (p.grants.length > 0) console.log(t('cli.plugin.grants', { grants: p.grants.join(', ') }));
+  if (p.authorFingerprint) console.log(t('cli.plugin.author', { fingerprint: p.authorFingerprint }));
   if (p.capabilities.length > 0) console.log(t('cli.plugin.caps', { caps: p.capabilities.join(', ') }));
   if (p.lastError) console.log(t('cli.plugin.lastError', { code: p.lastError.code }));
   if (p.reloadRequired) console.log(t('cli.plugin.reloadRequired'));
@@ -142,15 +145,19 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     if (!dir) throw new Error(t('cli.plugin.install.usage'));
     const grants: string[] = [];
     let source: string | undefined;
+    let acceptKeyChange = false;
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--grant' && args[i + 1]) grants.push(args[i + 1]);
       // `--source <来源>`：决定**归属**（身份是 `(origin, id)`，同 id 不同源是两个插件）；
       // 缺省 `local:default`
       if (args[i] === '--source' && args[i + 1]) source = args[i + 1];
+      // 显式接受换钥：同 `(origin,id)` 的作者公钥与宿主记忆不符时**默认拒装**（fail-closed）
+      if (args[i] === '--accept-key-change') acceptKeyChange = true;
     }
     const r = (await httpJson('POST', '/api/plugins/install', token, {
       dir: resolve(dir),
       grants,
+      acceptKeyChange,
       ...(source === undefined ? {} : { source }),
     })) as { status: number; body: { plugin: PluginView } };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.install.fail');

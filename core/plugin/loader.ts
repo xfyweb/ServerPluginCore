@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { transform, type Loader } from 'esbuild';
 import type { Manifest } from '../../sdk/types';
+import type { DependencyDecl } from './deps';
 import { validateManifest } from '../../sdk/validate';
 import { audit, digest, digestParams } from '../audit';
 import { ensureDir, pluginDataDir, type PluginLimits } from '../config';
@@ -32,6 +33,12 @@ export interface LoadDeps {
   dependencyStatus(
     id: string,
   ): { ok: true } | { ok: false; reason: 'missing' | 'not-loaded'; state?: string };
+  /**
+   * **依赖声明的解析**（v4）：把 `{ id, origin?, author }` 解析成实际引用。
+   * 由 manager 提供（它才拿得到安装记录与作者名册）；实现见 `core/plugin/deps.ts`。
+   * 解析失败（身份不符 / 市场包依赖本地源 / 本地范围内歧义 / 目标不存在）**直接抛 SpcError**。
+   */
+  resolveDep(dep: DependencyDecl, self: { origin: string; ref: string }): string;
   /** 插件日志出口 */
   logger?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
@@ -155,9 +162,11 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
 
   // 2) 依赖检查（P1.5：只查直接依赖、不解析 version 区间；装载顺序由 manager 的拓扑排序保证）
   //    「已启用」不够——依赖必须**已经在跑**，否则依赖方会进入一个它本不该能进入的状态
+  //
+  //    v4 起先做**声明解析**（`resolveDep`）：`author.pub` 必填、`origin` 的写法按目标分四格
+  //    （见 §3.5 与 `core/plugin/deps.ts`）—— 只有解析出来的引用才拿去问运行态。
   for (const dep of manifest.dependencies?.plugins ?? []) {
-    // 依赖按**完整引用**找；声明里省略 `origin` ⇒ 同源简写（取依赖方自己的来源，§7.1）
-    const depRef = pluginRef({ origin: dep.origin ?? record.origin, id: dep.id });
+    const depRef = deps.resolveDep(dep, { origin: record.origin, ref });
     const status = deps.dependencyStatus(depRef);
     if (status.ok) continue;
     if (status.reason === 'missing') {
