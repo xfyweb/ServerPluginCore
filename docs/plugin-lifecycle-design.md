@@ -456,7 +456,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 2. `stop` 是否需要接收"关闭原因"（`stop(ctx, {reason})`：`reload` / `disable` / `shutdown`）——**倾向要**，便于插件区分优雅停机与重启。**现状**：原因只进审计（`lifecycle.unload` 的 `paramsDigest`），还没进钩子签名；
 3. `dataDir` 清理策略（`disable` 是否保留数据；卸载是否删数据）——**倾向：都保留，卸载提供 `--purge`**。**现状**：都保留，`--purge` 未做；
 4. hook 插件的钩子形态与 `init/start/stop` 的关系——**已定**：hook = **核心在决策点上回调插件、答复进核心决策**（中间件，跑沙箱即可；**P2 不做**），设计见 `docs/events-and-hooks-design.md` §2；
-5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量共存）。**已按此落地**（`core/config.ts`，另加 `SPC_DATA_DIR` 覆盖数据根）。
+5. **状态目录统一**：建议 `SPC_STATE_DIR`（默认 `<cwd>/.spc`）作为基目录，其下是 `config.json` / `plugins.json` / `keyring.json` / `audit/` / `data/plugins/`；现有的 `SPC_AUDIT_DIR`、`SPC_KEYRING_DIR` 降级为**覆盖项**（实现时一并收编，避免三套状态目录变量共存）。**已按此落地**（`core/config.ts`，另加 `SPC_DATA_DIR` 覆盖数据根）。⚠️ **`keyring.json` 这一格直到 2026-09-25 才对上**：`core/sources/keyring.ts` 原先自己拼了一个 `<repo>/.spc`、**无视 `SPC_STATE_DIR`**（那时 keyring 还没接进 daemon，所以一直没暴露）；⑥a 接线时改成取 `<STATE_DIR>`，与本条一致。
 
 
 ## 13. 参考：AstrBot 的可借鉴做法与我们的取舍

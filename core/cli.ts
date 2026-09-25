@@ -123,7 +123,23 @@ function printPlugin(p: PluginView): void {
   if (p.reloadRequired) console.log(t('cli.plugin.reloadRequired'));
 }
 
+/**
+ * 子命令表：**认得的**动词。
+ *
+ * 为什么要有它：没给子命令 / 子命令打错时，要**立刻打用法**，而不是往下走去要参数 ——
+ * 原先 `spc source`（无子命令）会撞上"缺少来源"（用法兜底写在了参数检查之后，永远到不了），
+ * 而 `spc source help` 直接报错，用户看不到任何帮助。
+ */
+const PLUGIN_VERBS = ['list', 'install', 'status', 'grant', 'revoke', 'enable', 'disable', 'reload', 'uninstall'];
+const SOURCE_VERBS = ['list', 'add', 'remove', 'enable', 'disable', 'alias', 'anchor'];
+
 async function pluginCommand(sub: string | undefined, args: string[]): Promise<void> {
+  // 打用法**不碰 daemon**：帮助信息是本地事实，核心没跑时也该看得到
+  // （原先第一行就 acquireToken ⇒ 核心没起时 `spc plugin` 报的是"无法连接核心"）
+  if (sub === undefined || sub === 'help' || !PLUGIN_VERBS.includes(sub)) {
+    console.log(t('cli.plugin.usage'));
+    return;
+  }
   const token = await acquireToken();
 
   if (sub === 'list') {
@@ -209,6 +225,174 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
   console.log(t('cli.plugin.usage'));
 }
 
+/**
+ * 源视图（CLI 侧的**结构副本**，与 `PluginView` 同一条理由：CLI 走 HTTP、不 import 核心类型）。
+ * ⚠️ 改这里要同步 `core/sources/manage.ts` 的 `SourceView`。
+ */
+interface SourceView {
+  origin: string;
+  kind: string;
+  alias: string;
+  enabled: boolean;
+  fingerprint: string | null;
+  authorAnchor: { pub: string; fingerprint: string } | null;
+  firstTrust: string;
+  suspended: { at: string; reason: string } | null;
+  installedCount: number;
+}
+
+/**
+ * 简易参数解析：位置参数与 `--flag value` 分开。
+ * 为什么要它（而不是 `args.find(a => !a.startsWith('--'))`）：后者会把**旗标的值**当成位置参数
+ * —— `add local:std-a --alias "小A"` 里 `小A` 会被当成第二个位置参数。
+ */
+function parseArgs(args: string[]): { positional: string[]; flags: Map<string, string> } {
+  const positional: string[] = [];
+  const flags = new Map<string, string>();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('--')) {
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        flags.set(a, next);
+        i++;
+      } else {
+        flags.set(a, '');
+      }
+    } else {
+      positional.push(a);
+    }
+  }
+  return { positional, flags };
+}
+
+function printSource(s: SourceView): void {
+  console.log(
+    t('cli.source.line', {
+      origin: s.origin,
+      kind: t(s.kind === 'local' ? 'cli.source.kind.local' : 'cli.source.kind.market'),
+      alias: s.alias,
+      enabled: s.enabled ? t('cli.yes') : t('cli.no'),
+      installed: s.installedCount,
+    }),
+  );
+  if (s.fingerprint) {
+    console.log(t('cli.source.pub', { fingerprint: s.fingerprint, firstTrust: s.firstTrust }));
+  }
+  if (s.kind === 'local') {
+    // 锚**只属于本地桶**（市场是多作者命名空间，钉一把作者钥是范畴错误 —— 见设计 §3bis）：
+    // 本地桶唯一有意义的身份信息就是"有没有绑锚、绑的是哪把钥"，必须一眼看到
+    console.log(
+      s.authorAnchor
+        ? t('cli.source.anchor', { fingerprint: s.authorAnchor.fingerprint })
+        : t('cli.source.anchor.none'),
+    );
+  } else if (!s.fingerprint) {
+    // 市场源印"作者锚：未绑定"是范畴错误，它该回答的是"源公钥取到没有"
+    console.log(t('cli.source.pub.none'));
+  }
+  if (s.suspended) console.log(t('cli.source.suspended', { reason: s.suspended.reason, at: s.suspended.at }));
+}
+
+async function sourceCommand(sub: string | undefined, args: string[]): Promise<void> {
+  // 同 pluginCommand：没给子命令 / 不认识 / `help` ⇒ 只打用法，**不握手、不碰 daemon**
+  if (sub === undefined || sub === 'help' || !SOURCE_VERBS.includes(sub)) {
+    console.log(t('cli.source.usage'));
+    return;
+  }
+  const token = await acquireToken();
+  const { positional, flags } = parseArgs(args);
+
+  if (sub === 'list') {
+    const r = (await httpJson('GET', '/api/sources', token)) as {
+      status: number;
+      body: { sources: SourceView[] };
+    };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.source.op.fail');
+    if (r.body.sources.length === 0) {
+      console.log(t('cli.source.list.empty'));
+      return;
+    }
+    for (const s of r.body.sources) printSource(s);
+    return;
+  }
+
+  const origin = positional[0];
+  if (!origin) throw new Error(t('cli.source.origin.required'));
+
+  if (sub === 'add') {
+    const pub = flags.get('--pub');
+    const alias = flags.get('--alias');
+    const anchor = flags.get('--anchor');
+    const r = (await httpJson('POST', '/api/sources/add', token, {
+      origin,
+      ...(pub === undefined ? {} : { pub }),
+      ...(alias === undefined ? {} : { alias }),
+      ...(anchor === undefined ? {} : { anchorPub: anchor }),
+    })) as { status: number; body: { source: SourceView } };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.source.op.fail');
+    console.log(t('cli.source.added', { origin }));
+    printSource(r.body.source);
+    return;
+  }
+
+  if (sub === 'remove') {
+    const r = (await httpJson('POST', '/api/sources/remove', token, { origin })) as {
+      status: number;
+      body: unknown;
+    };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.source.op.fail');
+    console.log(t('cli.source.removed', { origin }));
+    return;
+  }
+
+  if (sub === 'enable' || sub === 'disable') {
+    const r = (await httpJson('POST', `/api/sources/${sub}`, token, { origin })) as {
+      status: number;
+      body: { source: SourceView };
+    };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.source.op.fail');
+    console.log(t(`cli.source.${sub}.done`, { origin }));
+    printSource(r.body.source);
+    return;
+  }
+
+  if (sub === 'alias') {
+    const alias = positional[1];
+    if (alias === undefined) throw new Error(t('cli.source.usage'));
+    const r = (await httpJson('POST', '/api/sources/alias', token, { origin, alias })) as {
+      status: number;
+      body: { source: SourceView };
+    };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.source.op.fail');
+    console.log(t('cli.source.alias.done', { origin, alias }));
+    printSource(r.body.source);
+    return;
+  }
+
+  if (sub === 'anchor') {
+    // 不给 `--pub` ⇒ 解绑锚（解绑是一个正当动作，不该逼管理员写魔法值）
+    const pub = flags.get('--pub');
+    const r = (await httpJson('POST', '/api/sources/anchor', token, {
+      origin,
+      ...(pub === undefined ? {} : { pub }),
+    })) as { status: number; body: { source: SourceView; staleCount: number } };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.source.op.fail');
+    const view = r.body.source;
+    console.log(
+      pub === undefined
+        ? t('cli.source.anchor.cleared', { origin })
+        : t('cli.source.anchor.done', { origin, fingerprint: view.authorAnchor?.fingerprint ?? '' }),
+    );
+    printSource(view);
+    // 改锚**不追溯**：已装插件仍按旧锚记录，这个数必须报出来（否则管理员会以为存量也换了）
+    if (r.body.staleCount > 0) console.log(t('cli.source.anchor.stale', { count: r.body.staleCount }));
+    return;
+  }
+
+  console.log(t('cli.source.usage'));
+}
+
 async function main() {
   const cmd = process.argv[2] ?? 'help';
   const args = process.argv.slice(3);
@@ -263,6 +447,11 @@ async function main() {
 
   if (cmd === 'plugin') {
     await pluginCommand(args[0], args.slice(1));
+    return;
+  }
+
+  if (cmd === 'source') {
+    await sourceCommand(args[0], args.slice(1));
     return;
   }
 

@@ -75,6 +75,8 @@ CLI:
 |---|---|---|
 | `/api/status` | GET | 核心健康、版本、契约版本 |
 | `/api/plugins` | GET | 插件列表（记录驱动：state/grants/capabilities，不是扫目录） |
+| `/api/sources` | GET | 来源（keyring）清单：kind / alias / 启停 / 暂停 / 指纹 / 作者锚 / 已装个数 |
+| `/api/sources/{add,remove,enable,disable,alias,anchor}` | POST | 来源管理（`add` 不带 `pub` ⇒ 远程 TOFU 拉取状态文档；`anchor` 不带 `pub` ⇒ 解绑锚） |
 | `/api/audit?tail=N` | GET | 审计日志尾部 |
 | `/api/daemon/shutdown` | POST | **优雅停机**（2026-09-23）：先回 200，再异步走完整停机路径 |
 

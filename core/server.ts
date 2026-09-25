@@ -9,6 +9,15 @@ import { t } from './i18n';
 import { toErrorShape } from './errors';
 import { HandshakeServer } from './handshake';
 import { manager } from './plugin/manager';
+import {
+  addSource,
+  listSources,
+  removeSource,
+  seedBuiltinSources,
+  setSourceAlias,
+  setSourceAnchor,
+  setSourceEnabled,
+} from './sources/manage';
 import { BRAND, VERSION } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
@@ -47,6 +56,10 @@ function sendError(
 /** SpcError → HTTP 状态码（只做粗分类，具体原因靠 detail.code） */
 function httpStatusFor(code: string): number {
   if (code === 'PLUGIN_NOT_FOUND') return 404;
+  // 源：没配过 = 找不到；"有插件归属"与"内置条目"是冲突（409）；拉不到公钥是上游的问题（502）
+  if (code === 'SOURCE_NOT_CONFIGURED') return 404;
+  if (code === 'SOURCE_IN_USE' || code === 'SOURCE_ALREADY_EXISTS') return 409;
+  if (code === 'SOURCE_KEY_FETCH_FAILED') return 502;
   if (code === 'UNAUTHENTICATED' || code === 'PERMISSION_DENIED' || code === 'NOT_GRANTED') return 403;
   if (
     code === 'PLUGIN_DISABLED' ||
@@ -61,6 +74,11 @@ function httpStatusFor(code: string): number {
     code === 'PLUGIN_CONFIG_INVALID' ||
     code === 'CONFIG_INVALID' ||
     code === 'RECORDS_INVALID' ||
+    code === 'KEYRING_INVALID' ||
+    code === 'SOURCE_ORIGIN_INVALID' ||
+    code === 'SOURCE_ANCHOR_NOT_ALLOWED' ||
+    code === 'SOURCE_PUB_NOT_APPLICABLE' ||
+    code === 'SOURCE_KIND_IMMUTABLE' ||
     code === 'INVALID_ARGS' ||
     code === 'PLUGIN_DIR_MISSING'
   ) {
@@ -97,6 +115,10 @@ const PLUGIN_ONE = /^\/api\/plugins\/(.+)$/;
 
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
 }
 
 const server = createServer(async (req, res) => {
@@ -233,6 +255,65 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // ---- 源（keyring）：`docs/plugin-signature-design.md` §5 ----
+    // 与插件管理同款：**HTTP 只回英文码与结构**，本地化文案由 CLI / 面板渲染。
+    if (path === '/api/sources' && req.method === 'GET') {
+      sendJson(res, 200, { sources: listSources() });
+      return;
+    }
+    if (path.startsWith('/api/sources/') && req.method === 'POST') {
+      const verb = path.slice('/api/sources/'.length);
+      const body = (await readBody(req)) as Record<string, unknown>;
+      const origin = asString(body.origin);
+      if (!origin) {
+        sendError(res, 400, 'INVALID_ARGS', 'SOURCE_ORIGIN_REQUIRED');
+        return;
+      }
+      if (verb === 'add') {
+        // 市场源不带 `pub` ⇒ 远程 TOFU 拉取状态文档（`core/sources/manage.ts` 的 addSource）
+        const view = await addSource({
+          origin,
+          pub: asString(body.pub),
+          alias: asString(body.alias),
+          anchorPub: asString(body.anchorPub),
+        });
+        sendJson(res, 200, { source: view });
+        return;
+      }
+      if (verb === 'remove') {
+        removeSource(origin);
+        sendJson(res, 200, { ok: true, origin });
+        return;
+      }
+      if (verb === 'enable' || verb === 'disable') {
+        sendJson(res, 200, { source: setSourceEnabled(origin, verb === 'enable') });
+        return;
+      }
+      if (verb === 'alias') {
+        const alias = asString(body.alias);
+        if (alias === undefined) {
+          sendError(res, 400, 'INVALID_ARGS', 'ALIAS_REQUIRED');
+          return;
+        }
+        sendJson(res, 200, { source: setSourceAlias(origin, alias) });
+        return;
+      }
+      if (verb === 'anchor') {
+        // `pub` 缺省或显式 null ⇒ **解绑锚**（解绑是正当动作，不该逼管理员写魔法值）
+        const pub = body.pub === undefined || body.pub === null ? null : asString(body.pub);
+        if (pub === undefined) {
+          sendError(res, 400, 'INVALID_ARGS', 'PUB_MUST_BE_STRING_OR_NULL');
+          return;
+        }
+        const change = setSourceAnchor(origin, pub);
+        // `staleCount` = 仍按旧锚记录的已装插件数（改锚**不追溯**，这个数要报给管理员）
+        sendJson(res, 200, { source: change.view, staleCount: change.staleCount });
+        return;
+      }
+      sendError(res, 404, 'NOT_FOUND', 'ROUTE_NOT_FOUND', { path });
+      return;
+    }
+
     sendError(res, 404, 'NOT_FOUND', 'ROUTE_NOT_FOUND', { path });
   } catch (e) {
     const shape = toErrorShape(e);
@@ -245,6 +326,17 @@ server.listen(PORT, '127.0.0.1', async () => {
   console.log(`[daemon] ${BRAND}`);
   console.log(t('daemon.listen', { port: PORT, pid: process.pid }));
   console.log(t('daemon.key', { key: handshake.publicKeyB64.slice(0, 24) }));
+  // 内置源条目（官方市场 + 杂桶 `local:default`）**先于任何安装/更新**播种：桶是**归属**，
+  // 先有桶才谈得上"安装默认落进作者的桶"（docs/plugin-signature-design.md §3bis）。
+  // 读不进来即启动失败 —— **不静默降级成空 keyring**：那会把"没配过源"与"源丢了"混成一件事，
+  // 与 `AUTHORS_INVALID` 同一条 fail-closed 口径。
+  try {
+    seedBuiltinSources();
+  } catch (e) {
+    const shape = toErrorShape(e);
+    console.error(`[daemon] keyring: ${shape?.code ?? 'INTERNAL'} ${JSON.stringify(shape?.params ?? {})}`);
+    process.exit(1);
+  }
   // 启动时自动装载 enabled 的插件（单插件失败不影响其它插件，逐个记 failed）
   const rows = await manager.startAll();
   const running = rows.filter((p) => p.state === 'running').length;

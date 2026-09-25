@@ -163,6 +163,80 @@ test('CLI plugin uninstall：内置插件同样可卸载（v2 取消 reserved）
   assert.match(st.stderr, /插件不存在/);
 });
 
+test('CLI source list：内置条目（官方市场 + 杂桶）在 daemon 启动时就已播种', async () => {
+  const r = await run(['core/cli.ts', 'source', 'list'], env());
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /market\.spc\.xfyweb\.cn · 市场源 · 官方市场/);
+  assert.match(r.stdout, /local:default · 本地桶 · 杂桶/);
+  // 杂桶不绑锚：绑了就等于宣称这台机器上只有一个作者（docs/plugin-signature-design.md §3bis）
+  assert.match(r.stdout, /作者锚：未绑定/);
+  // 而**锚只属于本地桶**：市场源印"作者锚：未绑定"是范畴错误（市场是多作者命名空间），
+  // 它该回答的是"源公钥取到没有" ⇒ 用数量关系钉死，不依赖条目的排列顺序
+  const locals = (r.stdout.match(/· 本地桶 ·/g) ?? []).length;
+  const anchors = (r.stdout.match(/作者锚/g) ?? []).length;
+  assert.equal(anchors, locals, '每个本地桶恰好一行作者锚；市场源不该有这一行');
+  assert.match(r.stdout, /源公钥：未取到/, '市场源还没拉过公钥时要说明白');
+});
+
+test('CLI source add / anchor / remove：本地桶全链路（锚改完能解绑）', async () => {
+  // 任意一把合法的 32 字节 Ed25519 公钥（本用例只验"桶能建、锚能改"，不验签名）
+  const pub = Buffer.alloc(32, 7).toString('base64');
+  const add = await run(
+    ['core/cli.ts', 'source', 'add', 'local:std-a', '--alias', 'std（小A）', '--anchor', pub],
+    env(),
+  );
+  assert.equal(add.code, 0, add.stderr);
+  assert.match(add.stdout, /已添加来源：local:std-a/);
+  assert.match(add.stdout, /本地桶 · std（小A）/);
+  assert.match(add.stdout, /作者锚：sha256:/);
+
+  const clear = await run(['core/cli.ts', 'source', 'anchor', 'local:std-a'], env());
+  assert.equal(clear.code, 0, clear.stderr);
+  assert.match(clear.stdout, /已解绑作者锚：local:std-a/);
+  assert.match(clear.stdout, /作者锚：未绑定/);
+
+  const rm = await run(['core/cli.ts', 'source', 'remove', 'local:std-a'], env());
+  assert.equal(rm.code, 0, rm.stderr);
+  assert.match(rm.stdout, /已删除来源：local:std-a/);
+});
+
+test('CLI source：内置条目不可删、非法来源被拒（错误文案可读）', async () => {
+  const builtin = await run(['core/cli.ts', 'source', 'remove', 'local:default'], env());
+  assert.notEqual(builtin.code, 0);
+  assert.match(builtin.stderr, /内置来源不可删除/);
+
+  const bad = await run(['core/cli.ts', 'source', 'add', 'Local:Bad'], env());
+  assert.notEqual(bad.code, 0);
+  assert.match(bad.stderr, /来源非法/);
+
+  // 桶不存在时删除 ⇒ 明确报"没配过"，而不是静默成功
+  const missing = await run(['core/cli.ts', 'source', 'remove', 'local:nope'], env());
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.stderr, /源未配置|来源/);
+});
+
+test('CLI 子命令用法：没给/打错/help ⇒ 打用法且**不需要核心在线**', async () => {
+  // 判别点①：用法是本地事实 —— 核心没起时也该看得到（原先第一行就握手 ⇒ 报"无法连接核心"）
+  const deadPort = String(await freePort());
+  for (const argv of [
+    ['core/cli.ts', 'source'],
+    ['core/cli.ts', 'source', 'help'],
+    ['core/cli.ts', 'source', 'lst'],
+    ['core/cli.ts', 'plugin', 'help'],
+    ['core/cli.ts', 'plugin', 'lst'],
+  ]) {
+    const r = await run(argv, { SPC_PORT: deadPort });
+    assert.equal(r.code, 0, `${argv.join(' ')} 应打印用法后正常退出：${r.stderr}`);
+    assert.match(r.stdout, /用法：/, argv.join(' '));
+    assert.doesNotMatch(r.stderr, /无法连接核心/, '打用法不该去连核心');
+  }
+
+  // 判别点②：子命令认得、只是**缺参数**时，报的是参数错误（不是静默打用法）
+  const noOrigin = await run(['core/cli.ts', 'source', 'add'], env());
+  assert.notEqual(noOrigin.code, 0);
+  assert.match(noOrigin.stderr, /缺少来源/);
+});
+
 test('CLI about：输出品牌与构建指纹（本地信息，无需 daemon）', async () => {
   const r = await run(['core/cli.ts', 'about'], env());
   assert.equal(r.code, 0, r.stderr);

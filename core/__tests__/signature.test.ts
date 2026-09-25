@@ -60,6 +60,8 @@ function makeDoc(keys: KeyNode[], rotatedAt = '2026-09-12T00:00:00Z', revoked: K
 function source(over: Partial<SourceEntry> = {}): SourceEntry {
   return {
     origin: ORIGIN,
+    // `kind` 在磁盘上可缺省（老条目），但**归一化后的类型是必填**（`core/sources/keyring.ts`）
+    kind: 'market',
     pub: undefined,
     fingerprint: undefined,
     alias: 'test',

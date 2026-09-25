@@ -116,14 +116,14 @@ foo-1.2.0.spc/                  （zip 容器；校验不依赖容器字节）
               依赖声明里的 author.pub 是**要求**，两者必须相等
 ```
 
-#### 本地来源的模型（2026-09-24 定；**语义现在定，条目落地 P4**）
+#### 本地来源的模型（2026-09-24 定；**✅ 条目与 `spc source` 已落地 2026-09-25，见 §5 末**）
 
 > **本地源 = 一个作者的桶**（源的身份**就是**那把作者公钥，名字只是标签）；**`local:default` = 杂桶**，装"某个作者 ID 只出现过一次"的插件。
 > 现实动因：小 A 与小 B 不约而同取了作者 ID `std` —— 那就建两个桶 `local:std-a`（`alias: "std（小A）"`）与 `local:std-b`（`alias: "std（小B）"`），各自装各自的插件。
 
 - **锚不再是"额外加的一个字段"，而是这个源存在的理由**：本地源条目可选带 `authorAnchor: { pub, fingerprint }`（字段形状见 §5 末）；**只在 `kind: 'local'` 上允许** —— 市场是**多作者**命名空间，给它钉一把作者钥是范畴错误；
 - **升级路径（promote）**：新装的插件一般进杂桶；当它与**另一个已装插件作者公钥相同**时，**建议**管理员为该作者单独建源并把这一组搬过去，之后同一把钥签的包默认进该源。
-  我们的 CLI 是"守护进程 + HTTP"、没有交互问答 ⇒ "询问"落在两处：**安装成功后打印建议 + 现成命令**；**同名不同作者被拒时**（`PLUGIN_AUTHOR_MISMATCH`）在错误里给出路（`--source local:std-b` 换个桶 / `--accept-key-change` 就在原桶改认）；
+  ⚠️ **更正（2026-09-25）**：此处原先写「我们的 CLI 是"守护进程 + HTTP"、**没有交互问答**」—— 那是把"当时 CLI 还没有确认提示"写成了原则，**不成立**：CLI 当然可以交互（`npm` / `pnpm` 就是先例），交互唯一的硬要求是**能被关掉**（`--yes`；非 TTY 时**不问**、直接要求 `--yes`），否则脚本化与 CI 就断了。今天 promote 与 `PLUGIN_AUTHOR_MISMATCH` 仍按**打印建议 + 现成命令**呈现（前者：安装成功后建议为该作者建源并搬迁；后者：错误里给出两条出路 `--source local:std-b` / `--accept-key-change`），那是因为这两处**不需要**确认（照做即可），不是因为 CLI 不能问。需要确认的动作就正常问（⑥b 的 `spc plugin reanchor` 就是 `y/N`）。
 - **搬运 = 批量 reanchor**（§7.2 与 `events-and-hooks-design.md` §3.6）：公钥相同天然满足前提；必须**原子**（同一作者的那几个一起搬，否则出现"依赖方在新桶、被依赖方在旧桶"的中间态）、过 manager 唯一锁、**列全会被打断的依赖方**、落审计；
 - **锚相同 = 同一组**：不需要"组"这个实体，也不需要往 `origin` 里编东西（⚠️ `core/permissions/points.ts` 的单射证明依赖 **origin 不含 `/` 与 `@`**）。"一人多机"天然是两条独立的名册与锚（每台机器一份 state）；
 - **改锚不追溯**：管理员把源的锚从 K1 改成 K2 **只影响后续安装**（已装插件的 `authorFingerprint` 不动 —— 与"加载时不重验签名"一致），但要落审计并提示"已装的 N 个仍按旧锚记录；要换请重装或 reanchor"。
@@ -191,7 +191,14 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 - 本地开发市场用 `localhost` 或 `localhost:port` 作为 origin；本地源**没有 TLS**，因此**不参与自动轮换**（只能管理员手动更新公钥）。
 - **永不自动新增源**：任何包、任何依赖、任何轮换文档都不能替管理员往 keyring 里加条目。
 
-**本地源条目（`kind: 'local'`）——语义已定（§3bis），条目落地 P4**：
+**本地源条目（`kind: 'local'`）——✅ 已落地（2026-09-25，⑥a）**：
+
+> 落地形态：`core/sources/keyring.ts`（条目形状 + 两级校验：读文件宽松/写入口严格 + `kind` 缺省归一化成 `market`）·
+> `core/sources/manage.ts`（管理动作 + 审计 + 占用检查 + TOFU 拉取）· daemon 启动播种两个内置条目
+> （官方市场 + 杂桶 `local:default`）· `spc source list|add|remove|enable|disable|alias|anchor` 与 `/api/sources/*`。
+> 顺带对齐了一处状态目录：`keyringDir()` 现在取 **`<STATE_DIR>`**（`SPC_KEYRING_DIR` 只是覆盖项），
+> 与 `core/config.ts` 文件头写的"状态目录统一"一致 —— 原先它自己拼了一个 `<repo>/.spc`，
+> 于是设了 `SPC_STATE_DIR` 的测试/部署照样会往仓库里写 keyring.json。
 
 ```jsonc
 {
@@ -385,6 +392,13 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 | `AUTHORS_INVALID` | 作者名册（`<STATE_DIR>/authors.json`）损坏 / 结构非法 / 指纹与公钥不自洽 | **拒**（绝不"当空名册继续跑"：那会把已知作者降级成首见 ⇒ 换一把钥就能静默装进来） |
 | `PLUGIN_DEPENDENCY_IDENTITY` | 依赖目标的作者身份不符（`params.reason` = `author-mismatch` / `author-unknown`） | 依赖不满足 ⇒ 拒载 |
 | `PLUGIN_DEPENDENCY_SOURCE` | 依赖声明本身不成立（如**市场包依赖本地源**） | 拒绝该声明 |
+| `SOURCE_IN_USE` | 删源时该来源**仍有插件归属**（`params.count` = 已装个数） | 拒；先搬走（reanchor）或卸载 |
+| `SOURCE_BUILTIN` | 删的是**内置来源**（官方市场 / 杂桶 `local:default`） | 拒；它由核心在启动时播种，删了下次启动还会回来 |
+| `SOURCE_KEY_FETCH_FAILED` | `spc source add <市场域名>` 不带 `--pub` 时远程拉取状态文档失败（`params.reason` = 状态文档的码） | **不添加该来源**（公钥未知的源等于谁都验不了的源） |
+| `SOURCE_ANCHOR_NOT_ALLOWED` | 给**市场源**绑作者锚 / 给非本地源改锚 | 拒（市场是多作者命名空间，锚只属于本地桶） |
+| `SOURCE_PUB_NOT_APPLICABLE` | 给**本地桶**写源公钥 | 拒（本地源不签任何包；要绑定作者请用 `authorAnchor`） |
+| `SOURCE_KIND_IMMUTABLE` | 试图把条目的 `kind` 从 `market` 改成 `local`（或反向） | 拒（`origin` 与 `kind` 都是主键的一部分，不可改） |
+| `KEYRING_INVALID` | keyring 文件整体非法（坏 JSON / 形状不对）——**单条非法只忽略该条 + 告警**，不报这个码 | **拒**（不猜内容，也不"当空 keyring 继续跑"） |
 
 ## 8. 身份与引用
 
@@ -481,6 +495,6 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 3. 一次性验签（"仅下载该插件"）是否也写入 `highWater`（当前设计：不写）。
 4. **`releasedAt` 归谁写**（v4 新增）：meta 由构建工具产出、市场只追加签名 ⇒ 本文按"**构建期填 + 市场核对/拒签**"写；要让市场自己定这个值，就得改成"市场改写字节 + 作者签名缩小覆盖范围"。⚠️ 详见 `docs/events-and-hooks-design.md` §4.2-6。
 5. **作者私钥怎么保管**（`spc keygen` 的形态）：文件格式与路径约定、要不要 passphrase；私钥**永不进包**，建议 `chmod 600`。
-6. ~~**`keyring` 里 `kind: 'local'` 的具体形状**~~ **✅ 语义已定（2026-09-24，§3bis + §5 末）**：本地源 = **一个作者的桶**（可选 `authorAnchor`）+ `local:default` 杂桶 + 同钥第二例建议独立成源（promote）。**条目落地 P4**（`spc source` CLI + 面板源清单）；promote 的搬运复用 **⑥ reanchor**（批量、原子、列全会被打断的依赖方）。
+6. ~~**`keyring` 里 `kind: 'local'` 的具体形状**~~ **✅ 语义已定（2026-09-24，§3bis + §5 末）**：本地源 = **一个作者的桶**（可选 `authorAnchor`）+ `local:default` 杂桶 + 同钥第二例建议独立成源（promote）。**✅ 条目与 `spc source` CLI 已落地（2026-09-25，⑥a）**（面板源清单仍属 P3）；promote 的搬运复用 **⑥ reanchor**（批量、原子、列全会被打断的依赖方）。
 7. ~~**`authors.json` 的换钥接受流程**~~ **✅ 已定（2026-09-24）**：安装时 **`--accept-key-change`**（显式、落审计含旧/新指纹）；不给该开关就 `PLUGIN_AUTHOR_MISMATCH` 拒装，错误里同时给"换个桶"那条出路。面板入口归 P3。
 8. **promote 的触发与呈现细节**：建议在"安装成功后"打印（非交互），是否还要一个 `spc source suggest` / 面板上的一键搬迁入口，留到 P4 与源清单一并定。
