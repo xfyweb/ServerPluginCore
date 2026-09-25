@@ -347,7 +347,7 @@
       "additionalProperties": false,
       "properties": {
         "endpoints": {
-          "description": "对外端点（原 webApis，改名理由见 docs/events-and-hooks-design.md §3.1）：调用者有两类——面板的 HTTP 网关与其他插件。实现方式：入口模块导出 endpoints 映射（`export const endpoints = { '<path>': (ctx, paramsJson, bytes) => jsonText }`），宿主装载时逐条核对「声明 ⟺ 实现」，对不上即 PLUGIN_EXPORT_INVALID。⚠️ 'path 带自己完整引用命名空间'仍未落地（见 §4.3）",
+          "description": "对外端点（原 webApis，改名理由见 docs/events-and-hooks-design.md §3.1）：调用者有两类——面板的 HTTP 网关与其他插件。实现方式：入口模块导出 endpoints 映射（`export const endpoints = { '<path>': (ctx, paramsJson, bytes) => jsonText }`），宿主装载时逐条核对「声明 ⟺ 实现」，对不上即 PLUGIN_EXPORT_INVALID。⛔ path **不带源、也不需要全局唯一**：调用方要把同一条 path 写进自己的 call 列表，两处都在被签名的字节里（带源就等于换源即断）；端点按 `(完整引用, path)` 归属，跨插件同名端点不是冲突。见 docs/events-and-hooks-design.md §3.1",
           "type": "array",
           "items": {
             "type": "object",

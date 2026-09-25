@@ -6,7 +6,8 @@
 //   · 投递：不排队、忙时有界重试、崩溃/卸载不重试、深度上限、超时不返回部分结果；
 //   · 审计：一次交互一条 `callId`，串起调用方、被调方、以及对端内部那些宿主调用。
 //
-// ⚠️ 端点 path 是**全局唯一**的（先到先得，撞车即 PLUGIN_EXPORT_INVALID），所以每个用例用各自的 path。
+// ⚠️ 端点 path **不需要全局唯一**（2026-09-25 起端点表的键是 `(完整引用, path)`）—— 跨插件同名端点
+// 不是冲突，就像"两个作者各有一个 `/status`"。本文件里的用例仍各用各的 path，只是为了让日志好读。
 //
 // 隔离：SPC_STATE_DIR / SPC_AUDIT_DIR 必须在**动态 import 之前**设好（core/audit.ts 的模块级常量）。
 import { test, after } from 'node:test';
@@ -221,6 +222,54 @@ test('两条依赖指向同一个 id 而都没写 `as` ⇒ 清单校验期就拒
   assert.ok(caught instanceof SpcError, '应当被拒');
   assert.equal((caught as InstanceType<typeof SpcError>).code, 'PLUGIN_MANIFEST_INVALID');
   assert.match(String((caught as InstanceType<typeof SpcError>).params.detail), /handle must be unique/);
+});
+
+test('**同一条 path 可以被两个插件各自声明**（端点键是 `(完整引用, path)`，跨插件同名不是冲突）', async () => {
+  const SHARED = '/api/shared/echo';
+  const b1Key = newTestKey();
+  const b2Key = newTestKey();
+  const bExports = { endpoints: [{ path: SHARED, callable: ['panel', 'plugins'] }] };
+  await manager.install(makePlugin('share-b1', echoCode(SHARED), { authorKey: b1Key, exports: bExports }));
+  // 第二个插件声明**同一条 path**：旧实现（path 单键）会在这里 PLUGIN_EXPORT_INVALID
+  await manager.install(makePlugin('share-b2', echoCode(SHARED), { authorKey: b2Key, exports: bExports }));
+  assert.equal(capabilities.snapshot().endpoints.filter((e) => e.path === SHARED).length, 2);
+
+  // 各自的调用方授权到**自己那个 ref** 的点上，两边都调通，且各自调到自己声明的那个对端
+  const a1 = makePlugin('share-a1', callerCode('b', SHARED), {
+    authorKey: newTestKey(),
+    dependencies: depOn('share-b1', b1Key.pub, { as: 'b', call: [SHARED] }),
+  });
+  const a2 = makePlugin('share-a2', callerCode('b', SHARED), {
+    authorKey: newTestKey(),
+    dependencies: depOn('share-b2', b2Key.pub, { as: 'b', call: [SHARED] }),
+  });
+  await manager.install(a1, { grants: [callPointOf(ref('share-b1'), SHARED)] });
+  await manager.install(a2, { grants: [callPointOf(ref('share-b2'), SHARED)] });
+  assert.equal((readOut('share-a1').callee as Record<string, string>).id, id('share-b1'));
+  assert.equal((readOut('share-a2').callee as Record<string, string>).id, id('share-b2'));
+  // 两条点名（两条授权）各自独立 —— "谁的东西"由引用回答，不由 path 字符串回答
+  assert.notEqual(callPointOf(ref('share-b1'), SHARED), callPointOf(ref('share-b2'), SHARED));
+});
+
+test('同一个插件把同一条 path 声明两次 ⇒ PLUGIN_EXPORT_INVALID（清单错误，不是跨插件冲突）', async () => {
+  const dir = makePlugin(
+    'dup-endpoint',
+    `export function init(){}
+export const endpoints = { '/api/dup/x': () => 'null' };`,
+    {
+      authorKey: newTestKey(),
+      exports: { endpoints: [{ path: '/api/dup/x' }, { path: '/api/dup/x' }] },
+    },
+  );
+  let caught: unknown;
+  try {
+    await manager.install(dir);
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught instanceof SpcError, '应当被拒');
+  assert.equal((caught as InstanceType<typeof SpcError>).code, 'PLUGIN_EXPORT_INVALID');
+  assert.equal((caught as InstanceType<typeof SpcError>).params.reason, 'duplicate');
 });
 
 // ---------------- ② 四条门槛 ----------------

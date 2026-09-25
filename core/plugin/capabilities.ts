@@ -32,8 +32,14 @@ export interface RouteCapability {
  * 端点能力（原 `ApiCapability`，manifest 里原叫 `exports.webApis`）。
  * **改名理由**：这个面的调用者**有两类**（面板的 HTTP 网关 / 其他插件），`webApis` 既排除了插件、
  * 又暗示了实现路径；文档里"端点"这个词本来就在用（见 `docs/events-and-hooks-design.md` §3.1）。
- * ⚠️ **还有一件没做**：`path` 必须带自己的**完整引用**命名空间（`/<origin>/@user/name/…`）——
- * 今天仍只查"全局唯一"（先到先得），插件可以抢注别人的路径；见 §4.3。
+ * ⛔ **`path` 里不放来源**（2026-09-25 取消「必须带自己完整引用命名空间」那条）：同一条 path 还要被
+ * **调用方**写进自己清单的 `dependencies.plugins[].call`，两处都在**被签名的字节**里 —— path 一带 origin，
+ * 对方换一次源（reanchor / promote / 本地桶改名）就让调用方的包当场失效；何况本地桶名是**装机的人**起的
+ * 标签，作者签名时根本写不出来。来源只出现在**宿主生成**的地方（点名 `plugins.call.<实际引用>.<path>`、
+ * 审计、响应信封）。
+ * ✅ 同时明确：path **也不需要全局唯一** —— 端点表的键是 **`(完整引用, path)`**（见 `endpointKey`）。
+ * 身份是 `(origin, id)`，两个插件各自声明 `/api/status` 是两个**不同**的端点，不是冲突；
+ * 只有"同一个插件把同一条 path 声明两次"才是清单错误。
  */
 export interface EndpointCapability {
   ref: string;
@@ -75,8 +81,19 @@ export interface CapabilitySnapshot {
   themes: ThemeCapability[];
 }
 
-export class CapabilityRegistry {
-  private readonly routes = new Map<string, RouteCapability>();
+/**
+ * 端点表的键：**`(完整引用, path)`**。
+ *
+ * 为什么不是 path 单键（2026-09-25 改）：身份是 `(origin, id)` —— **同名端点分属两个插件不是冲突**，
+ * 就像"两个作者各有一个 `/status`"。用 NUL 分隔是因为两者都不含 NUL（`ref` 的形状由 `pluginRef()`
+ * 保证、`path` 由 schema 的 `^/api/` 保证），所以拼接是**单射**的，不会出现 `a|b` 与 `a|b` 的歧义。
+ */
+function endpointKey(ref: string, path: string): string {
+  return `${ref}\u0000${path}`;
+}
+
+export class CapabilityRegistry {  private readonly routes = new Map<string, RouteCapability>();
+  /** 端点表：键是 **`(完整引用, path)`**（`endpointKey`）—— 跨插件同名端点不是冲突，见 `EndpointCapability` 的注释 */
   private readonly endpoints = new Map<string, EndpointCapability>();
   /** topic → 唯一发布者（同 topic 两方发布 → 冲突） */
   private readonly published = new Map<string, EventCapability>();
@@ -121,16 +138,24 @@ export class CapabilityRegistry {
       caps.push(`route:${r.path}`);
     }
 
+    // 本次清单内**跨插件不冲突、同插件内不许重复**：`seenEndpoints` 记的是"这一份清单里出现过的键"，
+    // 因为重复项这时还只在 `addEndpoints`（临时集合）里，查已提交的表是查不到的（判别用例抓过这个漏）。
+    const seenEndpoints = new Set<string>();
     for (const a of manifest.exports?.endpoints ?? []) {
-      const owner = this.endpoints.get(a.path);
-      if (owner && owner.ref !== ref) {
+      // ⚠️ **跨插件同名端点不是冲突**（2026-09-25 改）：端点表的键是 `(完整引用, path)`，因为身份是
+      // `(origin, id)` —— 两个插件各自声明 `/api/status` 是两个不同的端点，谁是谁由引用决定，
+      // 调用面（点名、审计、响应信封）全程按 `(ref, path)` 寻址。只有**同一个插件**把同一条 path
+      // 声明两次才是清单错误：那种清单没意义，而且会让"这个端点是谁的"变含糊。
+      const key = endpointKey(ref, a.path);
+      if (seenEndpoints.has(key) || this.endpoints.has(key)) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
           pluginId: ref,
           kind: 'endpoint',
           path: a.path,
-          owner: owner.ref,
+          reason: 'duplicate',
         });
       }
+      seenEndpoints.add(key);
       // 声明的权限点必须已在注册表登记（未知即拒绝：不允许"先声明后实现"的悬挂权限）
       if (a.permission !== undefined && !registry.get(a.permission)) {
         throw new SpcError('PLUGIN_EXPORT_INVALID', {
@@ -195,7 +220,7 @@ export class CapabilityRegistry {
 
     // ② 全部合法 → 提交（此时才动共享状态）
     for (const r of addRoutes) this.routes.set(r.path, r);
-    for (const a of addEndpoints) this.endpoints.set(a.path, a);
+    for (const a of addEndpoints) this.endpoints.set(endpointKey(a.ref, a.path), a);
     for (const e of addEvents) this.published.set(e.topic, e);
     for (const s of addSubs) {
       const list = this.subscriptions.get(s.topic) ?? [];
@@ -206,10 +231,12 @@ export class CapabilityRegistry {
     return caps;
   }
 
-  /** 某插件当前登记的某个端点（找不到 = 没登记，或那个 path 属于别人）；跨插件调用门槛④查它的 `callable` */
+  /**
+   * 某插件当前登记的某个端点（没有 = 它没登记这条 path）。
+   * 直接按 `(完整引用, path)` 命中 —— 不再"按 path 取出再比 ref"（那是 path 单键时代的写法）。
+   */
   endpointOf(ref: string, path: string): EndpointCapability | undefined {
-    const endpoint = this.endpoints.get(path);
-    return endpoint && endpoint.ref === ref ? endpoint : undefined;
+    return this.endpoints.get(endpointKey(ref, path));
   }
 
   /** 撤销该插件的全部登记（重载与卸载都走这里；幂等）。参数是**完整引用** */

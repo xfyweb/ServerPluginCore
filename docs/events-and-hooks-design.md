@@ -53,8 +53,15 @@ Linux 在同一件事上的做法可以直接对照（下面几条都来自 Linu
 
 ### 1.2 命名空间与所有权
 
-- **`core.` 是保留前缀**（核心将来要发的事实；P2 里核心不发任何事件）；插件只能用**自己的完整引用**开头：`<origin>/@publisher/name.<事件名>`（裸 id 不够 —— 同名不同源是两个插件，见 §3.2）。
-  ⚠️ 这是**新增校验**：今天 `capabilities.ts` 只查"同 topic 的 owner 唯一"，插件完全可以抢注一个听起来像核心的 topic（如 `core.exec.before`）并成为它的 owner。要补"保留前缀 + 完整引用命名空间"校验，违反 → `PLUGIN_EXPORT_INVALID`。
+- **`core.` 是保留前缀**（核心将来要发的事实；P2 里核心不发任何事件）。~~插件只能用**自己的完整引用**开头：`<origin>/@publisher/name.<事件名>`~~ ⇒
+  ⛔ **这个写法已取消（2026-09-25，与 §3.1 同一条理由）**：**订阅方**也要把同一个 topic 写进自己清单的
+  `exports.events.subscribe[].topic`，两处都在**被签名的字节**里 ⇒ topic 带对方 origin 就等于「对方换一次源，订阅方整包失效」；
+  而本地桶名作者签名时不可能知道。**来源只出现在宿主生成的点名与审计里**（`events.subscribe.<实际引用>.<topic>`）。
+  另外，今天的 schema 也表达不了它 —— `topic` 的 pattern 是 `^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$`（不含 `@` 与 `/`）。
+  ⚠️ **暂缓（2026-09-25 用户定）**：`core.` 保留前缀校验与「topic 必须以自己的名字开头」这两条**先不处理** ——
+  它们对**协作插件（钩子链，§2）**那条线可能还有用，等它落地时一并定；`core.` 这个前缀本身留着。
+  （今天 `capabilities.ts` 只查「同 topic 的 owner 唯一」，所以插件仍可能抢注一个听起来像核心的 topic 并成为它的 owner，
+  违反时给 `PLUGIN_EXPORT_INVALID`。）
 - **一个 topic 只能有一个发布者**（已有规则，保持）。订阅方数量不限。
 - 事件名是**英文契约**（与错误码同规矩）：渲染层翻译，核心不做本地化。
 
@@ -207,7 +214,7 @@ Linux 在同一件事上的做法可以直接对照（下面几条都来自 Linu
 | `EVENT_PAYLOAD_NOT_SERIALIZABLE` | **新增**：payload 里有不能 JSON 化的值 |
 | `EVENT_PAYLOAD_TOO_LARGE` | **新增**：JSON 或字节部分超上限 |
 
-装载期复用已有码：**订阅他人事件但没声明依赖** → `PLUGIN_EXPORT_INVALID`（`params` 说明是订阅声明问题）；**抢注 `core.` 前缀** → 同上。
+装载期复用已有码：**订阅他人事件但没声明依赖** → `PLUGIN_EXPORT_INVALID`（`params` 说明是订阅声明问题）；**抢注 `core.` 前缀** → 同上（⚠️ **暂缓**，见 §1.2：等协作插件那条线落地时一并定）。
 按 `api-contract.md` §2 的规矩，新增码要同步补 `locales/zh-CN.json` 的 `err.<code>`。
 
 ### 1.14 明确不做（P2）
@@ -222,7 +229,7 @@ Linux 在同一件事上的做法可以直接对照（下面几条都来自 Linu
 
 1. 没声明就发布 → `EVENT_TOPIC_NOT_DECLARED`（已有用例，保持）；
 2. 订阅他人事件但没声明依赖 → 装载期 `PLUGIN_EXPORT_INVALID`；
-3. 抢注 `core.` 前缀 → 装载期 `PLUGIN_EXPORT_INVALID`；
+3. 抢注 `core.` 前缀 → 装载期 `PLUGIN_EXPORT_INVALID`（⚠️ **暂缓**，见 §1.2）；
 4. 管理员撤销订阅后：后续投递被跳过，审计记 `skipped: revoked`；正在跑的链不受影响；
 5. **通知**：发布方 `publish` 立即返回（不因订阅方慢而变慢）；
 6. **征询**：两个订阅方都收到，`opinions` 次序 = 管理员排的顺序；
@@ -317,7 +324,7 @@ interface EventResult {
 
 | 面 | 现状 |
 |---|---|
-| 端点声明 | ✅ `exports.endpoints[]`（**原名 `exports.webApis`，2026-09-22 已改名**）：`{path, permission?}`，装载时登记进 `capabilities.ts`：**path 全局唯一**（撞车 → `PLUGIN_EXPORT_INVALID`）、`permission` **必须在核心注册表里已登记**（未知即拒绝，不许"先声明后实现"）、进 `capabilities`（`endpoint:/api/docker/containers`）、卸载/重载精确撤销 |
+| 端点声明 | ✅ `exports.endpoints[]`（**原名 `exports.webApis`，2026-09-22 已改名**）：`{path, permission?, callable?}`，装载时登记进 `capabilities.ts`：**path 只在同一个插件内唯一**（端点表的键是 `(完整引用, path)` —— 跨插件同名端点**不是冲突**，见 §3.1）、`permission` **必须在核心注册表里已登记**（未知即拒绝，不许"先声明后实现"）、进 `capabilities`（`endpoint:/api/docker/containers`）、卸载/重载精确撤销 |
 | 谁能调到它 | **没有人**：核心还没有网关（HTTP 面属 P3），沙箱里也没有 HTTP 客户端；`dependencies.plugins` 只是可见性声明 + 依赖检查 |
 | 插件间调用方法 | ❌ 不存在 |
 | driver 的端点 | 走另一条路：`@host/api/<capability>`，注册**权限节点**，网关 + 驱动自身**双层鉴权** |
@@ -334,8 +341,8 @@ interface EventResult {
 
 - **改名理由**：这个面的**调用者有两类**（面板的 HTTP 网关 / 其他插件），`webApis` 既排除了插件、又暗示了实现路径；文档里"端点"这个词本来就在用；
 - **`callable` 缺省 `["panel"]`** —— fail-closed：不声明就不能被插件调用；
-- **`path` 强制以自己完整引用的命名空间开头**（`/<origin>/@user/name/…`）：今天只查"全局唯一"（先到先得），插件可以抢注别人的路径；
-- 影响面（**未发布，一次改到位、不做兼容层**）：`sdk/types.ts`、`sdk/schema/manifest.schema.json`、`core/plugin/capabilities.ts`（字段 / 接口名 `ApiCapability`→`EndpointCapability` / 快照键 / `kind: 'webApi'`→`'endpoint'` / 能力标签 `api:`→`endpoint:`）、`core/__tests__/lifecycle.test.ts`、`plugin/hello/manifest.json`、`sdk/__tests__/manifest.test.ts`、`core/plugin/records.ts` 的注释、文档 6 处 —— **✅ 已全部改完（2026-09-22）**；⚠️ **`callable` 与"path 带自己的完整引用命名空间"不在这一批**（前者等插件间调用面落地，别提前承诺没实现的字段；后者要等身份改成 `(origin, id)` 才有 origin 可拼），见 §4.3。
+- ~~**`path` 强制以自己完整引用的命名空间开头**（`/<origin>/@user/name/…`）~~ ⇒ ⛔ **已取消（2026-09-25）**：调用方必须把**同一条 path** 写进自己清单的 `dependencies.plugins[].call`，而两处都在**被签名的字节**里 —— path 带 origin 就等于「对方换一次源（reanchor / promote / 本地桶改名），调用方整包失效」，与 §3.7 的「调用面不写源」直接冲突；本地桶名又是装机人起的标签，作者签名时不可能知道（同 §3.5 四格表第 2 行的理由）。**来源只出现在宿主生成的地方**（点名 / 审计 / 响应信封）。✅ 同时明确 **path 也不需要全局唯一**（同一天）：端点表的键是 **`(完整引用, path)`**，因为身份是 `(origin, id)` —— 两个插件各自声明 `/api/status` 是两个**不同**的端点，同名只是"看着像"。访址一律是 `(ref, path)`：跨插件调用是那条带源的点名，面板网关按 `(插件, path)` 寻址（URL 前缀由**宿主生成**，不进包内字节）。只有"同一个插件把同一条 path 声明两次"才是清单错误。
+- 影响面（**未发布，一次改到位、不做兼容层**）：`sdk/types.ts`、`sdk/schema/manifest.schema.json`、`core/plugin/capabilities.ts`（字段 / 接口名 `ApiCapability`→`EndpointCapability` / 快照键 / `kind: 'webApi'`→`'endpoint'` / 能力标签 `api:`→`endpoint:`）、`core/__tests__/lifecycle.test.ts`、`plugin/hello/manifest.json`、`sdk/__tests__/manifest.test.ts`、`core/plugin/records.ts` 的注释、文档 6 处 —— **✅ 已全部改完（2026-09-22）**；⚠️ **`callable` 不在这一批**（等插件间调用面落地，别提前承诺没实现的字段）—— `callable` 已于 2026-09-25 随 ⑤ 落地，而「path 带自己的完整引用命名空间」**已取消**（理由见上一条），见 §4.3。
 
 ### 3.2 身份：`(origin, id)`，引用一律用完整引用
 
@@ -625,14 +632,17 @@ export const endpoints = {
 6. **`releasedAt` 归谁写**（⚠️ **这条要用户拍**）：元数据由构建工具产出、市场只追加签名 ⇒ 若 `releasedAt` 由构建期填，市场只能"核对后拒签"而不能改写；但它同时是**授权判定锚点**（`market-license-design.md` §3：可下载 ⟺ `releasedAt ≤ maintenanceUntil`）。本文按"**构建期填 + 市场核对/拒签**"写；要让市场自己定这个值，就得改成"市场改写字节 + 作者签名缩小覆盖范围"，代价更大。**将来市场若要加自己的事实，用独立的签名对象，不要改写 meta**；
 7. **作者私钥怎么保管**（`spc keygen` 的形态）：私钥文件格式与路径约定、要不要 passphrase —— 它**永不进包**，文档建议 `chmod 600`；不做 passphrase 也说得过去（它保护的是"身份连续性"，不是数据机密性）；
 8. ~~**本地源在 keyring 的具体形状**~~ **✅ 语义已定（2026-09-24）**：本地源 = **一个作者的桶**（身份 = 那把作者公钥，名字只是标签）+ `local:default` **杂桶** + 同钥第二例**建议独立成源（promote）**；条目带可选 `authorAnchor`（市场源不许带）。**条目落地 P4**（`spc source` CLI + 面板源清单）；promote 的搬运复用 **⑥ reanchor**（§3.6，批量 / 原子 / 列全会被打断的依赖方）。细节见 `plugin-signature-design.md` §3bis 与 §5 末；
-9. **端点 `path` 命名空间的前缀规则**：本文写"以自己完整引用的命名空间开头"，具体是 `/<origin>/@user/name/…` 还是 `/<user>/<name>/…`（后者短但跨源会撞）——落地时定；
+9. ~~**端点 `path` 命名空间的前缀规则**~~ **✅ 已关闭（2026-09-25）**：**不需要任何前缀**。
+   带 origin 的方案与 K2 冲突（调用方要把它写进自己清单的 `call`，两处都在被签名的字节里 ⇒ 换源即断，见 §3.1）；
+   而"与源无关的前缀"也没必要 —— 端点表的键本来就是 `(完整引用, path)`，跨插件同名端点各归各的：
+   **"这是谁的东西"由引用回答，不由 path 字符串回答**。
 10. **`plugins.call` 这个组名**：**2026-09-23 已按它落地**（备选 `peers.call` 未采用）。它同时是**权限点前缀**（`plugins.call.<引用>.<path>`）与注册表的 `group`；真要改，改三处即可 —— `core/permissions/points.ts` 的 `CALL_POINT_PREFIX`、`sdk/schema/manifest.schema.json` 的 pattern 动态分支、用例里的字面量（`grep plugins.call`）。
 
 ### 4.3 实施顺序（建议）
 
 | # | 做什么 | 为什么排这儿 |
 |---|---|---|
-| 1 | ~~`endpoints` 改名~~ **✅ 已做（2026-09-22）**；`callable` 与 path 命名空间**移到后面** | 纯重命名**好 review**、先做掉；`callable` 不该在调用面之前加（不承诺没实现的字段），path 命名空间要等 `(origin, id)` 有 origin 可拼 |
+| 1 | ~~`endpoints` 改名~~ **✅ 已做（2026-09-22）**；`callable` **✅ 已做（2026-09-25，随 ⑤）** | 纯重命名**好 review**、先做掉；`callable` 不该在调用面之前加（不承诺没实现的字段），⑤ 落地时一并加上。~~path 命名空间~~ **✅ 已关闭**：不需要任何前缀（端点表的键是 `(完整引用, path)`，跨插件同名不是冲突，见 §3.1 / §4.2-9） |
 | 2 | ~~**身份主键改 `(origin, id)`**~~ **✅ 已做（2026-09-22）**：记录（含 `pluginRef`/`resolveRecord`）/ 数据目录（`<sanitize(origin)>/`）/ 配置 / 能力登记（条目改带 `ref`）/ CLI（`--source` + 打完整引用）/ HTTP（`source` 入参）/ 依赖检查（`dep.origin ?? 自己来源`）/ 生命周期审计与错误的 `pluginId` 改带 ref；本地来源具名 `local:<名字>` | 这批**最大**（牵动面广），但它是一切引用与授权的前提 |
 | **2b** | ~~**运行时层的身份**~~ **✅ 已做（2026-09-22）**：`AuditEntry` 加 `ref?`（**只增不改**，`pluginId` 保留）；`sandbox.ts` 用就地包装 `auditOwn` 让十几处审计一次到位；`hostApi.ts` 同理（`PluginHostContext.ref`）；`loader` 把 `ref` 同时传给 `buildHostApi` 与 `createSandbox`；判别用例：同 id 两来源的 `fs.write` 审计两条，`pluginId` 相同、`ref` 分得开 | ② 的必然尾巴（字段是**加**不是改，符合"审计格式只增不改"） |
 | 3 | ~~"引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点~~ **✅ 已做（2026-09-23，09-24 定型）**：`core/permissions/points.ts`（校验 + 单射，非法即 `PERMISSION_POINT_INVALID`）；两族点放在**临时表**里 —— 从当前活着的插件**派生**（`core/permissions/source.ts`），**不写冻结的注册表**（判定查"冻结表 ∪ 临时表"）；两族都是 `explicit` 档（插件间默认隔离）；`permissions[].name` 的 schema 放宽出动态分支；用例 `core/__tests__/dynamic-points.test.ts` | 授权面；与 §3.4/§3.7 一起钉死 |

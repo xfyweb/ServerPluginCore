@@ -133,7 +133,7 @@ export async function stop(ctx: PluginContext) {
 | 能力 | manifest 来源 | P1.5 |
 |---|---|---|
 | 路由（面板页面） | `exports.routes` | ✅ 登记进宿主路由表（前端渲染 P3） |
-| 端点（API） | `exports.endpoints`（原 `webApis`） | ✅ 登记 + 网关按 `permission` 字段鉴权（网关属 P3）；**`callable`（谁能调）已落地**（缺省 `['panel']` ⇒ 默认不给插件调，见 `docs/events-and-hooks-design.md` §3.7）；**装载期还核对"声明 ⟺ 实现"**：入口模块必须导出同名键的 `endpoints` 映射，对不上即 `PLUGIN_EXPORT_INVALID`（`kind=endpoint-handler`）。⏳ path 命名空间（`/<origin>/@user/name/…`）仍未强制 |
+| 端点（API） | `exports.endpoints`（原 `webApis`） | ✅ 登记 + 网关按 `permission` 字段鉴权（网关属 P3）；**`callable`（谁能调）已落地**（缺省 `['panel']` ⇒ 默认不给插件调，见 `docs/events-and-hooks-design.md` §3.7）；**装载期还核对"声明 ⟺ 实现"**：入口模块必须导出同名键的 `endpoints` 映射，对不上即 `PLUGIN_EXPORT_INVALID`（`kind=endpoint-handler`）。⛔ **path 不带源、也不需要全局唯一**：端点表的键是 `(完整引用, path)`（跨插件同名端点不是冲突），理由见 `events-and-hooks-design.md` §3.1 |
 | 事件发布/订阅 | `exports.events` | ✅ 登记（事件面本体 P2：投递只给"声明订阅 + 声明依赖发布方 + 管理员批准"的插件，见 `docs/events-and-hooks-design.md` §1） |
 | **前端页面** | `exports.routes` + `frontend.mode` | ✅ 登记路由（`declarative` 渲染组件树 / `iframe` 提供 bundle，P3，见 intent-capture.md） |
 | **主题** | `type: theme` + `theme.json` | ✅ 登记主题令牌（无沙箱、无钩子，P3） |
