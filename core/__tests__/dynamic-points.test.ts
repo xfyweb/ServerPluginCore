@@ -19,6 +19,8 @@ process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
 const { manager } = await import('../plugin/manager.ts');
 const { capabilities } = await import('../plugin/capabilities.ts');
+// ⑥c 起"显式 --source 必须指向 keyring 里真有的桶" ⇒ 用例要先建桶
+const { ensureBucket } = await import('./helpers/buckets.ts');
 const { registry } = await import('../permissions/registry.ts');
 const { pointSource, dynamicPointNames, resolveDynamicPoint } = await import('../permissions/source.ts');
 const { checkPermission } = await import('../permissions/check.ts');
@@ -265,6 +267,8 @@ test('判定链接得上：声明 + **逐条授予**才放行；少一样都拒'
 test('同 id 两来源：两套临时点各自独立，停掉一个不牵连另一个', async () => {
   const a = 'local:src-a';
   const b = 'local:src-b';
+  ensureBucket(a); // ⑥c 起显式 --source 必须指向真桶
+  ensureBucket(b);
   await manager.install(
     makePluginAt('two-source-a', '@spc/same', `export function init(){}`, {
       exports: { endpoints: [{ path: '/api/same-a' }] },

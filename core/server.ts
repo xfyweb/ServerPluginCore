@@ -207,7 +207,11 @@ const server = createServer(async (req, res) => {
         acceptKeyChange: body.acceptKeyChange === true,
         ...(typeof body.source === 'string' ? { source: body.source } : {}),
       });
-      sendJson(res, 200, { plugin: view });
+      sendJson(res, 200, {
+        plugin: view,
+        // promote 建议（§3bis）：装完之后"这一组该不该单独成桶"由核心算好，CLI/面板只负责渲染
+        promote: manager.promoteSuggestion(view.ref) ?? null,
+      });
       return;
     }
 

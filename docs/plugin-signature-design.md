@@ -123,6 +123,7 @@ foo-1.2.0.spc/                  （zip 容器；校验不依赖容器字节）
 
 - **锚不再是"额外加的一个字段"，而是这个源存在的理由**：本地源条目可选带 `authorAnchor: { pub, fingerprint }`（字段形状见 §5 末）；**只在 `kind: 'local'` 上允许** —— 市场是**多作者**命名空间，给它钉一把作者钥是范畴错误；
 - **升级路径（promote）**：新装的插件一般进杂桶；当它与**另一个已装插件作者公钥相同**时，**建议**管理员为该作者单独建源并把这一组搬过去，之后同一把钥签的包默认进该源。
+  ✅ **已落地（2026-09-25，⑥c）**：建议由 `manager.promoteSuggestion` 算好（同一把钥第二例才建议，搬完自动消失），CLI 打印**两条现成命令**（`spc source add … --anchor` + `spc plugin reanchor …`）；"之后同一把钥签的包默认进该源"就是 `resolveInstallSource` 的自动落桶。⛔ **不自动建桶、不自动搬**（"永不自动新增源" + 换源是显式动作）。
   ⚠️ **更正（2026-09-25）**：此处原先写「我们的 CLI 是"守护进程 + HTTP"、**没有交互问答**」—— 那是把"当时 CLI 还没有确认提示"写成了原则，**不成立**：CLI 当然可以交互（`npm` / `pnpm` 就是先例），交互唯一的硬要求是**能被关掉**（`--yes`；非 TTY 时**不问**、直接要求 `--yes`），否则脚本化与 CI 就断了。今天 promote 与 `PLUGIN_AUTHOR_MISMATCH` 仍按**打印建议 + 现成命令**呈现（前者：安装成功后建议为该作者建源并搬迁；后者：错误里给出两条出路 `--source local:std-b` / `--accept-key-change`），那是因为这两处**不需要**确认（照做即可），不是因为 CLI 不能问。需要确认的动作就正常问（⑥b 的 `spc plugin reanchor` 就是 `y/N`）。
 - **搬运 = 批量 reanchor**（§7.2 与 `events-and-hooks-design.md` §3.6）：公钥相同天然满足前提；必须**原子**（同一作者的那几个一起搬，否则出现"依赖方在新桶、被依赖方在旧桶"的中间态）、过 manager 唯一锁、**列全会被打断的依赖方**、落审计；
 - **锚相同 = 同一组**：不需要"组"这个实体，也不需要往 `origin` 里编东西（⚠️ `core/permissions/points.ts` 的单射证明依赖 **origin 不含 `/` 与 `@`**）。"一人多机"天然是两条独立的名册与锚（每台机器一份 state）；
@@ -350,6 +351,8 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
   - **一并添加该源** → 走 §5 添加源流程，之后正常。
 
 ### 7.2 本地安装（`spc plugin install <dir|file>`）
+
+> **✅ 已落地（2026-09-25，④ + ⑥c）**：作者信封与身份闸（④）；**源锚是第一期望值**、**“没给 `--source` 就按包的公钥自动落进作者的桶”**（恰好一个就用、多个歧义拒 `PLUGIN_SOURCE_AMBIGUOUS`、零个落杂桶）、**显式 `--source` 必须指向 keyring 里真有的桶**（否则 `SOURCE_NOT_CONFIGURED`，提示 `spc source add`），以及**装完的 promote 建议**（同一把钥第二例 ⇒ 打印"建桶 + 一起搬"两条现成命令，`manager.promoteSuggestion`）。
 
 - **不验市场签名**，不联网；来源记为**具名本地源**（`local:<名字>`，默认 `local:default`）⇒ `unanchored`（**没有更新渠道**）；
 - **但要处理作者身份**（v4；作者签名必产 —— 构建层强制签名，所以"无签名包"不存在）：

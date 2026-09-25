@@ -21,6 +21,8 @@ const { registry } = await import('../permissions/registry.ts');
 const { signPluginDir, newTestKey } = await import('./helpers/signed-plugin.ts');
 import type { TestKey } from './helpers/signed-plugin.ts';
 const { pluginDataDir, DEFAULT_LOCAL_SOURCE, sanitizeOrigin } = await import('../config.ts');
+// ⑥c 起"显式 --source 必须指向 keyring 里真有的桶" ⇒ 用例要先建桶
+const { ensureBucket } = await import('./helpers/buckets.ts');
 
 // ---------------- 夹具 ----------------
 
@@ -442,6 +444,8 @@ test('同 id 不同来源 = 两个插件：两条记录、两个数据目录、�
     `import { fs } from '@host/api';
      export function init(){ fs.write('marker.txt', 'here'); }`,
   );
+  ensureBucket('local:dev-a');
+  ensureBucket('local:dev-b');
   const a = await manager.install(dir, { source: 'local:dev-a' });
   const b = await manager.install(dir, { source: 'local:dev-b' });
   assert.equal(a.ref, `local:dev-a/${id('dup-id')}`);
@@ -471,6 +475,8 @@ test('同 id 不同来源 = 两个插件：两条记录、两个数据目录、�
 
 test('管理命令传**裸 id** 且有两个来源 ⇒ PLUGIN_REF_AMBIGUOUS（不猜），完整引用照常', async () => {
   const dir = makePlugin('amb', `export function init(){}`);
+  ensureBucket('local:dev-a');
+  ensureBucket('local:dev-b');
   const a = await manager.install(dir, { source: 'local:dev-a' });
   await manager.install(dir, { source: 'local:dev-b' });
 
@@ -494,6 +500,8 @@ test('审计消歧（②b）：同 id 两个来源的**宿主调用**条目，�
     `import { fs } from '@host/api';
      export function init(){ fs.write('a.txt', 'x'); }`,
   );
+  ensureBucket('local:dev-a');
+  ensureBucket('local:dev-b');
   await manager.install(dir, { source: 'local:dev-a' });
   await manager.install(dir, { source: 'local:dev-b' });
 
@@ -522,6 +530,7 @@ test('来源非法 ⇒ PLUGIN_SOURCE_INVALID（`local:` 必须带合法名字；
 test('依赖按 (origin, id)：声明里的 origin 决定找哪个来源的副本', async () => {
   const devX = newTestKey();
   const provider = makePlugin('dep-src-provider', `export function init(){}`, { authorKey: devX });
+  ensureBucket('local:dev-x');
   await manager.install(provider, { source: 'local:dev-x' });
 
   // 依赖声明写明 origin=local:dev-x ⇒ 找得到（副本的作者公钥与声明一致）

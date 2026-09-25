@@ -135,6 +135,18 @@ const PLUGIN_VERBS = ['list', 'install', 'status', 'grant', 'revoke', 'enable', 
 const SOURCE_VERBS = ['list', 'add', 'remove', 'enable', 'disable', 'alias', 'anchor'];
 
 /**
+ * promote 建议（CLI 侧的**结构副本**；⚠️ 改这里要同步 `core/plugin/manager.ts` 的 `PromoteSuggestion`）。
+ * "同一把钥的第二例出现了" ⇒ 建议给它建个专属桶并把这几个一起搬过去。
+ */
+interface PromoteView {
+  origin: string;
+  alias: string;
+  anchor: string;
+  pub: string;
+  refs: string[];
+}
+
+/**
  * 换源预检计划（CLI 侧的**结构副本**）。
  * ⚠️ 改这里要同步 `core/plugin/manager.ts` 的 `ReanchorPlan`。
  */
@@ -290,10 +302,26 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
       grants,
       acceptKeyChange,
       ...(source === undefined ? {} : { source }),
-    })) as { status: number; body: { plugin: PluginView } };
+    })) as {
+      status: number;
+      body: { plugin: PluginView; promote: PromoteView | null };
+    };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.install.fail');
     console.log(t('cli.plugin.installed', { id: r.body.plugin.ref, dir: r.body.plugin.dir }));
     printPlugin(r.body.plugin);
+    // promote 建议（§3bis）：同钥第二例出现了 ⇒ 给两条**现成命令**（建桶 + 搬家），不自动执行
+    const promote = r.body.promote;
+    if (promote) {
+      console.log(
+        t('cli.plugin.promote.hint', { count: promote.refs.length, author: promote.anchor }),
+      );
+      console.log(t('cli.plugin.promote.cmd', {
+        bucket: promote.origin,
+        alias: promote.alias,
+        pub: promote.pub,
+        refs: promote.refs.join(' '),
+      }));
+    }
     return;
   }
 

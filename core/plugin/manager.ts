@@ -182,6 +182,23 @@ function rewritePoint(point: string, map: Map<string, string>): string | undefin
   return undefined;
 }
 
+/**
+ * **promote 建议**（§3bis）："同一把钥的第二例出现了 ⇒ 给它建个专属桶，把这一组搬过去"。
+ * 结构给机器看，命令由 CLI / 面板拼（本地化文案同理）。
+ */
+export interface PromoteSuggestion {
+  /** 建议建的桶名（`local:<发布者>`，被占了会加 `-2`/`-3`） */
+  origin: string;
+  /** 建议的别名（给管理员看的标签） */
+  alias: string;
+  /** 作者公钥指纹（= 桶该绑的锚） */
+  anchor: string;
+  /** 作者公钥（`spc source add --anchor` 要用它） */
+  pub: string;
+  /** 建议一起搬过去的完整引用（当前散落在没有锚的桶里、同一把钥签的那些） */
+  refs: string[];
+}
+
 export class PluginManager {
   /** 活着的沙箱句柄 */
   private readonly loaded = new Map<string, RunningPlugin>();
@@ -521,15 +538,16 @@ export class PluginManager {
   install(dir: string, opts: InstallOptions = {}): Promise<PluginView> {
     return this.withLock(async () => {
       const manifest = readManifestFromDir(dir);
-      const file = loadRecords();
-      const origin = opts.source ?? DEFAULT_LOCAL_SOURCE;
-      const ref = pluginRef({ origin, id: manifest.id });
-      const existing = findRecord(file, ref);
       // ① 作者信封（本地路径；有源安装的市场验签流在 P4，见 sources/verify.ts 的 verifyPackage）
       const envelope = loadLocalEnvelope(dir);
       if (envelope.kind === 'error') throw new SpcError(envelope.code, envelope.params);
       const authorPub = envelope.kind === 'ok' ? envelope.authorPub : undefined;
-      // ② 身份闸（在写记录**之前**：被拒就不该留下任何痕迹）
+      // ② 归属来源（v4 ⑥c）：显式给 ⇒ 必须是 keyring 里真有的桶；没给 ⇒ 按包的公钥**自动落进作者的桶**
+      const origin = this.resolveInstallSource(opts.source, authorPub === undefined ? null : fingerprintOf(authorPub));
+      const file = loadRecords();
+      const ref = pluginRef({ origin, id: manifest.id });
+      const existing = findRecord(file, ref);
+      // ③ 身份闸（在写记录**之前**：被拒就不该留下任何痕迹）
       const authorFingerprint = this.authorIdentityGate(
         { origin, id: manifest.id, ref },
         authorPub,
@@ -563,14 +581,98 @@ export class PluginManager {
   }
 
   /**
+   * **装到哪个桶**（v4 ⑥c，`plugin-signature-design.md` §3bis / §7.2）：
+   *
+   * - **显式给了 `--source`** ⇒ 形状必须先合法，且那个桶**必须已经在 keyring 里**
+   *   （⑥a 起"桶"就是源条目）⇒ 否则 `SOURCE_NOT_CONFIGURED`，提示 `spc source add`。
+   *   为什么不做"显式即自动建桶"：那样"这台机器上有哪些桶"又变成一个要靠翻记录才知道的事，
+   *   而 ⑥a 的全部意义正是让桶清单成为权威。
+   * - **没给** ⇒ 按**包的公钥**找绑了同一把锚的本地桶（"本地源 = 一个作者的桶"）：
+   *   恰好一个就用它（这就是 promote 之后的默认行为）；**多个 ⇒ 歧义拒**（`PLUGIN_SOURCE_AMBIGUOUS`
+   *   —— 锚相同是同一组，说不清该进哪一个，让管理员显式指定）；零个 ⇒ 杂桶 `local:default`。
+   * - 包**没有作者身份**（没带信封）⇒ 只能进杂桶（它满足不了任何绑了锚的桶）。
+   *
+   * 内置条目在这里**按需播种**（幂等）：核心只要碰 keyring，两个内置桶就该在 ——
+   * 否则"装到 local:default"会因为"keyring 里没这条"而失败，而那明显不是管理员的问题。
+   */
+  private resolveInstallSource(explicit: string | undefined, fingerprint: string | null): string {
+    const kr = keyring();
+    kr.ensureBuiltins();
+    if (explicit !== undefined) {
+      if (!isValidSource(explicit)) throw new SpcError('PLUGIN_SOURCE_INVALID', { origin: explicit });
+      if (!kr.get(explicit)) throw new SpcError('SOURCE_NOT_CONFIGURED', { origin: explicit, reason: 'not-found' });
+      return explicit;
+    }
+    if (fingerprint === null) return DEFAULT_LOCAL_SOURCE;
+    const mine = kr
+      .list()
+      .filter((s) => s.kind === 'local' && s.authorAnchor?.fingerprint === fingerprint);
+    if (mine.length === 1) return mine[0].origin;
+    if (mine.length > 1) {
+      throw new SpcError('PLUGIN_SOURCE_AMBIGUOUS', {
+        author: fingerprint,
+        origins: mine.map((s) => s.origin).sort().join('、'),
+      });
+    }
+    return DEFAULT_LOCAL_SOURCE;
+  }
+
+  /**
+   * **promote 建议**（§3bis：同钥第二例 ⇒ 建议为该作者单独建源并搬迁）。
+   *
+   * 什么时候给：这个包**没进**"属于它作者的那个桶"（杂桶或别人的桶），而同一把钥签的插件**不止一个**时。
+   * 给什么：一个可执行的两条命令 —— 建桶（带锚）+ 把这几个一起搬过去（`reanchor` 已经是批量原子的）。
+   * 桶名由插件 id 的发布者段推出来（`@std/x` → `local:std`），被占了就加 `-2`/`-3`；
+   * 已经存在**同锚**的桶就直接用它（那种情况通常是显式 `--source` 装进了别的桶）。
+   *
+   * ⚠️ 它只是**建议**：不自动建桶、不自动搬（"永不自动新增源" + 显式动作）。
+   */
+  promoteSuggestion(ref: string): PromoteSuggestion | undefined {
+    const file = loadRecords();
+    const record = findRecord(file, ref);
+    if (!record) return undefined;
+    const fingerprint = record.authorFingerprint;
+    if (fingerprint === null) return undefined; // 没作者身份 ⇒ 无从分组
+    const current = keyring().get(record.origin);
+    if (current?.authorAnchor) return undefined; // 已经在"属于它作者的桶"里了
+
+    // 同一把钥签的、且**还没进**自己桶的那些（含刚装的这个）
+    const group = file.plugins.filter(
+      (p) => p.authorFingerprint === fingerprint && keyring().get(p.origin)?.authorAnchor === undefined,
+    );
+    if (group.length < 2) return undefined; // "只出现过一次" ⇒ 杂桶就够
+    const author = findAuthor(record.origin, record.id) ?? file.plugins
+      .map((p) => findAuthor(p.origin, p.id))
+      .find((a) => a?.fingerprint === fingerprint);
+    if (!author) return undefined; // 名册里没有公钥 ⇒ 拼不出建桶命令
+
+    const kr = keyring();
+    const base = `local:${(record.id.split('/')[0] ?? '').replace(/^@/, '').toLowerCase()}`;
+    let origin = base;
+    for (let i = 2; kr.get(origin)?.authorAnchor && kr.get(origin)?.authorAnchor?.fingerprint !== fingerprint; i++) {
+      origin = `${base}-${i}`;
+    }
+    return {
+      origin,
+      alias: record.id.split('/')[0] ?? origin,
+      anchor: fingerprint,
+      pub: author.pub,
+      refs: group.map((p) => pluginRef(p)).sort(),
+    };
+  }
+
+  /**
    * 作者身份闸（`plugin-signature-design.md` §3bis 的"期望值解析"）。
    *
-   * 判据链：**名册首见值 →（名册没有时）记录里的指纹 →（都没有即首见，TOFU）**。
+   * 判据链（**顺序写死**）：**源级作者锚 → 名册首见值 →（名册没有时）记录里的指纹 →（都没有即首见，TOFU）**。
+   * - **源锚第一**（⑥c）：桶声明了"只收这把钥的包"，它就是这个源里最强的期望值 ⇒
+   *   不符即 `PLUGIN_ANCHOR_MISMATCH`（**`--accept-key-change` 绕不过它** —— 那是"在同一把钥的连续性上改认"，
+   *   而锚是管理员对**这个桶**的断言；要换请 `spc source anchor` 改锚，或换个桶）；
    * - 一致 / 首见 ⇒ 记名册，返回本次的指纹（写进记录）；
    * - 不符 ⇒ 抛 `PLUGIN_AUTHOR_MISMATCH`（错误里给两条出路：换个源 / `--accept-key-change`），
    *   除非管理员显式接受 —— 那时**覆盖名册**并落一条 `plugin.key-change` 审计（旧/新指纹都记）；
-   * - 包没带作者身份（`authorPub === undefined`）⇒ 返回 `null`：**名册不动**（那是宿主记忆，
-   *   不该被一个"没自报家门"的版本抹掉），但这个版本满足不了带 `author.pub` 的依赖声明。
+   * - 包没带作者身份（`authorPub === undefined`）⇒ 在**绑了锚**的桶里直接拒；否则返回 `null`：
+   *   **名册不动**（那是宿主记忆，不该被一个"没自报家门"的版本抹掉），但这个版本满足不了带 `author.pub` 的依赖声明。
    */
   private authorIdentityGate(
     who: { origin: string; id: string; ref: string },
@@ -578,8 +680,18 @@ export class PluginManager {
     recordFingerprint: string | null,
     acceptKeyChange: boolean,
   ): string | null {
+    const anchor = keyring().get(who.origin)?.authorAnchor?.fingerprint ?? null;
+    const actual = authorPub === undefined ? null : fingerprintOf(authorPub);
+    if (anchor !== null && actual !== anchor) {
+      throw new SpcError('PLUGIN_ANCHOR_MISMATCH', {
+        pluginId: who.ref,
+        origin: who.origin,
+        expected: anchor,
+        actual: actual ?? 'none',
+      });
+    }
     if (authorPub === undefined) return null;
-    const fingerprint = fingerprintOf(authorPub);
+    const fingerprint = actual as string;
     const known = findAuthor(who.origin, who.id);
     const expected = known?.fingerprint ?? recordFingerprint;
     if (expected !== null && expected !== undefined && expected !== fingerprint) {

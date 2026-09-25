@@ -22,6 +22,8 @@ const { SpcError } = await import('../errors.ts');
 const { authorsFilePath, loadAuthors } = await import('../sources/authors.ts');
 const { AUTHOR_SIG_FILE, META_FILE } = await import('../sources/verify.ts');
 const { newTestKey, signPluginDir } = await import('./helpers/signed-plugin.ts');
+// ⑥c 起"显式 --source 必须指向 keyring 里真有的桶" ⇒ 用例要先建桶
+const { ensureBucket, ensureMarketSource } = await import('./helpers/buckets.ts');
 
 // ---------------- 夹具 ----------------
 
@@ -213,6 +215,7 @@ test('被依赖方没有作者身份 ⇒ author-unknown（不能拿"没自报家
 test('本地目标省略 origin：在**本地源范围**内按 (author.pub, id) 唯一匹配（于是 promote 不打断依赖）', async () => {
   const key = newTestKey();
   // 被依赖方装在**另一个**本地源里（不是依赖方自己的桶）—— 正是 promote 之后的形态
+  ensureBucket('local:std-a');
   await manager.install(makePluginAt('promoted', '@spc/shared-lib', { authorKey: key }), {
     source: 'local:std-a',
   });
@@ -230,6 +233,8 @@ test('本地目标省略 origin：在**本地源范围**内按 (author.pub, id) 
 
 test('本地范围内同一把钥 + 同一个 id 出现在两个源 ⇒ PLUGIN_REF_AMBIGUOUS（不猜）', async () => {
   const key = newTestKey();
+  ensureBucket('local:dup-a');
+  ensureBucket('local:dup-b');
   await manager.install(makePluginAt('dup-a', '@spc/dup-lib', { authorKey: key }), { source: 'local:dup-a' });
   await manager.install(makePluginAt('dup-b', '@spc/dup-lib', { authorKey: key }), { source: 'local:dup-b' });
 
@@ -253,6 +258,8 @@ test('市场包不许依赖本地源 ⇒ PLUGIN_DEPENDENCY_SOURCE（那种声明
   await manager.install(makePluginAt('local-only', '@spc/local-only', { authorKey: key }), {
     source: 'local:default',
   });
+  // ⑥c 起"装到某个来源"要求那个来源已在 keyring 里 ⇒ 市场来源要先配上（这里验的是依赖声明规则）
+  ensureMarketSource('market.example.test', newTestKey().pub);
   const market = makePlugin('market-consumer', {
     dependencies: {
       plugins: [{ id: '@spc/local-only', origin: 'local:default', author: { pub: key.pub } }],

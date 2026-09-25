@@ -350,6 +350,8 @@ test('换源：没有作者身份的插件搬不进绑了锚的桶', async () =>
 test('换源：目标位置被占用/自撞/同源 ⇒ 拒，且不合并', async () => {
   const author = newTestKey();
   await bucket(BUCKET, author.pub); // 锚必须与下面这些插件一致，否则先撞的是"锚不符"
+  await bucket('local:src-a'); // ⑥c 起"显式 --source 必须指向真桶"
+  await bucket('local:src-b');
   const a = await install('taken', { authorKey: author, source: 'local:src-a' });
   // 目标桶里已经有同名插件（同 id 不同来源是**两个插件**）
   await install('taken', { authorKey: author, source: BUCKET });

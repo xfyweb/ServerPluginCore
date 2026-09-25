@@ -272,6 +272,14 @@ test('CLI plugin reanchor：先预检、非交互必须 --yes、搬完旧引用�
   assert.match(missing.stdout, /源未配置|来源非法/);
 });
 
+test('CLI plugin install：显式 --source 指向不存在的桶 ⇒ 拒（提示先建桶），不落记录', async () => {
+  const r = await run(['core/cli.ts', 'plugin', 'install', 'plugin/hello', '--source', 'local:nope'], env());
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /源未配置|来源非法/);
+  const list = await run(['core/cli.ts', 'plugin', 'list'], env());
+  assert.doesNotMatch(list.stdout, /local:nope/);
+});
+
 test('CLI about：输出品牌与构建指纹（本地信息，无需 daemon）', async () => {
   const r = await run(['core/cli.ts', 'about'], env());
   assert.equal(r.code, 0, r.stderr);
