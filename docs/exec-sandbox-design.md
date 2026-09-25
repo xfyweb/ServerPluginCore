@@ -26,7 +26,7 @@ exec 模板（命令固定 + 参数白名单）无法覆盖全部场景（MC 启
 | 核心内置 | `core:nginx.reload` | 核心 | 按该模板自动生成的权限点 |
 | **插件声明** | `<pluginId>:mc.start` | 插件（manifest `execTemplates`） | 声明插件 + 管理员逐点授予 |
 
-> 插件命名空间 = **插件 ID 原样**（如 `@xfy2412/docker:mc.start`，见 plugin-signature-design.md §8）。插件 ID 中不含 `:`，因此按**第一个 `:`** 切分命名空间即可；`core:` 是唯一保留命名空间，插件 ID 的命名空间部分不得取该值。
+> 插件命名空间 = **插件 ID 原样**（如 `@xfy2412/docker:mc.start`，见 plugin-signature-design.md §8；**点式命名空间属于核心 · 驱动 · 协作那条线**，见 `api-contract.md` §4.0）。插件 ID 中不含 `:`，因此按**第一个 `:`** 切分命名空间即可；`core:` 是唯一保留命名空间，插件 ID 的命名空间部分不得取该值。
 >
 > 权限点由 `<action>.<op>` 生成：`exec.template.<action>.<op>`（如 `exec.template.nginx.reload`）。因为它不含命名空间，**注册表强制 `action.op` 全局唯一**——两个插件声明同名 action.op 时后注册者失败，这是模板注册的碰撞闸门。
 >

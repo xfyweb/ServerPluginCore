@@ -45,12 +45,12 @@
 | 状态 | 项 |
 |---|---|
 | ✅ 已完成 | core 初始化 + 非 root fail-closed；QuickJS 沙箱宿主（错误桥 + 模块白名单 + dispose 修复）；权限注册表与判定（v3：`scope` + 逐点授予）；审计链路；**exec 模板基线**（模板注册表 + 原生写法匹配 + 参数校验 + env/超时/截断 + 内置 git 模板集）；exec 沙箱设计（声明层）；**P1.5 的装载器与生命周期**（见下） |
-| ⚠️ 部分 | CLI（`about`/`status`/插件全命令面；缺 `audit tail`）；sdk（清单校验器 + 两个手写 `.d.ts`；构建模板缺）；性能 benchmark（R1）未做 |
+| ⚠️ 部分 | CLI（`about`/`status`/插件全命令面；缺 `audit tail`）；sdk（清单校验器 + 两个手写 `.d.ts`；构建模板缺）；性能 benchmark（**API 往返 ✅ 已测**：`tools/bridge-bench.mjs`，数字见 `docs/module-emulation-design.md` §207；JSON/正则未单独测） |
 | ❌ 待补 | `exec.spawn` 任务模型（P2）；构建流水线（P2）；`audit tail`；事件面本体（P2：**核心不发流程事件、不做强制裁决**，见 `docs/events-and-hooks-design.md` §1）；钩子链（P2 不做，见同文档 §2） |
 
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/hello/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
-- **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（JSON/正则/API 往返，验证"薄适配器无感"）；
+- **QuickJS 沙箱宿主**（quickjs-emscripten）：ESM bundle 加载、`@host/api` 注入、生命周期（init/start/stop）、崩溃/超时处理、**性能 benchmark**（**API 往返 ✅ 已测**：`tools/bridge-bench.mjs` —— 纯调用开销 0.19–0.25 ms、1 MB 宿主→沙箱 0.84 ms/1185 MB/s，数字落档 `docs/module-emulation-design.md` §207；JSON/正则未单独测，结论已以"宿主代工"落地）；
 - **基础宿主 API**：exec 模板（nginx + git 一族起步）+ fs 受限 + kv + timers + lifecycle；**权限注册表 + 判定 + 审计**（F1–F7 已覆盖；E1–E8 的注册/参数/执行三类已覆盖）。**已落地**：模板注册表 + `exec.run`（阻塞，支持**模板 ID 与原生写法**两种调用，原生写法匹配不到即拒绝）+ 参数校验（enum/pattern/whitelist/path）+ env 白名单 + 超时 + 输出截断 + 动态权限点 `exec.template.<action>.<op>`（`scope: host`，需逐点授予；P2 起统一为 `grant: explicit`）+ 审计 `target`/`resultBytes` 字段 + 跨平台可执行解析（E10）+ 内置 git 模板集（version/status/log/rev-parse/branch/fetch/pull）与 `SPC_REPO_ROOTS`；样板插件已示范 `exec.run` 调用；**待补**：kv / timers / lifecycle、`exec.spawn` 任务模型（P2）；
 - **exec 基线与沙箱设计**（docs/exec-sandbox-design.md）：P1 落地"降权（spc）+ env 白名单 + 超时/输出截断"基线，声明层为过渡期唯一防线；注册制与系统级沙箱见 P2/P5；
 - **CLI**：`plugin list / install <dir> / enable / disable`、`web status`、`audit tail`；
@@ -153,10 +153,10 @@
 
 | 风险 | 应对 |
 |---|---|
-| R1 QuickJS 性能不足（薄适配器假设不成立） | P1 前置 benchmark，不成立则回退子进程档或混合 |
+| R1 QuickJS 性能不足（薄适配器假设不成立） | **已实测收窄**：桥的传输成本 µs 级（`tools/bridge-bench.mjs`，§207）⇒ "薄适配器无感"成立。若将来仍不足，退路是**宿主代工 + 构建层内联**（子进程档已砍；换引擎一途已由 `stack-check-and-engine-investigation.md` 实测否决 quickjs-ng） |
 | R2 构建层静态分析误伤合法插件 | **已用实测收敛**：字面量可选依赖 → 自动 stub（不失败，Node 上也没装）；动态 require → 失败，但实测占比 4/417。证据见 docs/build-layer-evidence.md §2/§3 |
 | R3 exec 模板设计不足 → 插件做不了事 | P1 先做 2 个真实模板（nginx/git）验证；模板注册表是核心评审对象 |
-| R4 驱动插件与核心进程边界不清 | api-contract §11-3 待定项，P2 落地时定 |
+| ~~R4 驱动插件与核心进程边界不清~~ **已关闭（2026-09-25）** | 定为**核心进程内运行**（冻结表时序 + IPC 开销），代价与实现约束见 `api-contract.md` §10 |
 | R5 单人节奏拖垮 | 每阶段小步可演示；P2 与 P3 可并行 |
 | R6 **确认点过多 → 管理员/开发者折损率上升**（每个弹窗都是一次流失机会） | 默认边界按"确认判据二条件"压降（intent-capture §7）：用户直选的意图**不再重复确认**；`auto`/`install` 档**安装清单即授权**；可逆写用回收站 + toast 替代弹窗。六场景（§8.6）作为验收硬指标 |
 

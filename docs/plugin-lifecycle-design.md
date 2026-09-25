@@ -133,7 +133,7 @@ export async function stop(ctx: PluginContext) {
 | 能力 | manifest 来源 | P1.5 |
 |---|---|---|
 | 路由（面板页面） | `exports.routes` | ✅ 登记进宿主路由表（前端渲染 P3） |
-| 端点（API） | `exports.endpoints`（原 `webApis`） | ✅ 登记 + 网关按 `permission` 字段鉴权（网关属 P3）；**`callable`（谁能调）已落地**（缺省 `['panel']` ⇒ 默认不给插件调，见 `docs/events-and-hooks-design.md` §3.7）；**装载期还核对"声明 ⟺ 实现"**：入口模块必须导出同名键的 `endpoints` 映射，对不上即 `PLUGIN_EXPORT_INVALID`（`kind=endpoint-handler`）。⛔ **path 不带源、也不需要全局唯一**：端点表的键是 `(完整引用, path)`（跨插件同名端点不是冲突），理由见 `events-and-hooks-design.md` §3.1 |
+| 端点（API） | `exports.endpoints`（原 `webApis`） | ✅ 登记 + 网关按 `permission` 字段鉴权（网关属 P3）；**`callable`（谁能调）已落地**（缺省 `['panel']` ⇒ 默认不给插件调，见 `docs/events-and-hooks-design.md` §3.7）；**装载期还核对"声明 ⟺ 实现"**：入口模块必须导出同名键的 `endpoints` 映射，对不上即 `PLUGIN_EXPORT_INVALID`（`kind=endpoint-handler`）。⛔ **path 不带源、也不需要全局唯一**：端点表的键是 `(完整引用, path)`（跨插件同名端点不是冲突），理由见 `events-and-hooks-design.md` §3.1。📐 **形态对照**：端点是**路径式**（能力插件的对外面）；点式名字（`db.query` / `auth.login.before`）属于**核心 · 驱动 · 协作**那条线 —— 见 `api-contract.md` §4.0 |
 | 事件发布/订阅 | `exports.events` | ✅ 登记（事件面本体 P2：投递只给"声明订阅 + 声明依赖发布方 + 管理员批准"的插件，见 `docs/events-and-hooks-design.md` §1） |
 | **前端页面** | `exports.routes` + `frontend.mode` | ✅ 登记路由（`declarative` 渲染组件树 / `iframe` 提供 bundle，P3，见 intent-capture.md） |
 | **主题** | `type: theme` + `theme.json` | ✅ 登记主题令牌（无沙箱、无钩子，P3） |
@@ -147,6 +147,8 @@ export async function stop(ctx: PluginContext) {
   ⚠️ 它们**不在注册表里**：注册表（冻结表）只有核心静态点 + 驱动插件启动期注册的点，**运行期不被插件改动**；跨插件那些点是**临时表**，从本类这份登记**派生**（`core/permissions/source.ts`）。
   所以本类不需要"登记点/撤销点"：订阅方或调用方的**授权**（`grants`）存在各自的安装记录里，能力没了派生点自然查不到 ⇒ 判定第 1 步 `UNKNOWN_POINT`（fail-closed）。
 - **调用面的两个登记期动作**（2026-09-25，见 `docs/events-and-hooks-design.md` §3.7）：① 把依赖条目的 `call` 里请求的 path **锚定解析**成实际引用、生成带源的声明点交给判定链（声明不带源、授权带源）；② 端点处理器存在性核对（上表那一条）。两者都在**装载期一次**完成，运行期只查表。
+- **驱动插件（`type: driver`）不走上面这套装载流程**（2026-09-25 定）：它在**核心启动早期**做**一次注册**（把端点与权限点写进**冻结表**），此后**没有热卸载** —— 装 / 卸 / 禁一律**伴随核心重启**（注册表在能力插件加载前就冻结）。进程内运行的理由、**不提供隔离**的代价、以及"注册方法必须 async"这条实现约束，见 `api-contract.md` §10。
+  ⚠️ 今天 `driver` / `hook` **都还没实现** ⇒ 装载期直接拒绝（`PLUGIN_MANIFEST_INVALID` + `reason=unsupported-type`），不静默按能力插件跑。这段落点：`core/plugin/loader.ts` 的 `readManifestFromDir`（install 与装载两个入口共用它）。
 - **重载必须幂等**：`reload` 先撤销该插件的全部已登记能力，再重新登记（避免重复绑定/能力叠加）；
 - **`disabled` 不做任何求值**：禁用的插件连 bundle 都不加载（不建沙箱、不执行任何插件代码）。
 

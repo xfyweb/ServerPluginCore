@@ -24,7 +24,7 @@
 
 ## 二、manifest 草案（schema 2）
 
-> `type` 声明插件类型，缺省 `ability`。四类（v3 起）：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点；前端形态由 `frontend.mode` 决定）、**driver** 驱动插件（核心端注册权限节点 + API 端点并自行鉴权；安装走**独立界面与最高强度提示**，见 ADR-005 §3）、**hook** 协作插件（**核心在决策点上回调它、答复进核心决策**；与能力插件的差别是调用方向相反；**P2 不做**，设计见 `docs/events-and-hooks-design.md` §2）、**theme** 主题包（v3 由"面板插件"降级而来：`theme.json`，声明式令牌 + 资源，无 JS、无沙箱）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
+> `type` 声明插件类型，缺省 `ability`。四类（v3 起）：**ability** 能力插件（沙箱内挂载管理页面，调 `@host/api`，含驱动插件注册的领域端点；前端形态由 `frontend.mode` 决定）、**driver** 驱动插件（**核心进程内**注册权限节点 + API 端点并自行鉴权 —— 与核心同进程，**不提供隔离**；安装走**独立界面与最高强度提示**，见 ADR-005 §3 与 `api-contract.md` §10）、**hook** 协作插件（**核心在决策点上回调它、答复进核心决策**；与能力插件的差别是调用方向相反；**P2 不做**，设计见 `docs/events-and-hooks-design.md` §2）、**theme** 主题包（v3 由"面板插件"降级而来：`theme.json`，声明式令牌 + 资源，无 JS、无沙箱）。示例为能力插件（ability），其容器操作经配套驱动插件注入的端点完成：
 
 ```json
 {
@@ -74,6 +74,7 @@
 
 1. **请求 / 批准分离（Android 最核心的洞见）**：`permissions[]` 只是插件的**请求**；批准与否由宿主按"`scope` / `grant` 规则 + 管理员对 `explicit` 档的逐点授予"决定——**来源（签名 / 市场 / 本地安装）不参与**。Android 的 `uses-permission` 与系统最终授权是两回事——这是"manifest 声明权限"最成熟的工业先例，直接支撑 D5（manifest 声明是请求，宿主判定才是批准）。**安装清单本身就是同意书**（intent-capture §8.1）：`auto` / `install` 档一次看全即生效，只有 `explicit` 档才逐点问。
    - **点名的两种写法**（2026-09-23）：**静态点** `<group>.<action>[.<scope>]`（`fs.write.data`、`exec.template.nginx.reload`）；**动态点**由**别人的能力**派生、名字里带**完整引用**——`plugins.call.<origin>/@user/name.<path>`（调它的某个端点）、`events.subscribe.<origin>/@user/name.<topic>`（订阅它发布的某个事件）。两种都**不接受 `*`**（通配声明等于把对方将来新增的端点一次性全授）。见 api-contract §6.1 与 `events-and-hooks-design.md` §3.4。
+     ⚠️ **形态分层**：这里两种都是**点式**名字 —— 点式命名空间属于**核心 · 驱动 · 协作**那条线（`db.query` / `auth.login.before`），能力插件对它们**只能申请与调用，不能占用**；能力插件自己的对外面是**路径式**（`/api/…`）。见 `api-contract.md` §4.0。
 
 2. **权限模型三条轴（v4：新增 `grant`）**：
    | 轴 | 字段 | 规则 |
