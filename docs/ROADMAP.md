@@ -65,7 +65,7 @@
 - **装载契约**：ESM bundle 导出 `init(ctx)`（必需）+ `start`/`stop`（可选，均可 async）；`@host/api` 给**能力**、`ctx` 给**环境**（`pluginId`/`version`/`dataDir`/`manifest`/`grants`/`config`/`logger`，沙箱侧 deepFreeze ⇒ 只读是 VM 语义保证的）；
 - **插件配置**：manifest `configSchema`（JSON Schema 子集，含 `secret`）+ 值文件 + `ctx.config` 只读快照；非法值拒绝保存；
 - **状态机**：installed/loading/loaded/starting/running/stopping/stopped + `failed`/`disabled`，**唯一状态机在 manager**，每次变更过唯一锁；失败重启是配置项（默认 `manual`）；
-- **能力登记**：loader 依 manifest 登记 routes / endpoints / events / theme（`execTemplates` 留槽给 P2-5），**全有或全无**、重载幂等，结果写进记录的 `capabilities`；**P2 起登记还带出动态权限点**（`plugins.call.<完整引用>.<path>` / `events.subscribe.<完整引用>.<topic>`，随能力一起撤销，见 api-contract §6.1）；
+- **能力登记**：loader 依 manifest 登记 routes / endpoints / events / theme（`execTemplates` 留槽给 P2-5），**全有或全无**、重载幂等，结果写进记录的 `capabilities`；**P2 起登记还带出动态权限点**（`plugins.call.<完整引用>.<path>` / `events.subscribe.<完整引用>.<topic>`，随能力一起撤销，见 api-contract §6.1）；**2026-09-25 起端点还多两道**：装载期核对"清单声明 ⟺ 模块里的 `endpoints` 映射"（对不上即 `PLUGIN_EXPORT_INVALID`），以及声明 `callable`（缺省只给面板 ⇒ 插件间默认隔离）；
 - **四层限额**：CPU 中断 / 内存 / 栈 / 宿主 API 自带超时（QuickJS 语义见 exec-sandbox-design §3.5 与 limits.ts 注释）；
 - **安装记录**：`plugins.json`（字段与 plugin-signature-design §9 对齐；**v4 起本地安装也有具名来源** `local:<名字>`——`unanchored` 指"没有市场签名 / 更新渠道"，不是 `origin` 为空；**v2 起没有 `reserved`**——内置只表示随核心分发，仍可禁用/卸载/独立更新）；
 - **依赖图**：依赖必须**已启用且已装载**（`PLUGIN_DEPENDENCY_NOT_LOADED`）；装载按**拓扑序**（依赖先 init）；**环检测**（环上直接判 `failed`）；**反向保护**（被依赖时不许 `uninstall`／`disable` → `PLUGIN_IN_USE`）。版本区间解析与运行时失效通知仍待 P2；

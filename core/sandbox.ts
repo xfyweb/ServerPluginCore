@@ -57,6 +57,25 @@ export interface Sandbox {
   /** 调用插件钩子 init/start/stop（CPU 中断 + job 泵 + 上下文注入） */
   callHook(name: 'init' | 'start' | 'stop', timeoutMs: number): Promise<void>;
   /**
+   * 端点处理器是否存在（`exports.endpoints` 映射里有没有这个键，且是函数）。
+   * 装载期用它核对"清单声明的 path ⟺ 模块里的实现"（对不上即装载失败，见 `core/plugin/loader.ts`）。
+   */
+  hasEndpointHandler(path: string): boolean;
+  /**
+   * **调用本插件的一个端点**（跨插件调用的落地端，`plugins.call` 的另一半）。
+   *
+   * - `paramsJson` / `bytes` 原样交给处理器（第三个参数是 `Uint8Array`，无字节时是 `undefined`）；
+   * - 返回值是处理器给出的 **JSON 文本**（已确认是字符串；解析与"是不是合法 JSON"由调用方那侧判）；
+   * - `callId` 只用于审计串联：本阶段**所有**条目都带上它（含处理器内部的 fs/kv 调用）。
+   */
+  callEndpoint(
+    path: string,
+    paramsJson: string,
+    bytes: Uint8Array | undefined,
+    timeoutMs: number,
+    callId: string,
+  ): Promise<string>;
+  /**
    * 最近一个跑完的阶段里**等宿主 Promise 花掉的墙钟**（挂起时长）。
    *
    * 为什么要有这个取值口（而不是让 `callHook` 返回）：失败路径（超时/插件抛错）同样要记这笔账，
@@ -140,6 +159,44 @@ const BOOTSTRAP = `
           );
         } else {
           state.status = 'done';
+        }
+      } catch (e) {
+        state.status = 'error';
+        state.error = e === undefined ? { message: 'thrown' } : e;
+      }
+    });
+    return state;
+  };
+  // 端点处理器（跨插件调用的被调方）与钩子共用同一套"排进 job + 归一化状态"，多两件事：
+  //   ① **要能把返回值带出来**（钩子不需要）—— 只接受字符串（JSON 文本），别的类型当场报错，
+  //      因为桥只能过字符串，静默 JSON 化一个对象会让调用方拿到它没预期的形状；
+  //   ② 参数是 (ctx, paramsJson, bytes)，bytes 以 Uint8Array 交出（宿主给的是 ArrayBuffer）。
+  // 同样必须排在 job 里：处理器里 await 宿主方法会挂起（理由见上面 __spcInvoke 的注释）。
+  globalThis.__spcInvokeEndpoint = function (fn, ctx, paramsJson, bytesAb) {
+    var state = { status: 'scheduled', error: null, value: undefined };
+    Promise.resolve().then(function () {
+      function done(r) {
+        if (r === undefined || r === null) { state.value = 'null'; state.status = 'done'; return; }
+        if (typeof r !== 'string') {
+          // 报错文案说清"发生了什么"：处理器返回了什么类型、契约要求什么。
+          // 带上 code/params 是为了让宿主侧归类成 **PLUGIN_CALL_BAD_RESULT**（与"返回的不是合法 JSON"
+          // 同一个码、reason 不同）—— 否则它会退化成一个笼统的 PLUGIN_CALL_FAILED，作者查不出原因。
+          // ⚠️ 本函数体是**模板字面量**：注释与字符串里都不许出现反引号（会提前终止它，报错还指向别处）。
+          var e = new Error('endpoint handler must return a JSON string (got ' + (typeof r) + ')');
+          e.code = 'PLUGIN_CALL_BAD_RESULT';
+          e.params = { reason: 'result-not-text' };
+          throw e;
+        }
+        state.value = r;
+        state.status = 'done';
+      }
+      try {
+        var r = fn(ctx, paramsJson, bytesAb === undefined || bytesAb === null ? undefined : new Uint8Array(bytesAb));
+        if (r && typeof r.then === 'function') {
+          state.status = 'async';
+          r.then(done, function (e) { state.status = 'error'; state.error = e === undefined ? { message: 'rejected' } : e; });
+        } else {
+          done(r);
         }
       } catch (e) {
         state.status = 'error';
@@ -322,6 +379,15 @@ export interface HostMethod {
    */
   binaryResult?: boolean;
   /**
+   * **参数里可能有字节**：沙箱侧的包装层改用 `__marshalBin`（视图/ArrayBuffer 走二进制通道），
+   * 而不是 `__marshal`（它会把 `ArrayBuffer` **JSON 化**成 `"{}"` —— 宿主收到的就成了个字符串参数）。
+   *
+   * 与 `binaryResult` 对称：一个说"结果里有字节"，一个说"参数里有字节"；同样**必须声明**，
+   * 因为"这个参数是不是字节"在宿主侧只看得到 `Uint8Array`，而把字节静默 JSON 化正是最难查的一类失败。
+   * 结果那半边仍按原有的两条路（`binaryResult` 或 `JSON_RESULT_GROUPS` 决定解包方式）。
+   */
+  binaryArgs?: boolean;
+  /**
    * 声明**宿主实现是异步的**（`fn` 返回 Promise）：桥为此方法注册一条**可挂起**通道——
    * guest 侧函数返回 Promise，宿主 Promise 落地后 job 队列才收到续体（`await` 因此能拿到值）。
    *
@@ -393,6 +459,20 @@ export interface SandboxBridge {
    * 与定时器的治理同一思路（`dispose()` 里 `clearInterval` 全部摘掉）。
    */
   releaseHandles?: () => void;
+  /**
+   * **当前正在跑的跨插件调用 id**（没有就是 `undefined`）。hostApi 用它给出自己写的那批审计
+   * （fs/kv/handles…）打上 `callId` —— 一次 A→B 的调用要能在审计里"从 B 内部串回发起方"，
+   * 而 B 内部的每一条宿主调用是 hostApi 写的，不是沙箱写的。
+   */
+  currentCallId?: () => string | undefined;
+  /**
+   * 给**本次宿主调用**那条审计附几个字段（`plugins.call` 用：`callId` / `attempts` / `waitedMs`）。
+   *
+   * 为什么要有这个口子：审计是沙箱的包装层写的（"每个宿主调用一条"这条不变量在那一层），
+   * 而重试次数、等待时长这些**只有宿主方法的实现自己知道**。让它把标签留下、由包装层合并，
+   * 比在包装层里为 `plugins.call` 开一个特例清楚（也避免出现第二条描述同一次调用的日志）。
+   */
+  tagAudit?: (extra: { callId?: string; attempts?: number; waitedMs?: number }) => void;
 }
 
 /** 注入 ctx 的"环境事实"（能力走 @host/api，环境走 ctx，见 plugin-lifecycle-design §1.3） */
@@ -431,9 +511,20 @@ function exportLines(api: HostApi): string {
     const g = idx === -1 ? key : key.slice(0, idx);
     if (SELF_IMPLEMENTED_GROUPS.has(g)) continue; // 该组在模块文件里自己实现
     const prop = idx === -1 ? key : key.slice(idx + 1);
-    // 声明 `binaryResult` 的方法必须用 `__bin`（它按「ArrayBuffer = 数据 / 字符串 = 错误」解包），
-    // 套 `__json` 的话二进制结果会被当成"意外字符串"原样交出去（TypeError 或一串乱码）。
-    const wrap = method.binaryResult ? '__bin' : JSON_RESULT_GROUPS.has(g) ? '__json' : '__wrap';
+    // 包装层按两条独立的轴选（2×2，四个都必须存在，否则就有一类组合被迫走错路）：
+    //   结果：`binaryResult` ⇒ `__bin`（ArrayBuffer = 数据）；`JSON_RESULT_GROUPS` ⇒ JSON 解码；否则原样文本。
+    //   参数：`binaryArgs` ⇒ `__marshalBin`（字节走二进制通道）；否则 `__marshal`（非字符串 JSON 化）。
+    // 为什么单独有 `__rawBin`：`plugins.call` 是"参数带字节 + 结果是 JSON **文本**（由插件自己 parse，
+    // 照 exec.run 的约定）"这一格 —— 没有它就只能二选一，要么字节被 JSON 化，要么结果被提前解析。
+    const wrap = method.binaryResult
+      ? '__bin'
+      : method.binaryArgs
+        ? JSON_RESULT_GROUPS.has(g)
+          ? '__jsonBin'
+          : '__rawBin'
+        : JSON_RESULT_GROUPS.has(g)
+          ? '__json'
+          : '__wrap';
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g)!.push(`  ${prop}: ${wrap}(globalThis.__host[${JSON.stringify(key)}])`);
   }
@@ -591,8 +682,51 @@ function hookError(
   }
 }
 
-export async function createSandbox(api: HostApi, options: SandboxOptions): Promise<Sandbox> {
-  const limits: PluginLimits = options.limits ?? DEFAULT_LIMITS;
+/**
+ * 被调方失败 → 抛给**调用方**的那个错误（`plugins.call` 的失败面）。
+ *
+ * 与 `hookError` 的关键差别：**被调方自己的码要原样透出**（设计 §3.7：「失败 = 结构化错误码，
+ * 被调方自己的 `code`/`params` 原样回传」）—— 调用方据此分支，而不是拿到一个笼统的
+ * `PLUGIN_CALL_FAILED` 去猜。只有"没有码"的裸错误才归到 `PLUGIN_CALL_FAILED`。
+ *
+ * 限额那几类（中断/内存/栈）**不套 PLUGIN_CALL_* 壳**：它们是被调方 VM 的资源事实，
+ * 调用方与排障者需要看到的就是"对端撞了内存/栈/超时"，包一层反而把信息糊掉。
+ */
+function endpointError(
+  pluginId: string,
+  ref: string | undefined,
+  path: string,
+  callId: string,
+  failure: VmFailure,
+): SpcError {
+  const detail: Record<string, string> = {
+    pluginId,
+    // `callee` 一律给（locale 的文案要它）：没有 ref 时退回裸 id，绝不把 `{callee}` 原样打给用户
+    callee: ref ?? pluginId,
+    hook: 'call',
+    path,
+    callId,
+  };
+  if (failure.message !== undefined && failure.message !== '') {
+    detail.message = failure.message.length > 500 ? failure.message.slice(0, 500) + '…' : failure.message;
+  }
+  switch (failure.kind) {
+    case 'interrupt':
+      return new SpcError('PLUGIN_CALL_TIMEOUT', detail);
+    case 'memory':
+      return new SpcError('PLUGIN_MEMORY_LIMIT', detail);
+    case 'stack':
+      return new SpcError('PLUGIN_STACK_LIMIT', detail);
+    case 'error':
+      // 插件自己抛的码（含它内部的宿主错误）原样回传；params 也照带（那是被调方**自己**选择抛出的东西，
+      // 而栈只在审计里，见 host-api.js 的 __unwrap 与 classifyVmFailure 的分工）
+      return failure.code !== undefined && failure.code !== 'PLUGIN_ERROR'
+        ? new SpcError(failure.code, { ...detail, ...(failure.params ?? {}) })
+        : new SpcError('PLUGIN_CALL_FAILED', { ...detail, cause: failure.code ?? 'PLUGIN_ERROR' });
+  }
+}
+
+export async function createSandbox(api: HostApi, options: SandboxOptions): Promise<Sandbox> {  const limits: PluginLimits = options.limits ?? DEFAULT_LIMITS;
   const log =
     options.logger ??
     ((level: 'info' | 'warn' | 'error', message: string) => {
@@ -607,9 +741,27 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
    * 就地包装一次（`auditOwn`），免得十几处调用点各写两遍 —— 漏一个就出现"分不清是谁"的条目。
    * ⚠️ 调用点里原有的 `pluginId: options.pluginId` 会被这里**覆盖**：保留它只是为了让这次改动是"换个函数名"，
    * 不必同时动十几处；**新写审计时两件都不用写**。
+   *
+   * `callId` 是**环境值**：本插件正被别的插件调用时（`callEndpoint` 那一阶段），它这一段里产生的
+   * **每一条**审计都带上同一个 id —— 否则"B 在 handler 里读了三个文件"这三条日志无法归到那次跨插件调用上。
    */
   const auditOwn = (entry: Omit<AuditEntry, 'pluginId' | 'ref'> & { pluginId?: string }): void =>
-    auditRaw({ ...entry, pluginId: options.pluginId, ref: options.ref });
+    auditRaw({
+      ...entry,
+      pluginId: options.pluginId,
+      ref: options.ref,
+      ...(entry.callId === undefined && currentCallId !== undefined ? { callId: currentCallId } : {}),
+    });
+  /** 当前是否正被别的插件调用（`callEndpoint` 期间有值）；对 hostApi 也有意义（见 SandboxBridge.currentCallId） */
+  let currentCallId: string | undefined;
+  /** 本次宿主调用要附带的审计字段（宿主方法的实现自己填，包装层合并；每次调用前清空） */
+  let hostAuditTag: { callId?: string; attempts?: number; waitedMs?: number } | undefined;
+  if (options.bridge) {
+    options.bridge.currentCallId = () => currentCallId;
+    options.bridge.tagAudit = (extra) => {
+      hostAuditTag = extra;
+    };
+  }
 
   // asyncify 变体：宿主 API 可返回 Promise（exec/网络必须异步，见设计结论）
   // 注：quickjs-emscripten@0.32.0 的 asyncify newRuntime 释放顺序有 bug（deleteRuntime 先于
@@ -681,6 +833,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
     /** 前段：参数读取 + 权限解析/判定。**每条失败路径都要落审计**——少一条就是审计缺口。 */
     function prepareCall(...args: QuickJSHandle[]): CallPrep {
       const start = Date.now();
+      // 每次调用前清掉上一次留下的审计标签：它是"本次调用"的补充字段，
+      // 忘了清就会把上一次的 attempts/waitedMs 挂到这一次的条目上（一条假账）。
+      hostAuditTag = undefined;
       // 参数读取：按 **VM 侧类型**判别。二进制走 getArrayBuffer 并拷出来
       // （返回的 Lifetime 释放后视图即失效，不能直接交出去）；其余按字符串。
       // ⚠️ 不能一律 getString：对 ArrayBuffer 它**不报错**，而是返回字面量
@@ -807,6 +962,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           paramsDigest: prep.grantDigest,
         },
         resultBytes: bytes ? bytes.byteLength : Buffer.byteLength(serialized as string),
+        // 宿主方法自己留下的补充字段（目前只有 plugins.call：callId / attempts / waitedMs）
+        ...(hostAuditTag ?? {}),
         durationMs: Date.now() - prep.start,
       });
       return bytes ? vm.newArrayBuffer(bytes) : vm.newString(serialized as string);
@@ -828,6 +985,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           paramsDigest: prep.grantDigest,
         },
         error: { code: shape.code, paramsDigest: digestParams(shape.params) },
+        // 失败路径同样要带上标签：**忙到用尽重试**的那次调用恰恰最需要 attempts/waitedMs
+        ...(hostAuditTag ?? {}),
         durationMs: Date.now() - prep.start,
       });
       return vm.newString(hostErrorPayload(shape.code, shape.params));
@@ -1027,6 +1186,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   const ctxFactory = scope.manage(vm.getProp(vm.global, '__spcMakeCtx'));
   const invokeFn = scope.manage(vm.getProp(vm.global, '__spcInvoke'));
   const timerInvokeFn = scope.manage(vm.getProp(vm.global, '__spcTimerInvoke'));
+  const endpointInvokeFn = scope.manage(vm.getProp(vm.global, '__spcInvokeEndpoint'));
 
   // ctx.logger：三个宿主函数，只建一次（插件日志不落审计，落宿主 console / P2-4 聚合器）
   const loggerObj = scope.manage(vm.newObject());
@@ -1277,6 +1437,163 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   }
 
   /**
+   * **跨插件调用的落地端**：在**本**插件（被调方）的 VM 里跑一个端点处理器。
+   *
+   * 与 `invoke()` 同一套骨架（阶段/deadline/异步泵/墙钟事后校验/endPhase），差别有三处：
+   *   ① 取出的是 `namespace.endpoints[path]`（装载期已核对存在），不是钩子；
+   *   ② 要**把处理器的返回值带出来**（JSON 文本）；
+   *   ③ 全程带 `callId`（写进本阶段的每条审计，含处理器内部那些宿主调用）。
+   *
+   * ⚠️ **忙碌即拒、不排队**（同钩子）：调用方 A 正挂在自己的宿主调用上等着，宿主此刻进 B 的 VM；
+   * 若 B 也在跑阶段（钩子/定时器/另一次调用），两条阶段叠在同一个 runtime 上会把状态机搅乱
+   * （deadline 互相覆盖、异步泵嵌套在同一个 VM 里）。`PLUGIN_BUSY` 由**投递方**做有界重试。
+   */
+  async function callEndpoint(
+    path: string,
+    paramsJson: string,
+    bytes: Uint8Array | undefined,
+    timeoutMs: number,
+    callId: string,
+  ): Promise<string> {
+    if (disposed) throw new SpcError('PLUGIN_DISPOSED', { pluginId: options.pluginId, hook: 'call' });
+    if (busy) {
+      throw new SpcError('PLUGIN_BUSY', { pluginId: options.pluginId, hook: 'call', busyWith });
+    }
+    if (!namespace) throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: options.pluginId, hook: 'call' });
+
+    const started = Date.now();
+    currentCallId = callId;
+    beginPhase('plugins.call');
+    const dl = started + timeoutMs;
+    deadline.setDeadline(dl);
+    const paramsBytes = Buffer.byteLength(paramsJson);
+    try {
+      const ctx = ensureCtx();
+      // 处理器的句柄：`endpoints` 是普通对象，按 path 取属性（装载期已核对过是函数）
+      const endpointsObj = vm.getProp(namespace, 'endpoints');
+      let fnHandle: QuickJSHandle | undefined;
+      let stateResult;
+      try {
+        fnHandle = vm.getProp(endpointsObj, path);
+        if (vm.typeof(fnHandle) !== 'function') {
+          // 装载期核对过，走到这里只有一种可能：插件在自己运行期把映射改了（或删了某个键）。
+          // 端点集合是**装载期快照**语义，所以这里 fail-closed，而不是"再看一眼现在的映射"。
+          throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: options.pluginId, hook: 'call', path });
+        }
+        const paramsHandle = vm.newString(paramsJson);
+        // 字节要交**完整的 ArrayBuffer**（`newArrayBuffer` 只认它；视图自己带的 offset/length 会被忽略，
+        // 那就会把一段无关的内存交出去）。`toExactBytes` 就是干这个的（同 finishCall 的二进制结果那条路）。
+        const bytesHandle = bytes ? vm.newArrayBuffer(toExactBytes(bytes)!) : vm.undefined;
+        try {
+          stateResult = vm.callFunction(endpointInvokeFn, vm.undefined, fnHandle, ctx, paramsHandle, bytesHandle);
+        } finally {
+          paramsHandle.dispose();
+          if (bytes) bytesHandle.dispose();
+        }
+      } finally {
+        fnHandle?.dispose();
+        endpointsObj.dispose();
+      }
+
+      if (isFail(stateResult)) {
+        let dumped: unknown;
+        try {
+          dumped = vm.dump(stateResult.error);
+        } finally {
+          stateResult.error.dispose();
+        }
+        throw endpointError(options.pluginId, options.ref, path, callId, classifyVmFailure(dumped));
+      }
+
+      const state = stateResult.value;
+      let value: unknown;
+      try {
+        const pump = await pumpJobsAsync(runtime, dl);
+        if (pump.status === 'failed') {
+          throw endpointError(options.pluginId, options.ref, path, callId, pump.failure);
+        }
+        const status = readProp(state, 'status');
+        if (status === 'async' || pump.status === 'pending') {
+          // 处理器返回了 Promise 但没泵完：插件留下了未回收的异步任务（与钩子同一条规矩）
+          throw new SpcError('PLUGIN_JOB_PENDING', {
+            pluginId: options.pluginId,
+            callee: options.ref ?? options.pluginId,
+            hook: 'call',
+            path,
+            callId,
+          });
+        }
+        if (status === 'error') {
+          throw endpointError(
+            options.pluginId,
+            options.ref,
+            path,
+            callId,
+            classifyVmFailure(readProp(state, 'error')),
+          );
+        }
+        value = readProp(state, 'value');
+      } finally {
+        state.dispose();
+      }
+
+      // 墙钟事后校验（与 invoke() 同一理由：deadline 拦不住宿主方法里的同步阻塞）
+      const overrunMs = Date.now() - dl;
+      if (overrunMs > 0) {
+        throw new SpcError('PLUGIN_CALL_TIMEOUT', {
+          pluginId: options.pluginId,
+          callee: options.ref ?? options.pluginId,
+          hook: 'call',
+          path,
+          callId,
+          overrunMs: String(overrunMs),
+        });
+      }
+      if (typeof value !== 'string') {
+        // 引导层已经保证"成功 ⇒ 字符串"，这里再兜一层：拿不到文本就绝不能当成功返回
+        throw new SpcError('PLUGIN_CALL_BAD_RESULT', {
+          pluginId: options.pluginId,
+          callee: options.ref ?? options.pluginId,
+          hook: 'call',
+          path,
+          callId,
+          reason: 'result-not-text',
+        });
+      }
+      auditOwn({
+        ts: Date.now(),
+        method: 'plugins.call',
+        target: path,
+        paramsDigest: digest(JSON.stringify([callId, paramsBytes, bytes?.byteLength ?? 0])),
+        result: 'ok',
+        callId,
+        resultBytes: Buffer.byteLength(value),
+        suspendedMs: lastSuspendedMs,
+        durationMs: Date.now() - started,
+      });
+      return value;
+    } catch (err) {
+      // 失败也要有被调方这一侧的账（调用方那条只说明"我调了、失败了"）
+      const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
+      auditOwn({
+        ts: Date.now(),
+        method: 'plugins.call',
+        target: path,
+        paramsDigest: digest(JSON.stringify([callId, paramsBytes, bytes?.byteLength ?? 0])),
+        result: 'error',
+        error: { code: shape.code, paramsDigest: digestParams(shape.params) },
+        callId,
+        suspendedMs: lastSuspendedMs,
+        durationMs: Date.now() - started,
+      });
+      throw err;
+    } finally {
+      endPhase();
+      currentCallId = undefined;
+    }
+  }
+
+  /**
    * 宿主触发的**非钩子回调**（定时器 / 文件监视）：与钩子同样的限额；失败只落审计，不改变插件状态
    * （由 manager 决定策略）。
    *
@@ -1519,6 +1836,26 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       }
       if (!namespace) throw new SpcError('PLUGIN_NO_ENTRY', { pluginId: options.pluginId, hook: name });
       await invoke('hook', name, name, timeoutMs);
+    },
+
+    hasEndpointHandler(path: string) {
+      if (!namespace) return false;
+      const endpointsObj = vm.getProp(namespace, 'endpoints');
+      try {
+        if (vm.typeof(endpointsObj) !== 'object') return false;
+        const h = vm.getProp(endpointsObj, path);
+        try {
+          return vm.typeof(h) === 'function';
+        } finally {
+          h.dispose();
+        }
+      } finally {
+        endpointsObj.dispose();
+      }
+    },
+
+    async callEndpoint(path, paramsJson, bytes, timeoutMs, callId) {
+      return callEndpoint(path, paramsJson, bytes, timeoutMs, callId);
     },
 
     lastSuspendedMs() {

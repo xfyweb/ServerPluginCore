@@ -32,14 +32,19 @@ export interface RouteCapability {
  * 端点能力（原 `ApiCapability`，manifest 里原叫 `exports.webApis`）。
  * **改名理由**：这个面的调用者**有两类**（面板的 HTTP 网关 / 其他插件），`webApis` 既排除了插件、
  * 又暗示了实现路径；文档里"端点"这个词本来就在用（见 `docs/events-and-hooks-design.md` §3.1）。
- * ⚠️ **两件还没做**（别照文档以为已就位）：① `callable`（谁能调）—— 等插件间调用面落地再加，
- * 不提前给插件承诺一个没实现的字段；② "`path` 必须带自己的**完整引用**命名空间"—— 等身份改成
- * `(origin, id)`（§3.2）之后才有 origin 可拼。
+ * ⚠️ **还有一件没做**：`path` 必须带自己的**完整引用**命名空间（`/<origin>/@user/name/…`）——
+ * 今天仍只查"全局唯一"（先到先得），插件可以抢注别人的路径；见 §4.3。
  */
 export interface EndpointCapability {
   ref: string;
   path: string;
   permission?: string;
+  /**
+   * 谁能调（**缺省 `['panel']`**，fail-closed）。跨插件调用的门槛三就是查这里有没有 `'plugins'`：
+   * 端点默认只服务面板，要开放给别的插件必须**作者自己声明**，所以"没声明"必须是一条**阻塞**，
+   * 而不是"默认允许"。
+   */
+  callable: ('panel' | 'plugins')[];
 }
 
 export interface EventCapability {
@@ -135,7 +140,13 @@ export class CapabilityRegistry {
           permission: a.permission,
         });
       }
-      addEndpoints.push({ ref, path: a.path, permission: a.permission });
+      addEndpoints.push({
+        ref,
+        path: a.path,
+        permission: a.permission,
+        // 缺省 `['panel']`：端点默认只服务面板，开放给插件必须作者显式声明（fail-closed）
+        callable: a.callable ?? ['panel'],
+      });
       caps.push(`endpoint:${a.path}`);
       // 端点必须能进点名（`plugins.call.<引用>.<path>`）：空白进不了 `permissions[].name` 的 schema
       // （会生成一个谁都声明不了的点），`*` 会被 `matchDeclaration` 当通配（一次声明预授权将来新增的端点）。
@@ -193,6 +204,12 @@ export class CapabilityRegistry {
     }
 
     return caps;
+  }
+
+  /** 某插件当前登记的某个端点（找不到 = 没登记，或那个 path 属于别人）；跨插件调用门槛④查它的 `callable` */
+  endpointOf(ref: string, path: string): EndpointCapability | undefined {
+    const endpoint = this.endpoints.get(path);
+    return endpoint && endpoint.ref === ref ? endpoint : undefined;
   }
 
   /** 撤销该插件的全部登记（重载与卸载都走这里；幂等）。参数是**完整引用** */

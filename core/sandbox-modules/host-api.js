@@ -172,6 +172,15 @@ const __jsonBin = (fn) => (...args) => {
 };
 
 /**
+ * **参数走二进制通道、结果原样返回文本**（`plugins.call` 用这一格）。
+ *
+ * 与 `__bin` 的区别：`__bin` 认的是"结果是字节"（`ArrayBuffer` = 数据），把字符串当错误信封；
+ * 这里结果是**文本协议**（JSON 文本，由插件自己 `JSON.parse`，照 `exec.run` 的约定），
+ * 所以字符串是正常返回，只有 `__spcError` 信封会被 `__unwrap` 抛出来。
+ */
+const __rawBin = (fn) => (...args) => __unwrap(fn(...args.map(__marshalBin)));
+
+/**
  * 文本参数必须**真的是字符串**。
  * 校验必须放在这一层（沙箱侧）：`__marshal` 会把非字符串 JSON 化，宿主那边再查就已经晚了
  * ——`byteLength(new Uint8Array([1,2,3]))` 会先被变成字符串 `"1,2,3"`，于是静默数出 5。

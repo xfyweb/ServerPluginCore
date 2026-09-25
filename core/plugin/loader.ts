@@ -15,8 +15,9 @@ import { validateManifest } from '../../sdk/validate';
 import { audit, digest, digestParams } from '../audit';
 import { ensureDir, pluginDataDir, type PluginLimits } from '../config';
 import { SpcError, toErrorShape } from '../errors';
-import { buildHostApi } from '../hostApi';
+import { buildHostApi, type CallDispatchRequest, type CallDispatchResult, type CallHandle } from '../hostApi';
 import { createSandbox, type Sandbox, type SandboxBridge } from '../sandbox';
+import { callPointOf } from '../permissions/points';
 import { capabilities } from './capabilities';
 import { loadPluginConfig } from './config';
 import { pluginRef, type PluginRecord } from './records';
@@ -39,6 +40,11 @@ export interface LoadDeps {
    * 解析失败（身份不符 / 市场包依赖本地源 / 本地范围内歧义 / 目标不存在）**直接抛 SpcError**。
    */
   resolveDep(dep: DependencyDecl, self: { origin: string; ref: string }): string;
+  /**
+   * **跨插件投递**（`plugins.call` 的宿主侧；由 manager 实现）。
+   * 装载器只把它透传给宿主 API —— "谁在跑、谁在忙、重试几次、怎么记账"都是 manager 的事。
+   */
+  dispatchCall: (req: CallDispatchRequest) => Promise<CallDispatchResult>;
   /** 插件日志出口 */
   logger?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
@@ -165,8 +171,20 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
   //
   //    v4 起先做**声明解析**（`resolveDep`）：`author.pub` 必填、`origin` 的写法按目标分四格
   //    （见 §3.5 与 `core/plugin/deps.ts`）—— 只有解析出来的引用才拿去问运行态。
+  //
+  //    同一个循环顺手把**调用面的句柄表**建起来（⑤）：句柄是代码里写的那个名字，锚定解析出的
+  //    实际引用才是判定与审计用的身份。两者一一对应 ⇒ 包内被签名的字节里不含本地源名。
+  const callHandles = new Map<string, CallHandle>();
+  /** `call` 里声明的端点 → 派生出的**声明点**（授权仍带源，声明不带源，见 §3.7） */
+  const declaredCallPoints: string[] = [];
   for (const dep of manifest.dependencies?.plugins ?? []) {
     const depRef = deps.resolveDep(dep, { origin: record.origin, ref });
+    callHandles.set(dep.as ?? dep.id, { ref: depRef, paths: new Set(dep.call ?? []) });
+    for (const callPath of dep.call ?? []) {
+      // 端点 path 必须能进点名（尾段不含空白、不含 `*`）；不合法 ⇒ 装载失败 PERMISSION_POINT_INVALID。
+      // 在这里算一遍的理由：声明是有源的（点名带实际引用），而这一步正是"锚定解析"的落点。
+      declaredCallPoints.push(callPointOf(depRef, callPath));
+    }
     const status = deps.dependencyStatus(depRef);
     if (status.ok) continue;
     if (status.reason === 'missing') {
@@ -214,11 +232,17 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
       dataDir,
       declaredTopics: (manifest.exports?.events?.publish ?? []).map((e) => e.topic),
       bridge,
+      // 调用面：句柄表 + 投递链（见 hostApi 的 `plugins.call`）
+      callHandles,
+      dispatchCall: deps.dispatchCall,
     }),
     {
       pluginId: id,
       ref,
-      permissions: manifest.permissions.map((p) => p.name),
+      // **声明的点 = 清单里的 permissions ∪ 依赖条目 `call` 派生出的跨插件点**。
+      // 后者是"声明不带源、授权带源"的落地：包内写的是 `call: ['/api/x']`，这里按锚定解析出的
+      // 实际引用生成 `plugins.call.<引用>.<path>` 交给判定链（第 2 步 NOT_DECLARED 因此能对上）。
+      permissions: [...manifest.permissions.map((p) => p.name), ...declaredCallPoints],
       grants: record.grants,
       limits: deps.limits,
       facts: { version: manifest.version, dataDir, manifest, config },
@@ -242,6 +266,21 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
 
     // 5) 能力登记（插件不参与；冲突 → PLUGIN_EXPORT_INVALID 且不留半登记状态）
     caps = capabilities.register(ref, manifest);
+
+    // 5b) 端点实现契约：清单声明的每个 path，模块里必须有对应的处理器。
+    // 为什么在装载期核（而不是等第一次被调用）：声明与实现成了**可检查的不变式** ——
+    // 写错路径当场报错，而且核心不会登记一个"谁都调不通"的端点（那正是"死点"的来源）。
+    // 放在 register 之后是有意的：**声明的合法性**（path 能不能进点名）先报，实现缺失后报 ——
+    // 前者的错误信息对作者更有指向性。失败路径由下面的 catch 统一回滚（能力登记 + 沙箱）。
+    for (const endpoint of manifest.exports?.endpoints ?? []) {
+      if (!sandbox.hasEndpointHandler(endpoint.path)) {
+        throw new SpcError('PLUGIN_EXPORT_INVALID', {
+          pluginId: ref,
+          kind: 'endpoint-handler',
+          path: endpoint.path,
+        });
+      }
+    }
 
     // 6/7) init（准备）→ start（开始工作）；都是可选的 start 除外
     await runHook(sandbox, 'init', ref, deps.limits.initTimeoutMs);

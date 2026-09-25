@@ -258,6 +258,43 @@ declare module '@host/api' {
     health(): HealthInfo;
   };
 
+  // ---- plugins：插件间的**定向调用**（docs/events-and-hooks-design.md §3.7）----
+  /** 调用成功的响应信封（`plugins.call` 的返回值 `JSON.parse` 之后就是这个形状） */
+  export interface PluginCallResponse<T = unknown> {
+    ok: true;
+    /** 一次跨插件交互的串联 id：审计里调用方与被调方的条目共用它 */
+    callId: string;
+    /** 被调方是谁（实际引用，含来源）+ 它的版本 */
+    callee: { origin: string; id: string; version: string };
+    path: string;
+    /** 被调方端点返回的 JSON 值（它返回 `undefined`/`null` 时这里是 `null`） */
+    result: T;
+  }
+
+  export const plugins: {
+    /**
+     * 调用**另一个插件**的端点。
+     *
+     * @param handle 依赖**句柄** = `dependencies.plugins[].as`（没写 `as` 时是 `id`）。
+     *   它**不是**完整引用：本地源的名字是装机的人起的标签，写进代码就等于"换一次桶全部重建"；
+     *   宿主在装载时把句柄锚定解析成实际引用（见 manifest 的 `dependencies.plugins`）。
+     * @param path 端点路径，**必须**出现在该依赖条目的 `call` 列表里（包内被签名的请求）。
+     * @param paramsJson 参数字符串——宿主**不解释**它，原样交给被调方（自己 `JSON.parse`）。
+     * @param bytes 可选字节槽（与 `events.publish` 同一条二进制通道；被调方收到 `Uint8Array`）。
+     * @returns **原始 JSON 文本**（照 `exec.run` 的约定，唯一不做自动解码的方法之一）。
+     *   `JSON.parse` 之后是 {@link PluginCallResponse}；需要类型就 `JSON.parse(t) as PluginCallResponse<T>`。
+     * @throws 结构化错误（按 `err.code` 分支，不要匹配文案）：
+     *   `PLUGIN_CALL_HANDLE_UNKNOWN`（清单里没有这个句柄）、
+     *   `PLUGIN_CALL_PATH_NOT_DECLARED`（没在那条依赖的 `call` 里请求过这个端点）、
+     *   `PERMISSION_DENIED`（`params.reason` 见权限判定链：管理员还没批准这个点）、
+     *   `PLUGIN_CALL_NOT_CALLABLE`（对端端点没声明 `callable` 含 `plugins`）、
+     *   `PLUGIN_CALL_TARGET_UNAVAILABLE`（对端没在跑）、`PLUGIN_BUSY`（重试后仍忙）、
+     *   `PLUGIN_CALL_TIMEOUT`、`PLUGIN_CALL_FAILED`、`PLUGIN_CALL_BAD_RESULT`、
+     *   `PLUGIN_CALL_DEPTH_EXCEEDED`，以及**被调方自己抛出的码**（原样回传）。
+     */
+    call(handle: string, path: string, paramsJson: string, bytes?: Uint8Array | ArrayBuffer): string;
+  };
+
   // ---- exec：只能调用**已注册模板**（没有自由命令）----
   export interface ExecResult {
     exitCode: number | null;

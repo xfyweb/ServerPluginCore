@@ -30,8 +30,12 @@ import type { PluginLimits } from '../config';
  * `watch` 与 `timer` **共用同一个限额**（`timerTimeoutMs`）但**各有各的错误码**：
  * 两者是同一类东西（无人值守的回调阶段），没必要多一个配置旋钮；
  * 而排障时必须分得开——"定时器超时"与"文件监视回调超时"是两条完全不同的线索。
+ *
+ * `call` = **跨插件调用的被调方阶段**（`plugins.call` 落在对端 VM 里的那次执行）：
+ * 它有独立的限额，因为它既不是"插件自己的钩子"（不能占用 init/start 的额度），
+ * 也不该白拿调用方剩下的全部预算——调用方的阶段预算是**硬顶**（见 manager 的投递链）。
  */
-export type HookName = 'load' | 'init' | 'start' | 'stop' | 'timer' | 'watch';
+export type HookName = 'load' | 'init' | 'start' | 'stop' | 'timer' | 'watch' | 'call';
 
 /** VM 侧失败的归类：限额命中 vs 插件自己的错误 */
 export interface VmFailure {
@@ -91,6 +95,8 @@ export function timeoutMsFor(hook: HookName, limits: PluginLimits): number {
     case 'timer':
     case 'watch':
       return limits.timerTimeoutMs;
+    case 'call':
+      return limits.callTimeoutMs;
   }
 }
 
@@ -109,6 +115,8 @@ export function timeoutCodeFor(hook: HookName): string {
       return 'PLUGIN_TIMER_TIMEOUT';
     case 'watch':
       return 'PLUGIN_WATCH_TIMEOUT';
+    case 'call':
+      return 'PLUGIN_CALL_TIMEOUT';
   }
 }
 
@@ -127,6 +135,8 @@ export function failureCodeFor(hook: HookName): string {
       return 'PLUGIN_TIMER_FAILED';
     case 'watch':
       return 'PLUGIN_WATCH_FAILED';
+    case 'call':
+      return 'PLUGIN_CALL_FAILED';
   }
 }
 

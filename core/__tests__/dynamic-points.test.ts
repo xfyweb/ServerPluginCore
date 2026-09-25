@@ -46,8 +46,22 @@ function makePluginAt(dirName: string, pluginId: string, code: string, opts: Fix
     ...(opts.exports ? { exports: opts.exports } : {}),
   };
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-  writeFileSync(join(dir, 'main.ts'), code, 'utf8');
+  writeFileSync(join(dir, 'main.ts'), code + endpointImpls(opts.exports), 'utf8');
   return dir;
+}
+
+/**
+ * ⑤ 起装载期会核对「清单声明的端点 ⟺ 模块里的 `endpoints` 映射」，所以夹具按声明**自动补出实现**
+ * （这些用例关心的是点表/登记，不是端点行为；真正要验端点行为的用例自己写映射）。
+ * 键用原样的 path（含空格也照写）—— 这样"path 进不了点名"那条用例仍然走到 `PERMISSION_POINT_INVALID`。
+ */
+function endpointImpls(exports: Record<string, unknown> | undefined): string {
+  const declared = (exports?.endpoints as { path: string }[] | undefined) ?? [];
+  if (declared.length === 0) return '';
+  const entries = declared
+    .map((e) => `  ${JSON.stringify(e.path)}: () => JSON.stringify({ path: ${JSON.stringify(e.path)} }),`)
+    .join('\n');
+  return `\nexport const endpoints = {\n${entries}\n};\n`;
 }
 
 const makePlugin = (name: string, code: string, opts: FixtureOpts = {}): string =>

@@ -108,6 +108,8 @@
    **2026-09-24 加两个字段**：`as` = **包内别名**（调用句柄；同一清单内 `id` 必须唯一，重名就必须给每条写 `as`，于是代码里 `plugins.call('backup', …)` 永远无歧义）；`call` = **调用面的请求**（"我要调它的哪些端点"）。
    ⇒ **包内被签名的字节里不含本地源名**：作者只声明"依赖谁、要调什么"，**宿主在装载时锚定解析成实际 ref**、生成带源的点名；**授权带源、声明不带源**，审计记实际锚定结果。详见 `docs/events-and-hooks-design.md` §3.2/§3.5/§3.7 与 `plugin-signature-design.md` §3bis。
 
+    **2026-09-25（⑤）落地**：句柄唯一性由校验器的**语义闸**保证（`sdk/validate.ts`；JSON Schema 表达不了"两个字段拼出来的键要唯一"，所以它与 schema 同处生效：核心装载、SDK、将来市场上传共用）；端点侧新增 `exports.endpoints[].callable`（**缺省 `['panel']`** ⇒ 默认不给插件调），并新增一条**装载期不变式**：入口模块必须导出与声明同名的 `endpoints` 映射，对不上即 `PLUGIN_EXPORT_INVALID`（`kind=endpoint-handler`）。
+
 9. **`configSchema`（插件配置声明，P1.5）**：声明用户可调参数（JSON Schema 子集：`string | number | boolean | enum | array`，带 `default`/`description`，敏感字段标 `secret: true`）。值存在宿主侧 `<SPC_STATE_DIR>/config/plugins/<sanitized-id>.json`，装载时按 schema 校验并补默认值，以**只读快照** `ctx.config` 注入（插件不能改自己的配置）。面板据此渲染配置表单（P3）。详见 plugin-lifecycle-design.md §1.6。
 
 10. **`frontend`（前端形态，P3）**：`{ mode: 'declarative' | 'iframe' }`——

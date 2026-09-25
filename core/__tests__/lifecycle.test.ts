@@ -51,9 +51,20 @@ function makePlugin(name: string, code: string, opts: FixtureOpts = {}): string 
     ...(opts.entry ? { entry: opts.entry } : {}),
   };
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-  writeFileSync(join(dir, 'main.ts'), code, 'utf8');
+  // ⑤ 起装载期核对「清单声明的端点 ⟺ 模块里的 `endpoints` 映射」：夹具按声明自动补出实现
+  writeFileSync(join(dir, 'main.ts'), code + endpointImpls(opts.exports), 'utf8');
   if (opts.authorKey) signPluginDir(dir, opts.authorKey);
   return dir;
+}
+
+/** 见上：把清单声明的端点补成 `export const endpoints = {…}`（没声明端点就原样返回空串） */
+function endpointImpls(exports: Record<string, unknown> | undefined): string {
+  const declared = (exports?.endpoints as { path: string }[] | undefined) ?? [];
+  if (declared.length === 0) return '';
+  const entries = declared
+    .map((e) => `  ${JSON.stringify(e.path)}: () => JSON.stringify({ path: ${JSON.stringify(e.path)} }),`)
+    .join('\n');
+  return `\nexport const endpoints = {\n${entries}\n};\n`;
 }
 
 /** 造一个主题包目录（无 runtime/permissions，入口 theme.json） */

@@ -518,6 +518,28 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 - **为什么不让代码写源**：本地源的名字是**"装机的人"起的标签**（`std（小A）`，promote 后成 `local:std-a`），作者签名时**不可能知道**它；写进代码就等于"换一次桶，所有调用方全部重建"；
 - ⇒ **包内被签名的字节里不存在本地源名**（只有依赖市场包时才写市场域名，而它天然稳定）；promote / 本地源改名**不需要任何插件重建**。
 
+**被调方怎么写**（2026-09-25 落地时定的形状；§3.7 原先只定了调用方这一半）：
+
+```js
+// 插件入口模块（main.ts）
+export const endpoints = {
+  '/api/backup/run': (ctx, paramsJson, bytes) => JSON.stringify({ ok: true }),
+};
+```
+
+- **入口模块导出 `endpoints` 映射**，键就是清单里声明的 `path`。宿主在**装载期逐条核对**
+  "清单声明的 path ⟺ 映射里真有这个键"，对不上即 `PLUGIN_EXPORT_INVALID`（`kind=endpoint-handler`）
+  —— 声明与实现因此是**可检查的不变式**：写错路径当场报错，核心也不会登记一个"谁都调不通"的端点；
+- 处理器签名 `(ctx, paramsJson, bytes)`：`ctx` 与钩子拿到的是同一个冻结上下文；`paramsJson` 是调用方给的
+  **原始字符串**（宿主不解释）；`bytes` 是可选字节槽（`Uint8Array`，没传就是 `undefined`）；
+- **返回值必须是 JSON 文本**（`undefined`/`null` 视作 `null`）。宿主 `JSON.parse` 它、内联进响应信封的
+  `result` 字段；不是字符串 ⇒ `PLUGIN_CALL_BAD_RESULT`（`reason=result-not-text`），解析不了 ⇒ 同一个码
+  （`reason=result-not-json`）。**为什么由宿主解析**：调用方拿到的是嵌套好的结构，不必二次 parse；
+  解析失败即被调方违约，fail-closed；
+- 为什么选"导出映射"而不是运行时 `serve()`：声明与实现的**一一对应**在装载期就能查（见上），
+  而运行时绑定只能等第一次被调用才发现"声明了却没实现"。代价是端点集合是**装载期快照**语义
+  （运行期改映射不会被采纳，见 `core/sandbox.ts` 的 `callEndpoint`）。
+
 **锚定解析（宿主侧，装载时一次）**：
 
 ```
@@ -541,9 +563,9 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 
 | 情况 | 处理 |
 |---|---|
-| 对方忙（`PLUGIN_BUSY`） | **有界重试**：宿主侧最多 3 次尝试、间隔 50 / 100 / 200 ms、总计 ≤ 350 ms，**计入调用方自己的阶段预算**；审计记 `attempts` + `waitedMs` |
-| 对方崩溃 / 已卸载 / 被禁用 | **不重试**（重试崩溃＝反复去叫一个坏掉的插件）⇒ 调用失败 |
-| 超时 | 调用失败，**绝不返回部分结果**（fail-closed） |
+| 对方忙（`PLUGIN_BUSY`） | **有界重试**：宿主侧最多 3 次尝试（**含首次** ⇒ 第 2、3 次前各等 50 / 100 ms），**计入调用方自己的阶段预算**；审计记 `attempts` + `waitedMs`。⚠️ 口径：题面里的第三个间隔 200 ms 与"≤350 ms"是**上限**（放宽尝试数时才用得到），本实现按"3 次尝试"这一读法 ⇒ 最多等 150 ms（策略在 `core/plugin/call-retry.ts`，单独成文件是为了能被判别性地测出来 —— 真造一个"对端正忙"的窗口只能靠对端自己的定时器，写成集成用例就是时序赌博） |
+| 对方崩溃 / 已卸载 / 被禁用 | **不重试**（重试崩溃＝反复去叫一个坏掉的插件）⇒ 调用失败。⚠️ **掉线时调用方通常看到的不是 `PLUGIN_CALL_TARGET_UNAVAILABLE` 而是 `PERMISSION_DENIED/UNKNOWN_POINT`**：对端一卸载，它登记的能力就撤了 ⇒ 那个动态点当场消失 ⇒ 判定链第 1 步就拒（`api-contract.md` §6.1 的"点会消失"）。`PLUGIN_CALL_TARGET_UNAVAILABLE` 留给"记录还在、沙箱不在"的防御性分支 |
+| 超时 | 调用失败，**绝不返回部分结果**（fail-closed）。对端用**自己的** `callTimeoutMs` 封顶，且 ≤ 调用方阶段剩余预算（`min` 两者） |
 | 一律不做 | **不排队**：顺序等到对方空闲会让调用方预算被对方吃掉，而且"谁先谁后"变得不可解释 |
 
 **重入与死锁**（结论与 §2.3 同源）：调用方 A 挂在**自己那次宿主调用**上 ⇒ **不需要重入**；宿主进 B 的 VM 时 B 必须空闲；**A→B→A 回环**在第二次进 A 时因 A 正忙而**快速失败**（串行契约白送，不是死锁）；再加**嵌套深度上限**；被调方处理器里**不能改自己的登记**（快照）。
@@ -591,7 +613,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | 三处**仓库外引用** | 已改写成无路径形式：`api-contract.md` §7 两处 + `core/__tests__/permissions-meta.test.ts` 一处；另清了 `core/__tests__/emulation-worker-threads.test.ts` 里一处同类措辞 |
 | **动态点这一批（2026-09-23，09-24 定型）** | `api-contract.md` 新增 §6.0（冻结表/临时表）与 §6.1（两族点、派生而非登记、可声明性）· `plugin-lifecycle-design.md` §3（登记表不写注册表）· `sdk/types.ts` 的 `permissions` 注释 · `sdk/schema/manifest.schema.json` 的 `permissions[].name`（pattern 放宽 + 说明）|
 | `sdk/types.ts` / `sdk/host-api.d.ts` | ⏳ **未做（属代码面）**：`publish[].ask`、`request` / `on` / `off` 的类型。⚠️ 现在加类型＝给插件承诺一个还没实现的字段与方法 ⇒ 与事件面本体一起做 |
-| **本文 §3（调用面 + 带源身份）** | ⏳ **部分未做**：**① `endpoints` 改名 ✅、② 身份主键 `(origin, id)` + 本地来源具名 ✅（2026-09-22）、③ 动态点 ✅（2026-09-23）**；剩下的见 §4.3（④ 作者签名 → ⑤ `plugins.call` 本体 → ⑥ reanchor → ⑦ 构建层签名）|
+| **本文 §3（调用面 + 带源身份）** | **① `endpoints` 改名 ✅、② 身份主键 `(origin, id)` + 本地来源具名 ✅（2026-09-22）、③ 动态点 ✅（2026-09-23）、④ 作者签名 ✅（2026-09-25）、⑤ `plugins.call` 本体 ✅（2026-09-25）**；剩下 **⑥ reanchor** 与 **⑦ 构建层签名**（`spc keygen` / `spc build --key`）|
 
 ### 4.2 待定
 
@@ -615,7 +637,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 | **2b** | ~~**运行时层的身份**~~ **✅ 已做（2026-09-22）**：`AuditEntry` 加 `ref?`（**只增不改**，`pluginId` 保留）；`sandbox.ts` 用就地包装 `auditOwn` 让十几处审计一次到位；`hostApi.ts` 同理（`PluginHostContext.ref`）；`loader` 把 `ref` 同时传给 `buildHostApi` 与 `createSandbox`；判别用例：同 id 两来源的 `fs.write` 审计两条，`pluginId` 相同、`ref` 分得开 | ② 的必然尾巴（字段是**加**不是改，符合"审计格式只增不改"） |
 | 3 | ~~"引用 → 权限点名"规范化函数 + `plugins.call.<引用>.<path>` / `events.subscribe.<引用>.<event>` 两个动态点~~ **✅ 已做（2026-09-23，09-24 定型）**：`core/permissions/points.ts`（校验 + 单射，非法即 `PERMISSION_POINT_INVALID`）；两族点放在**临时表**里 —— 从当前活着的插件**派生**（`core/permissions/source.ts`），**不写冻结的注册表**（判定查"冻结表 ∪ 临时表"）；两族都是 `explicit` 档（插件间默认隔离）；`permissions[].name` 的 schema 放宽出动态分支；用例 `core/__tests__/dynamic-points.test.ts` | 授权面；与 §3.4/§3.7 一起钉死 |
 | 4 | ~~**作者签名（全包）**~~ **✅ 已做（2026-09-25）**：`plugin.meta.json` 加 `authorPub`（metaSchema 1→2）+ `plugin.author.sig` 验签（**用期望公钥**）+ 记录 `authorFingerprint` + 依赖声明 `author` **必填** + 依赖解析比公钥 + 作者名册 `authors.json` + **本地包 TOFU（打印"归入哪个源 + 首见指纹"，冲突给两条出路）** + `--accept-key-change` + **本地目标的 `origin` 省略规则**（§3.5 四格表的第 2 行）；顺带修了 `verify.ts` 两处现状（`metaSchema` 硬编 1、`walk()` 只跳两个信封文件 ⇒ `plugin.author.sig` 会被判 `PACKAGE_EXTRA_FILE`）。⚠️ **有源安装流的接线**（市场验签 → 安装记录）仍属 P4，今天只有 `verifyPackage` 这一层 | 让"依赖身份"真正可判；验签复用 `core/sources/keys.ts` |
-| 5 | **调用本体**：`plugins.call`（句柄锚定解析 + 投递链 + 有界重试 + 审计 `callId` + 深度上限）；清单面加 `dependencies.plugins[].as` / `.call`（schema + 类型 + 装载期物化） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提。⚠️ 函数签名与清单字段由 §3.7 定死（**句柄不是引用**） |
+| 5 | ~~**调用本体**：`plugins.call`（句柄锚定解析 + 投递链 + 有界重试 + 审计 `callId` + 深度上限）；清单面加 `dependencies.plugins[].as` / `.call`（schema + 类型 + 装载期物化）~~ **✅ 已做（2026-09-25）**：`core/plugin/call-retry.ts`（有界重试策略，单独成文件以便判别性测试）· 投递链在 `core/plugin/manager.ts` 的 `dispatchCall`（门槛④ `callable` + 目标可用性 + 深度上限 + 调用方/被调方两条审计共用一个 `callId`）· 宿主方法 `plugins.call` 在 `core/hostApi.ts`（门槛①② 在 `permissionFor`，即权限判定之前）· 沙箱侧 `callEndpoint` + 引导层 `__spcInvokeEndpoint`（`core/sandbox.ts`）· **被调方导出 `endpoints` 映射、装载期核对"声明 ⟺ 实现"**（见 §3.7）· 清单面 `as` / `call` / `callable` + 句柄唯一性的语义闸（`sdk/validate.ts`）· 顶层 API `sdk/host-api.d.ts` 的 `plugins` 组 · 8 个新错误码 + 双语词条 · 用例 `core/__tests__/plugins-call.test.ts`（17 条）。⚠️ **顺带修的现状**：`install --grant` 原先只认 `permissions[]`，不认依赖 `call` 派生出的点 ⇒ 那条合法路径会被 `NOT_DECLARED` 挡掉（现由 `manager.declaredPoints` 统一口径） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提 |
 | 6 | **reanchor 动作**（CLI；面板入口属 P3） | 前面都就位后才谈得上"搬家" |
 | 7 | **构建层**（P2 尾）：`spc keygen` + `spc build --key` —— **产出 `plugin.meta.json`（含 `authorPub`）与 `plugin.author.sig`，只出作者签名**（市场签名由市场代码追加） | 与构建层那一批合流；在此之前仓库内 fixtures 用**测试密钥**签名（明确标注不是真身份），市场侧的追加签名流程属 P4 |
 

@@ -52,6 +52,7 @@ import './exec/install'; // 副作用：注册内置模板 + 其权限点
 import { decodeBridgeArg, matchExecTemplate, resolveExecRequest } from './exec/request';
 import { permissionPointOf } from './exec/templates';
 import { runTemplate } from './exec/run';
+import { callPointOf } from './permissions/points';
 
 /** 单文件读写上限（F4 放大攻击防护） */
 const MAX_FILE_BYTES = 64 * 1024 * 1024; // 64MB：写入上限
@@ -128,6 +129,83 @@ export interface PluginHostContext {
   declaredTopics?: Iterable<string>;
   /** 定时器回填桥（由 core/sandbox.ts 在创建后写入） */
   bridge?: SandboxBridge;
+  /**
+   * **依赖句柄 → 锚定解析结果**（装载期算好；见 `core/plugin/loader.ts`）。
+   * 没有它 = 这个插件没有调用面（`plugins.call` 一律拒）。
+   */
+  callHandles?: ReadonlyMap<string, CallHandle>;
+  /**
+   * **跨插件投递**（由 manager 提供）：句柄已经解析成实际引用了，剩下的"找对端、查门槛④、
+   * 有界重试、记账"都在 manager 那一层 —— 它才知道哪些插件在跑、谁在忙、怎么重试。
+   */
+  dispatchCall?: (req: CallDispatchRequest) => Promise<CallDispatchResult>;
+}
+
+/** 一条依赖声明锚定解析后的样子（句柄 → 实际引用 + 它允许我调的端点） */
+export interface CallHandle {
+  /** 实际引用 `<origin>/<id>` */
+  ref: string;
+  /** 该依赖条目 `call` 里声明的端点 path（**包内被签名的请求**） */
+  paths: ReadonlySet<string>;
+  /** 对端版本（响应信封带出去；P2 不做 API 版本目录，只给这一个事实） */
+  version?: string;
+}
+
+export interface CallDispatchRequest {
+  caller: { pluginId: string; ref?: string };
+  calleeRef: string;
+  path: string;
+  paramsJson: string;
+  bytes?: Uint8Array;
+  /**
+   * 调用方这次宿主调用**还剩多少预算**（`bridge.remainingMs()`）。
+   * 投递链用它给对端的执行封顶：对端自己有 `callTimeoutMs`，但调用方可能只留了 200ms ——
+   * 取两者的较小值，调用方的阶段预算才是硬顶。
+   */
+  budgetMs?: number;
+}
+
+export interface CallDispatchResult {
+  /**
+   * 给调用方的**响应信封**（`{ok, callId, callee, path, result}`），以**对象**形式交回来。
+   *
+   * 为什么不是拼好的 JSON 字符串：桥对宿主返回值**总会再 `JSON.stringify` 一次**
+   * （`finishCall` 那条路），交字符串的话插件会拿到一个"被引号包起来的 JSON"
+   * ——`exec.run` 能返回文本是因为它返回的是**对象**，由桥序列化成文本。
+   * 插件侧看到的仍然是 JSON 文本（`plugins` 组不做自动解码），与设计 §3.7 一致。
+   */
+  envelope: Record<string, unknown>;
+  callId: string;
+  attempts: number;
+  waitedMs: number;
+}
+
+/**
+ * 门槛 ①②：把 `plugins.call` 的前两个参数解析成"实际引用 + 权限点"。
+ *
+ * 为什么两步都在这儿（而不是留到 fn 里）：权限判定需要**具体的点名**，而点名里的引用只能由
+ * 句柄解析出来 —— 判定之前必须知道"要判哪个点"。解析失败时抛的码就是给插件看的原因
+ * （`PLUGIN_CALL_HANDLE_UNKNOWN` / `PLUGIN_CALL_PATH_NOT_DECLARED`），比笼统的 `PERMISSION_DENIED`
+ * 有用得多：调用方一眼能看出"我清单里没声明"，而不是去怀疑管理员的授权。
+ */
+export function resolveCallTargetOn(
+  handles: ReadonlyMap<string, CallHandle> | undefined,
+  pluginId: string,
+  args: readonly string[],
+): { ref: string; path: string; point: string } {
+  const handle = args[0];
+  const path = args[1];
+  if (typeof handle !== 'string' || handle === '' || typeof path !== 'string' || path === '') {
+    throw new SpcError('INVALID_ARGS', { reason: 'expected-handle-and-path' });
+  }
+  const dep = handles?.get(handle);
+  if (!dep) {
+    throw new SpcError('PLUGIN_CALL_HANDLE_UNKNOWN', { pluginId, handle });
+  }
+  if (!dep.paths.has(path)) {
+    throw new SpcError('PLUGIN_CALL_PATH_NOT_DECLARED', { pluginId, handle, path });
+  }
+  return { ref: dep.ref, path, point: callPointOf(dep.ref, path) };
 }
 
 /**
@@ -855,9 +933,25 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
   // 本文件的审计都带"这个插件是谁"：`pluginId` 是裸 id（历史字段），`ref` 是**完整引用**（身份 = (origin, id)）。
   // 就地包装一次，免得每个调用点各写两遍（漏一个就出现"分不清是谁"的条目）。
   const auditOwn = (entry: Omit<AuditEntry, 'pluginId' | 'ref'>): void =>
-    auditRaw({ ...entry, pluginId: ctx.pluginId, ref: ctx.ref });
+    auditRaw({
+      ...entry,
+      pluginId: ctx.pluginId,
+      ref: ctx.ref,
+      // 本插件正被别的插件调用时（`plugins.call` 的落地阶段），这一段里产生的**每一条**审计
+      // 都要带同一个 `callId` —— 否则"B 在处理器里读了三个文件"这三条无法归到那次跨插件调用上。
+      // 环境值由沙箱提供（`bridge.currentCallId`），与沙箱自己写的那批条目同源。
+      ...(entry.callId === undefined
+        ? (() => {
+            const callId = ctx.bridge?.currentCallId?.();
+            return callId === undefined ? {} : { callId };
+          })()
+        : {}),
+    });
   const kv = createKvStore(ctx.dataDir);
   const topics = new Set<string>(ctx.declaredTopics ?? []);
+  /** 门槛 ①②：本插件的依赖句柄表在装载期算好（`ctx.callHandles`），这里只做查表 + 报错 */
+  const resolveCallTarget = (args: readonly string[]) =>
+    resolveCallTargetOn(ctx.callHandles, ctx.ref ?? ctx.pluginId, args);
   // kv 是合并写的，落盘点在沙箱的阶段边界：把 flushNow 挂到桥上（没有桥=独立探测，走 immediate 兜底）
   if (ctx.bridge) ctx.bridge.flush = () => kv.flushNow();
 
@@ -2286,6 +2380,51 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
           throw new SpcError(req.code, req.params ?? {});
         }
         return runTemplate(req.def, req.params, { capMs: ctx.bridge?.remainingMs?.() });
+      },
+    },
+
+    // ---- plugins：插件间的**定向调用**（docs/events-and-hooks-design.md §3.7）----
+    //
+    // 参数是**依赖句柄**（`dependencies.plugins[].as ?? id`），不是完整引用：本地源的名字是"装机的人"
+    // 起的标签，作者签名时不可能知道它 —— 代码里写源就等于"换一次桶，所有调用方全部重建"。
+    // 句柄由宿主在**装载期锚定解析**成实际引用（`(origin?, author.pub, id)` → ref），再生成带源的点名。
+    //
+    // 四条门槛（顺序即信息量：先答"你自己声明了吗"，再答"管理员批了吗"，最后才谈对端）：
+    //   ① 句柄必须来自本插件清单里的一条依赖声明  ② `path` 必须在该条依赖的 `call` 列表里
+    //   ↑ 这两条在 `permissionFor`（权限判定之前）—— 它们查的是**调用方自己包里被签名的请求**
+    //   ③ 管理员在动态点 `plugins.call.<实际引用>.<path>` 上授予（判定链第 3 步，`explicit` 档）
+    //   ④ 被调方端点声明了 `callable: ['plugins']`（在投递链里查，见 manager）
+    'plugins.call': {
+      async: true,
+      // 第 4 个参数是字节槽：不声明的话 `__marshal` 会把 ArrayBuffer JSON 化成 `"{}"`
+      binaryArgs: true,
+      permissionFor: (args) => resolveCallTarget(args).point,
+      async fn(handleArg, pathArg, paramsArg, bytesArg) {
+        const handle = asText(handleArg);
+        const path = asText(pathArg);
+        const paramsJson = asText(paramsArg);
+        if (bytesArg !== undefined && !(bytesArg instanceof Uint8Array)) {
+          throw new SpcError('INVALID_ARGS', { reason: 'expected-bytes', got: typeof bytesArg });
+        }
+        // 门槛 ①② 已经在权限解析时查过，这里再解一次拿 ref（解析是纯查表，不重复判定）
+        const target = resolveCallTarget([handle, path]);
+        if (!ctx.dispatchCall) {
+          throw new SpcError('INTERNAL', { method: 'plugins.call', reason: 'dispatch-not-wired' });
+        }
+        const res = await ctx.dispatchCall({
+          caller: { pluginId: ctx.pluginId, ref: ctx.ref },
+          calleeRef: target.ref,
+          path,
+          paramsJson,
+          bytes: bytesArg,
+          // 对端执行 + 重试等待都算在**调用方这次宿主调用**的剩余预算里（见 CallDispatchRequest.budgetMs）
+          budgetMs: ctx.bridge?.remainingMs?.(),
+        });
+        // 让审计（沙箱包装层写的那条）带上 callId / attempts / waitedMs：
+        // 这三个数只有投递链知道，而"每次宿主调用一条审计"这条不变量在包装层
+        ctx.bridge?.tagAudit?.({ callId: res.callId, attempts: res.attempts, waitedMs: res.waitedMs });
+        // 交**信封对象**：桥会把它序列化成 JSON 文本交给插件（`plugins` 组不做自动解码，照 exec.run 的约定）
+        return res.envelope;
       },
     },
   };

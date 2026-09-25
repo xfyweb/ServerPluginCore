@@ -8,17 +8,21 @@
 //   · 安装记录（plugins.json）= 持久状态（enabled / grants / state / lastError / restartAttempts）
 //   · `loaded` 内存表 = 活着的沙箱句柄
 //   两者不重复：state 一律写记录，句柄只在内存。
+import { randomBytes } from 'node:crypto';
 import type { Manifest, PluginType } from '../../sdk/types';
 import { audit, digest, digestParams } from '../audit';
 import { DEFAULT_LOCAL_SOURCE, loadConfig, pluginDataDir, type PluginLimits, type SpcConfig } from '../config';
 import { SpcError, toErrorShape } from '../errors';
+import type { CallDispatchRequest, CallDispatchResult } from '../hostApi';
 import { isValidGrantPoint } from '../permissions/check';
+import { callPointOf } from '../permissions/points';
 import { resolveGrant } from '../permissions/registry';
 import { pointSource } from '../permissions/source';
 import { findAuthor, loadAuthors, rememberAuthor } from '../sources/authors';
 import { fingerprintOf } from '../sources/keys';
 import { loadLocalEnvelope } from '../sources/verify';
 import { capabilities } from './capabilities';
+import { withBusyRetry } from './call-retry';
 import { resolveDependency, type DependencyDecl } from './deps';
 import {
   loadPlugin,
@@ -42,8 +46,12 @@ import {
   type PluginState,
 } from './records';
 
-/** 对外视图（CLI / HTTP / 面板共用同一份；不含沙箱句柄） */
-export interface PluginView {
+/**
+ * 对端忙时的**有界重试**策略在 `core/plugin/call-retry.ts`（单独一个文件是为了能被判别性地测出来：
+ * 真实环境里"对端正忙"只能由对端自己的定时器/监视回调制造，写成集成用例就是时序赌博）。
+ */
+
+/** 对外视图（CLI / HTTP / 面板共用同一份；不含沙箱句柄） */export interface PluginView {
   /** **完整引用** `<origin>/<id>` —— 管理命令与跨插件引用都用它（`(origin, id)` 才是身份，见设计 §3.2） */
   ref: string;
   id: string;
@@ -306,6 +314,7 @@ export class PluginManager {
         limits: this.limits(),
         dependencyStatus: this.dependencyStatus,
         resolveDep: this.resolveDep,
+        dispatchCall: this.dispatchCall,
         logger: (level, message) => console[level](`[${ref}] ${message}`),
       });
       this.loaded.set(ref, run);
@@ -608,10 +617,33 @@ export class PluginManager {
    *    通常是打错字）。**撤回不要求**：撤回是收窄，收窄不该被"它现在没声明"挡住
    *    —— 插件升级后把声明删了，管理员仍然要能把那条陈旧授权清掉。
    */
+  /**
+   * 这个插件**声明过的点** —— "授予的点必须是它申请过的"（`NOT_DECLARED`）读的就是这里。
+   *
+   * = 清单 `permissions[]` ∪ **依赖条目 `call` 派生出的跨插件点**（⑤ 起）。
+   * 为什么后者也算声明：调用面的请求写在 `dependencies.plugins[].call` 里（包内被签名的字节，
+   * 且**故意不带源**），宿主把它锚定解析成实际引用后才生成 `plugins.call.<引用>.<path>`。
+   * 只读 `permissions[]` 的话，"安装时顺手把这条跨插件授权一起授予"这条合法路径会被
+   * `NOT_DECLARED` 挡掉 —— 那正是本函数存在的意义（装载器里的声明集合同源，见 `loader.ts`）。
+   */
+  private declaredPoints(record: PluginRecord): string[] {
+    const manifest = readRecordManifest(record);
+    const points = (manifest.permissions ?? []).map((p) => p.name);
+    for (const dep of manifest.dependencies?.plugins ?? []) {
+      if (!dep.call || dep.call.length === 0) continue;
+      try {
+        const depRef = this.resolveDep(dep, { origin: record.origin, ref: pluginRef(record) });
+        for (const path of dep.call) points.push(callPointOf(depRef, path));
+      } catch {
+        // 解析不出来（依赖没装 / 身份不符 / 本地范围内歧义）⇒ 那条依赖本来就不成立，装载会报它。
+        // 这里静默跳过：授权校验不该被一个与授权无关的原因挡住。
+      }
+    }
+    return points;
+  }
+
   private assertPointsOperable(record: PluginRecord, points: string[], requireDeclared: boolean): void {
-    const declared = requireDeclared
-      ? readRecordManifest(record).permissions.map((p) => p.name)
-      : [];
+    const declared = requireDeclared ? this.declaredPoints(record) : [];
     for (const point of points) {
       if (!isValidGrantPoint(point)) {
         throw new SpcError('GRANT_WILDCARD', { permission: point });
@@ -696,8 +728,151 @@ export class PluginManager {
     });
   }
 
-  // ---- 启动 / 停机 ----
+  // ---- 跨插件调用（`plugins.call` 的宿主侧：投递链）----
+  //
+  // 分工：hostApi 那一半只做"句柄 → 实际引用 → 点名"（门槛 ①②），这里做"找对端、查门槛④、
+  // 有界重试、记账"——因为只有 manager 知道谁在跑、谁在忙。
+  //
+  // 四个决定（都是设计 §3.7 定的，别再改）：
+  //   · **不排队**：对端忙 ⇒ 有界重试（见下），重试完还忙就失败。顺序等待会让调用方的阶段预算
+  //     被对端吃掉，而且"谁先谁后"变得不可解释；
+  //   · **崩溃/卸载不重试**：反复去叫一个坏掉的插件没有意义；
+  //   · **超时不返回部分结果**：fail-closed；
+  //   · **深度上限**：串行契约已经让回环快速失败（A→B→A 时 A 正忙 ⇒ PLUGIN_BUSY），
+  //     但一条**不成环的深链**照样能吃掉宿主栈，所以另有一道计数器。
+  //
+  /** 当前嵌套到第几层（同一时刻只有一条调用链在跑：宿主是单线程，且每层都在 await 下一层） */
+  private callDepth = 0;
 
+  private dispatchCall = async (req: CallDispatchRequest): Promise<CallDispatchResult> => {
+    const limits = this.limits();
+    if (this.callDepth >= limits.maxCallDepth) {
+      throw new SpcError('PLUGIN_CALL_DEPTH_EXCEEDED', {
+        pluginId: req.caller.ref ?? req.caller.pluginId,
+        callee: req.calleeRef,
+        depth: String(this.callDepth),
+        maxDepth: String(limits.maxCallDepth),
+      });
+    }
+    this.callDepth += 1;
+    try {
+      return await this.deliverCall(req, limits);
+    } finally {
+      this.callDepth -= 1;
+    }
+  };
+
+  /** 一次投递（深度已计过；见 `dispatchCall` 的四个决定） */
+  private deliverCall = async (req: CallDispatchRequest, limits: PluginLimits): Promise<CallDispatchResult> => {
+    const callee = this.loaded.get(req.calleeRef);
+    const calleeRecord = callee ? findRecord(loadRecords(), req.calleeRef) : undefined;
+    if (!callee || !callee.sandbox || !calleeRecord) {
+      // 卸载 / 禁用 / 崩溃 / 还没起来 —— 都不重试（重试一个不在的对端只会拖长调用方的时间）
+      throw new SpcError('PLUGIN_CALL_TARGET_UNAVAILABLE', {
+        pluginId: req.caller.ref ?? req.caller.pluginId,
+        callee: req.calleeRef,
+        path: req.path,
+        state: calleeRecord?.state ?? 'unloaded',
+      });
+    }
+    // 门槛④：端点必须声明 `callable: ['plugins']`（缺省只有 'panel' ⇒ 默认不给插件调）
+    const endpoint = capabilities.endpointOf(req.calleeRef, req.path);
+    if (!endpoint || !endpoint.callable.includes('plugins')) {
+      throw new SpcError('PLUGIN_CALL_NOT_CALLABLE', {
+        pluginId: req.caller.ref ?? req.caller.pluginId,
+        callee: req.calleeRef,
+        path: req.path,
+      });
+    }
+
+    const callId = randomBytes(8).toString('hex');
+    const started = Date.now();
+    // 调用方那次宿主调用**自己**的预算（`remainingMs`；没有阶段在跑时是 Infinity）。
+    // 对端不能用"我自己的 callTimeoutMs"去跑：调用方可能只留了 200ms —— 那会把调用方的阶段拖爆。
+    const budgetMs = req.budgetMs ?? Number.POSITIVE_INFINITY;
+    const deadline = started + budgetMs;
+    const sandbox = callee.sandbox;
+    // 响应信封里的版本用**字符串**（`1.2.0`）：插件要的是"对端是哪一版"这个事实，
+    // 而 manifest 里的 `{code, name}` 里 `code` 是给核心比较用的整数（P2 不做 API 版本目录）
+    const version = callee.manifest.version.name;
+    let attempts = 0;
+    let waitedMs = 0;
+    try {
+      // 忙时有界重试（策略整个在 core/plugin/call-retry.ts 里：3 次尝试含首次、等 50+100ms、≤350ms、不排队）
+      const outcome = await withBusyRetry(
+        async () => {
+          const timeoutMs = Math.max(1, Math.min(limits.callTimeoutMs, deadline - Date.now()));
+          return sandbox.callEndpoint(req.path, req.paramsJson, req.bytes, timeoutMs, callId);
+        },
+        { deadline },
+      );
+      attempts = outcome.attempts;
+      waitedMs = outcome.waitedMs;
+      const text = outcome.value;
+      // 被调方返回的是 JSON 文本（引导层已确认是字符串）。**在这里解析**而不是把文本套进信封：
+      // 调用方拿到的是嵌套好的结果，不必二次 parse；解析失败 = 被调方违约，fail-closed。
+      let result: unknown;
+      try {
+        result = JSON.parse(text);
+      } catch (err) {
+        throw new SpcError('PLUGIN_CALL_BAD_RESULT', {
+          pluginId: calleeRecord.id,
+          callee: req.calleeRef,
+          path: req.path,
+          callId,
+          reason: 'result-not-json',
+          message: err instanceof Error ? err.message.slice(0, 200) : 'parse failed',
+        });
+      }
+      const durationMs = Date.now() - started;
+      // 调用方这一侧的账：**一次跨插件交互一条**，callId 让对端内部那几条能串回来
+      audit({
+        ts: Date.now(),
+        pluginId: calleeRecord.id,
+        ref: req.caller.ref,
+        method: 'plugins.call',
+        target: callId,
+        paramsDigest: digest(JSON.stringify([req.calleeRef, req.path])),
+        result: 'ok',
+        callId,
+        attempts,
+        waitedMs,
+        resultBytes: Buffer.byteLength(text),
+        durationMs,
+      });
+      return {
+        envelope: {
+          ok: true,
+          callId,
+          callee: { origin: calleeRecord.origin, id: calleeRecord.id, version },
+          path: req.path,
+          result: result ?? null,
+        },
+        callId,
+        attempts,
+        waitedMs,
+      };
+    } catch (err) {
+      const shape = toErrorShape(err);
+      audit({
+        ts: Date.now(),
+        pluginId: calleeRecord.id,
+        ref: req.caller.ref,
+        method: 'plugins.call',
+        target: callId,
+        paramsDigest: digest(JSON.stringify([req.calleeRef, req.path])),
+        result: 'error',
+        error: { code: shape?.code ?? 'INTERNAL', paramsDigest: digestParams(shape?.params) },
+        callId,
+        attempts,
+        waitedMs,
+        durationMs: Date.now() - started,
+      });
+      throw err;
+    }
+  };
+
+  // ---- 启动 / 停机 ----
   /**
    * 启动时自动装载 enabled 的插件（§2）。
    * **按依赖拓扑序装载**（依赖先起）；环上的插件直接判 failed，其余逐个 try/catch——

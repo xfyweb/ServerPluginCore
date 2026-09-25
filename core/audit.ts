@@ -70,6 +70,22 @@ export interface AuditEntry {
    * "插件自己算了 3 秒"与"宿主 I/O 等了 3 秒"——而这两件事的处置完全不同。
    */
   suspendedMs?: number;
+  /**
+   * **跨插件调用的串联 id**（`plugins.call`，2026-09-25）。
+   *
+   * 一次 A→B 的调用会在审计里留下多条：A 那条宿主调用、B 那条"被调"条目、以及 B 内部因此产生的
+   * 每一次宿主调用（fs/kv/…）。它们分属**两个插件**，光看 `ref` 串不起来 —— `callId` 就是那根线
+   * （与事件面的 `eventId` 同构）。**只增不改**：不带 `callId` 的条目语义不变。
+   */
+  callId?: string;
+  /**
+   * 本次投递尝试了几次（`PLUGIN_BUSY` 有界重试；只有 `plugins.call` 会带）。
+   * 1 = 一次就通。为什么要记：调用方看到的"成功"背后可能等了 300ms，"有没有被对方的忙拖慢"
+   * 只有这个字段答得上来。
+   */
+  attempts?: number;
+  /** 重试累计等待的墙钟（毫秒，只有 `plugins.call` 会带） */
+  waitedMs?: number;
   durationMs: number;
 }
 

@@ -111,9 +111,11 @@ CLI 输出与 daemon 日志是**给运维/管理员看的**，`err.*` 是**给�
 | **lifecycle（宿主 API）** | `lifecycle.health` `lifecycle.version` | `lifecycle.health` `lifecycle.version` | ✅ | 心跳、契约协商；**插件自身钩子（宿主→插件）方向相反，见 §4.2 与 plugin-lifecycle-design.md** |
 | **bytes（编解码）** | `bytes.fromString` `bytes.toString` `bytes.byteLength` | `bytes.encode` `bytes.decode` | P2-B | **宿主代工的编解码**（utf8 / latin1 / base64 / hex）：沙箱侧**字节存本地**（`Uint8Array` 子类），只有编解码整块过桥。**为什么代工**：QuickJS 没有 `TextEncoder`，沙箱内纯 JS 逐字节只有 ≈2.6 MB/s；而且交给宿主即**天然与 Node 逐字节一致**（畸形输入不必复刻）。它**不是 `node:buffer` 的私有细节**——仿真模块与插件作者用**同一批**方法。详见 module-emulation-design §3.2 |
 | **audit** | （无需插件调用） | — | ✅ | 宿主对每个调用落审计（§8） |
+| **plugins（调用面）** | `plugins.call(句柄, path, paramsJson, bytes?)` | 动态点 `plugins.call.<完整引用>.<path>`（`host` / `explicit`） | ✅（2026-09-25） | **插件间的定向调用**：句柄 = 依赖条目的 `as ?? id`（**不是**完整引用），`path` 必须在该依赖的 `call` 里声明过，对端端点还要 `callable` 含 `plugins`，管理员再逐条授予 —— 四条门槛见 `events-and-hooks-design.md` §3.7。返回值是 **JSON 文本**（照 `exec.run` 的约定，插件自己 `JSON.parse`），信封 `{ok, callId, callee:{origin,id,version}, path, result}`；失败按 `err.code` 分支（含**被调方自己的码**原样回传） |
 
 - **作用域**：上表除 `exec.template.*`（`scope: host`，必须管理员逐点授予）外，其余全部 `scope: self`——碰的都是插件自己的数据/自己的调度，安装即生效（见 intent-capture §8.1 的三档模型，`grant` 档位落地位于 P2）；
-- **返回值约定**：除 `exec.run` 外的组由沙箱侧做 JSON 解码，插件拿到真值（对象/数组/布尔），不需要自己 `JSON.parse`；
+- **返回值约定**：除 `exec.run` 与 `plugins.call` 外的组由沙箱侧做 JSON 解码，插件拿到真值（对象/数组/布尔），不需要自己 `JSON.parse`；
+  （`plugins.call` 与 `exec.run` 一样返回**原始 JSON 文本**：它带字节槽，且信封要与调用方自己的解析习惯对齐。）
 - **命名约定**：权限点 = 方法名（同样的字符串让插件作者一眼看懂要哪几个点），差别只出现在"同一方法因目标不同而敏感度不同"的场合（`exec.run` 的动态模板点）。
 
 **核心不向插件暴露网络原语**：不仿真 `node:net`/`http`/`dns`/`tls`、不提供裸 socket、**也不设 `net.*` API**。db 连接代理、SSH、Docker 客户端、pty、媒体处理同样**由驱动插件经扩展注册点提供**（见 §10）。插件出网只有两条路：**`exec` 模板**（核心）与**驱动插件注册的端点**（插件），两条都是显式权限点（intent-capture §6.3）。
@@ -388,7 +390,15 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 ## 8. 审计
 
-每条调用落：`{ts, pluginId, ref?, method, target?, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, resultBytes?, suspendedMs?, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。`target` 是动态权限点的解析结果（如 `exec.template.nginx.reload`），`resultBytes` 是结果序列化字节数（exec 的命令输出量），两者都非敏感，便于排障与统计。
+每条调用落：`{ts, pluginId, ref?, method, target?, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, resultBytes?, suspendedMs?, callId?, attempts?, waitedMs?, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。`target` 是动态权限点的解析结果（如 `exec.template.nginx.reload`），`resultBytes` 是结果序列化字节数（exec 的命令输出量），两者都非敏感，便于排障与统计。
+
+**跨插件调用的三个补充字段**（2026-09-25，只增不改）：
+
+| 字段 | 谁写 | 回答什么 |
+|---|---|---|
+| `callId` | 一次 `plugins.call` 的**所有相关条目共用**：调用方那条宿主调用、被调方那条"被调"条目、以及被调方**内部**因这次调用产生的每一条（fs/kv/…） | "这一次跨插件交互里，对端都干了什么" —— 条目分属**两个插件**，光看 `ref` 串不起来（与事件面的 `eventId` 同构）。环境值由沙箱提供（`SandboxBridge.currentCallId`），hostApi 与沙箱两条写入路径同源 |
+| `attempts` | 投递链（`core/plugin/call-retry.ts`） | 试了几次（1 = 一次就通）；>1 说明对端当时正忙（定时器/监视回调在飞） |
+| `waitedMs` | 同上 | 重试累计等待（有界：3 次尝试含首次 ⇒ 最多等 50+100=150ms；硬顶 350ms） |
 
 > **v4 加 `ref`（只增不改）**：身份是 `(origin, id)` —— 同 id 不同来源是**两个插件**，只记裸 `pluginId` 时两条审计读起来分不清是谁。`ref` = **完整引用** `<origin>/<id>`；`pluginId` 保留原样（历史条目与既有展示仍按它读）。
 >

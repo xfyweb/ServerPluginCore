@@ -147,6 +147,22 @@ export interface PluginLimits {
   /** 定时器回调的 CPU 中断 deadline */
   timerTimeoutMs: number;
   /**
+   * **被调方**执行一次跨插件调用的 CPU 中断 deadline（`plugins.call` 落在对端 VM 里的那一阶段）。
+   *
+   * 与调用方的预算关系：这是**对端自己的**额度，实际 deadline 取
+   * `min(它, 调用方阶段剩余预算)` —— 调用方可能只给自己留了 200ms，那就不能因为"对端额度 5s"
+   * 而把调用方的阶段拖爆（见 `core/plugin/manager.ts` 的投递链）。
+   */
+  callTimeoutMs: number;
+  /**
+   * 跨插件调用的**嵌套深度上限**（A→B→C…）。
+   *
+   * 为什么要有：串行契约已经让"回环"快速失败（A→B→A 时 A 正忙 ⇒ `PLUGIN_BUSY`），
+   * 但一条**不成环的深链**照样能把宿主栈与阶段预算吃光（每层都在等下一层）。
+   * 8 层对真实用法（A 用 B 的工具函数）绰绰有余，同时把最坏情况钉死。
+   */
+  maxCallDepth: number;
+  /**
    * 单插件**同时存活**的定时器上限（`timers.every` 计数，`timers.clear` 释放）。
    *
    * 与 kv 键数（1000）/ fs.list 条数一样属于"宿主资源要计量"：没有它，插件可以在几秒内
@@ -179,6 +195,8 @@ export const DEFAULT_LIMITS: PluginLimits = {
   startTimeoutMs: 5_000,
   stopTimeoutMs: 3_000,
   timerTimeoutMs: 5_000,
+  callTimeoutMs: 5_000,
+  maxCallDepth: 8,
   maxTimers: 64,
 };
 
@@ -246,6 +264,8 @@ export function loadConfig(): SpcConfig {
   plugin.limits.startTimeoutMs = envInt('SPC_PLUGIN_START_TIMEOUT_MS', limits.startTimeoutMs);
   plugin.limits.stopTimeoutMs = envInt('SPC_PLUGIN_STOP_TIMEOUT_MS', limits.stopTimeoutMs);
   plugin.limits.timerTimeoutMs = envInt('SPC_PLUGIN_TIMER_TIMEOUT_MS', limits.timerTimeoutMs);
+  plugin.limits.callTimeoutMs = envInt('SPC_PLUGIN_CALL_TIMEOUT_MS', limits.callTimeoutMs);
+  plugin.limits.maxCallDepth = envInt('SPC_PLUGIN_MAX_CALL_DEPTH', limits.maxCallDepth);
   plugin.limits.maxTimers = envInt('SPC_PLUGIN_MAX_TIMERS', limits.maxTimers);
   plugin.failedRestart = envFailedRestart(plugin.failedRestart);
   plugin.maxRestartAttempts = envInt('SPC_PLUGIN_MAX_RESTART_ATTEMPTS', plugin.maxRestartAttempts);

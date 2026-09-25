@@ -123,9 +123,23 @@ export interface Manifest {
     reason?: string;
   }[];
   exports?: {
+    /**
+     * 对外端点。**实现方式**：入口模块导出 `endpoints` 映射 ——
+     * `export const endpoints = { '/api/x/run': (ctx, paramsJson, bytes) => jsonText }`；
+     * 宿主**装载时逐条核对**"清单声明的 path ⟺ 映射里真有这个键"，对不上即
+     * `PLUGIN_EXPORT_INVALID`（kind=endpoint-handler）——声明与实现因此是可检查的不变式，
+     * 写错路径当场报错，不会拖到第一次被调用。处理器返回 **JSON 文本**（`undefined`/`null` 视作 `null`）。
+     */
     endpoints?: {
       path: string;
       permission?: string;
+      /**
+       * **谁能调这个端点**，缺省 `["panel"]`（fail-closed：不声明就不能被插件调用）。
+       * - `'panel'`：核心 HTTP 网关（P3）；
+       * - `'plugins'`：其他插件经 `plugins.call(句柄, path, …)` 调用 —— 只有声明了它，
+       *   调用方的跨插件调用才可能成立（`docs/events-and-hooks-design.md` §3.7 门槛三）。
+       */
+      callable?: ('panel' | 'plugins')[];
     }[];
     routes?: {
       path: string;
@@ -158,6 +172,22 @@ export interface Manifest {
     }[];
     plugins?: {
       id: string;
+      /**
+       * **包内别名 = 调用句柄**（`plugins.call('backup', '/api/…')` 里的那个 `'backup'`）。
+       * 没写就用 `id`。**同一清单里句柄必须唯一**（`as ?? id` 逐条比；重名就必须给每条写 `as`）——
+       * 歧义在清单校验期挡掉，代码里因此永远无歧义。
+       *
+       * ⚠️ 为什么代码里**不写完整引用**：本地源的名字是"装机的人"起的标签，作者签名时不可能知道它；
+       * 写进代码就等于"换一次桶，所有调用方全部重建"。宿主在装载时把句柄**锚定解析**成实际引用、
+       * 生成带源的点名（§3.7）。
+       */
+      as?: string;
+      /**
+       * **调用面的请求**：我要调它的哪些端点（`path` 列表）。
+       * 它替代了 `permissions[]` 里那条带源的动态点名 —— **声明不带源（写在被签名的包里）、授权带源**
+       * （管理员批准的是"这个具体的插件"，点名 `plugins.call.<实际引用>.<path>`）。
+       */
+      call?: string[];
       /**
        * **来源**：写法按**目标**分（docs/events-and-hooks-design.md §3.5 的四格表）——
        * - 目标在**市场**：**必填**（市场域名是发布时就知道的稳定标识）；

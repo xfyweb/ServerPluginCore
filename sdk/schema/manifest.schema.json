@@ -347,7 +347,7 @@
       "additionalProperties": false,
       "properties": {
         "endpoints": {
-          "description": "对外端点（原 webApis，改名理由见 docs/events-and-hooks-design.md §3.1）：调用者有两类——面板的 HTTP 网关与其他插件。今天只有前者有实现；'谁能调'（callable）与'path 带自己完整引用命名空间'随插件间调用面与 (origin, id) 身份一起落地",
+          "description": "对外端点（原 webApis，改名理由见 docs/events-and-hooks-design.md §3.1）：调用者有两类——面板的 HTTP 网关与其他插件。实现方式：入口模块导出 endpoints 映射（`export const endpoints = { '<path>': (ctx, paramsJson, bytes) => jsonText }`），宿主装载时逐条核对「声明 ⟺ 实现」，对不上即 PLUGIN_EXPORT_INVALID。⚠️ 'path 带自己完整引用命名空间'仍未落地（见 §4.3）",
           "type": "array",
           "items": {
             "type": "object",
@@ -362,6 +362,18 @@
               },
               "permission": {
                 "type": "string"
+              },
+              "callable": {
+                "description": "谁能调这个端点，缺省 [\"panel\"]（fail-closed：不声明就不能被插件调用）。'plugins' = 允许其他插件经 plugins.call(句柄, path, …) 调用它（docs/events-and-hooks-design.md §3.7 门槛三）",
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "panel",
+                    "plugins"
+                  ]
+                }
               }
             }
           }
@@ -494,6 +506,21 @@
               "id": {
                 "type": "string",
                 "pattern": "^@[a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$"
+              },
+              "as": {
+                "description": "包内别名 = 调用句柄（plugins.call('<as>', '/api/…')）。没写就用 id。同一清单里句柄（as ?? id）必须唯一 —— 歧义在清单校验期挡掉，代码里因此永远无歧义",
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+              },
+              "call": {
+                "description": "调用面的请求：我要调它的哪些端点（path 列表）。它替代 permissions[] 里那条带源的动态点名 —— 声明不带源（在被签名的包里）、授权带源（plugins.call.<实际引用>.<path>）",
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^/api/"
+                }
               },
               "origin": {
                 "description": "依赖的**来源**，写法按目标分（docs/events-and-hooks-design.md §3.5 的四格表）：目标在市场 ⇒ 必填域名；目标是本地源 ⇒ **省略**（在本地源范围内按 author.pub + id 唯一匹配；写明 `local:<名字>` 则精确匹配该桶）；**市场包不许依赖本地源**",

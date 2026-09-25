@@ -62,3 +62,29 @@ export async function stop(ctx: PluginContext) {
   }
   ctx.logger.info('stopped');
 }
+
+/**
+ * **端点的实现**：清单 `exports.endpoints` 里声明了哪些 path，这里就必须有同名的键
+ * （宿主装载时逐条核对，对不上 ⇒ `PLUGIN_EXPORT_INVALID`）。
+ *
+ * 处理器签名 `(ctx, paramsJson, bytes)`：
+ *   · `ctx` 与钩子拿到的是同一个冻结上下文；
+ *   · `paramsJson` 是调用方给的**原始字符串**（宿主不解释，你按自己的约定解析）；
+ *   · `bytes` 是可选字节槽（`Uint8Array`；调用方没传就是 `undefined`）。
+ * 返回值必须是 **JSON 文本**（`undefined`/`null` 视作 `null`）——桥只能过字符串。
+ *
+ * 谁能调：清单里该端点的 `callable`。缺省只有 `['panel']`（面板网关，P3）；
+ * 要让**其他插件**能调，必须显式写 `"callable": ["panel", "plugins"]`，而且调用方还要
+ * 在它自己的依赖条目里声明 `call` 这条 path、管理员再逐条批准（见 docs/events-and-hooks-design.md §3.7）。
+ */
+export const endpoints = {
+  '/api/hello/status': (ctx: PluginContext, paramsJson: string) => {
+    const params = paramsJson === '' ? {} : (JSON.parse(paramsJson) as Record<string, unknown>);
+    return JSON.stringify({
+      plugin: 'hello',
+      greeting: String(ctx.config.greeting ?? 'hello'),
+      starts: kv.get<number>('starts') ?? 0,
+      echo: params,
+    });
+  },
+};
