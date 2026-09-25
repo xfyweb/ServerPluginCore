@@ -9,17 +9,29 @@
 //   · `loaded` 内存表 = 活着的沙箱句柄
 //   两者不重复：state 一律写记录，句柄只在内存。
 import { randomBytes } from 'node:crypto';
+import { existsSync, renameSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { Manifest, PluginType } from '../../sdk/types';
 import { audit, digest, digestParams } from '../audit';
-import { DEFAULT_LOCAL_SOURCE, loadConfig, pluginDataDir, type PluginLimits, type SpcConfig } from '../config';
+import {
+  DEFAULT_LOCAL_SOURCE,
+  ensureDir,
+  isValidSource,
+  loadConfig,
+  pluginConfigPath,
+  pluginDataDir,
+  type PluginLimits,
+  type SpcConfig,
+} from '../config';
 import { SpcError, toErrorShape } from '../errors';
 import type { CallDispatchRequest, CallDispatchResult } from '../hostApi';
 import { isValidGrantPoint } from '../permissions/check';
-import { callPointOf } from '../permissions/points';
+import { CALL_POINT_PREFIX, SUBSCRIBE_POINT_PREFIX, callPointOf } from '../permissions/points';
 import { resolveGrant } from '../permissions/registry';
 import { pointSource } from '../permissions/source';
-import { findAuthor, loadAuthors, rememberAuthor } from '../sources/authors';
+import { findAuthor, loadAuthors, moveAuthor, rememberAuthor } from '../sources/authors';
 import { fingerprintOf } from '../sources/keys';
+import { keyring, type SourceKind } from '../sources/keyring';
 import { loadLocalEnvelope } from '../sources/verify';
 import { capabilities } from './capabilities';
 import { withBusyRetry } from './call-retry';
@@ -90,6 +102,84 @@ export interface InstallOptions {
    * 管理员确认后带这个开关重来：覆盖名册 + 落一条 `plugin.key-change` 审计。
    */
   acceptKeyChange?: boolean;
+}
+
+/** 预检计划里的一条"错"（**非空即不能执行**；CLI 直接渲染这些码） */
+export interface ReanchorPlanError {
+  code: string;
+  params: Record<string, string>;
+}
+
+/** 预检计划里的一条"提示"（能执行，但管理员该知道） */
+export interface ReanchorPlanWarning {
+  code: string;
+  params: Record<string, string>;
+}
+
+export interface ReanchorPlanMove {
+  /** 旧完整引用 */
+  from: string;
+  /** 旧来源（名册搬家要用它拼 `(origin, id)`；不从 `from` 里反解字符串） */
+  fromOrigin: string;
+  /** 新完整引用 */
+  to: string;
+  id: string;
+  version: { code: number; name: string };
+  /** 原本是否启用（决定搬完要不要重启） */
+  enabled: boolean;
+  state: PluginState;
+  authorFingerprint: string | null;
+  dataDir: { from: string; to: string; exists: boolean };
+  config: { from: string; to: string; exists: boolean };
+}
+
+/**
+ * 换源的**预检计划**（`spc plugin reanchor --plan` / `POST /api/plugins/reanchor/plan`）。
+ * 结构是给机器看的，本地化文案由 CLI / 面板渲染 —— 与错误码同一条规矩。
+ */
+export interface ReanchorPlan {
+  target: {
+    origin: string;
+    kind: SourceKind | null;
+    alias: string;
+    enabled: boolean;
+    suspended: string | null;
+    anchorFingerprint: string | null;
+  };
+  moves: ReanchorPlanMove[];
+  /** 会被**改写**的第三方授权（`ref` = 那条记录；`pairs` = 逐条点名映射） */
+  grantRewrites: { ref: string; pairs: { from: string; to: string }[] }[];
+  /** 运行中、且授权被改写 ⇒ 需要 reload 才生效 */
+  needsReload: string[];
+  /** 已装载、但**不在名单里**的依赖方 ⇒ 会拦执行 */
+  blockedBy: { ref: string; dependents: string[] }[];
+  /** 已启用但没在跑（停用/失败态）的依赖方 ⇒ **只提示**：它下一次启动才会撞依赖解析 */
+  idleDependents: string[];
+  warnings: ReanchorPlanWarning[];
+  errors: ReanchorPlanError[];
+}
+
+export interface ReanchorResult {
+  plan: ReanchorPlan;
+  moved: { from: string; to: string }[];
+  views: PluginView[];
+  /** 原本 enabled、但搬完没能起来的（单插件失败不影响其它插件） */
+  failedToStart: { ref: string; code: string }[];
+}
+
+/**
+ * 点名里的**来源前缀替换**（§3.6 原话："字符串替换、不解析点名"）。
+ * 点名的形状是 `<前缀>.<完整引用>.<尾段>`（`core/permissions/points.ts`），前缀带尾随 `.`
+ * ⇒ 两个引用互为前缀（`@x/y` 与 `@x/yz`）也不会误伤。多个一起搬时用**同一张映射表**同时替换。
+ */
+function rewritePoint(point: string, map: Map<string, string>): string | undefined {
+  for (const [from, to] of map) {
+    for (const prefix of [CALL_POINT_PREFIX, SUBSCRIBE_POINT_PREFIX]) {
+      const head = `${prefix}.${from}.`;
+      if (point.startsWith(head)) return `${prefix}.${to}.${point.slice(head.length)}`;
+    }
+  }
+  return undefined;
 }
 
 export class PluginManager {
@@ -707,6 +797,327 @@ export class PluginManager {
     this.auditAuthz(ref, 'plugin.revoke', points.filter((p) => record.grants.includes(p)));
     if (this.loaded.has(ref)) this.needsReload.add(ref);
     return this.status(ref);
+  }
+
+  // ---- 换源（reanchor）：docs/events-and-hooks-design.md §3.6 ----
+
+  /**
+   * **预检**：这一搬会发生什么（只读，不改任何东西）。
+   *
+   * 为什么预检与执行**共用同一个函数**：CLI 要在执行前把计划给管理员看，而两次之间世界会变
+   * （TOCTOU）⇒ 执行时必须在锁内**重算一遍**，两次用的是同一份判据。写成两份迟早分叉。
+   *
+   * 判据（设计 §3.6 + 2026-09-25 用户拍板）：
+   * - **目标桶必须是 keyring 里的真条目**（⑥a 起"桶"就是源条目）⇒ 否则 `SOURCE_NOT_CONFIGURED`；
+   * - 目标桶绑了作者锚 ⇒ 被搬插件的 `authorFingerprint` 必须**等于**锚，否则那条声明不成立 ⇒
+   *   `PLUGIN_ANCHOR_MISMATCH`（插件没有作者身份而桶有锚，同样是这条）；
+   * - 目标位置（记录 / 数据目录 / 配置文件）已占用 ⇒ `PLUGIN_REANCHOR_CONFLICT`（**不做合并**：
+   *   静默合并两份数据是事故，宁可让管理员先处理）；
+   * - 不在名单里的**已装载**依赖方 ⇒ `PLUGIN_IN_USE`（要么把它们也放进名单，要么先停掉）；
+   * - 已启用但**没在跑**的依赖方 ⇒ **只提示**（它下一次启动才会撞 `PLUGIN_DEPENDENCY_SOURCE_CHANGED`）；
+   * - 目标桶停用 / 暂停 ⇒ **只提示**（用户拍板：管理员自己知道在干什么）。
+   */
+  planReanchor(refs: string[], targetOrigin: string): ReanchorPlan {
+    const errors: ReanchorPlanError[] = [];
+    const warnings: ReanchorPlanWarning[] = [];
+    const file = loadRecords();
+
+    // ① 目标桶
+    const bucket = isValidSource(targetOrigin) ? keyring().get(targetOrigin) : undefined;
+    if (!isValidSource(targetOrigin)) {
+      errors.push({ code: 'SOURCE_ORIGIN_INVALID', params: { origin: targetOrigin } });
+    } else if (!bucket) {
+      errors.push({ code: 'SOURCE_NOT_CONFIGURED', params: { origin: targetOrigin, reason: 'not-found' } });
+    }
+    const target: ReanchorPlan['target'] = {
+      origin: targetOrigin,
+      kind: bucket?.kind ?? null,
+      alias: bucket?.alias ?? '',
+      enabled: bucket?.enabled ?? false,
+      suspended: bucket?.suspended?.reason ?? null,
+      anchorFingerprint: bucket?.authorAnchor?.fingerprint ?? null,
+    };
+
+    // 目标来源形状非法 ⇒ 后面的目录计算根本做不了（`sanitizeOrigin` 会抛）⇒ 到此为止，
+    // 计划里已经有那条错，交给调用方渲染
+    if (!isValidSource(targetOrigin)) {
+      return {
+        target,
+        moves: [],
+        grantRewrites: [],
+        needsReload: [],
+        blockedBy: [],
+        idleDependents: [],
+        warnings,
+        errors,
+      };
+    }
+
+    // ② 输入 → 记录（去重；歧义/找不到都记进计划，不抛）
+    const records: PluginRecord[] = [];
+    for (const input of refs) {
+      let rec: PluginRecord | undefined;
+      try {
+        rec = resolveRecord(file, input);
+      } catch (e) {
+        const shape = toErrorShape(e);
+        errors.push({ code: shape?.code ?? 'PLUGIN_NOT_FOUND', params: shape?.params ?? { pluginId: input } });
+        continue;
+      }
+      if (!rec) {
+        errors.push({ code: 'PLUGIN_NOT_FOUND', params: { pluginId: input } });
+        continue;
+      }
+      if (!records.some((r) => pluginRef(r) === pluginRef(rec))) records.push(rec);
+    }
+
+    // ③ 逐条查目标位置与锚
+    const moves: ReanchorPlanMove[] = [];
+    const taken = new Set<string>();
+    for (const rec of records) {
+      const from = pluginRef(rec);
+      const to = pluginRef({ origin: targetOrigin, id: rec.id });
+      if (from === to) {
+        errors.push({ code: 'PLUGIN_REANCHOR_CONFLICT', params: { pluginId: from, ref: to, reason: 'same-origin' } });
+        continue;
+      }
+      if (taken.has(to) || findRecord(file, to)) {
+        errors.push({ code: 'PLUGIN_REANCHOR_CONFLICT', params: { pluginId: from, ref: to, reason: 'target-occupied' } });
+        continue;
+      }
+      taken.add(to);
+      if (target.anchorFingerprint !== null && rec.authorFingerprint !== target.anchorFingerprint) {
+        errors.push({
+          code: 'PLUGIN_ANCHOR_MISMATCH',
+          params: {
+            pluginId: from,
+            origin: targetOrigin,
+            expected: target.anchorFingerprint,
+            actual: rec.authorFingerprint ?? 'none',
+          },
+        });
+        continue;
+      }
+      const dataDir = { from: pluginDataDir(rec.origin, rec.id), to: pluginDataDir(targetOrigin, rec.id) };
+      const config = { from: rec.configPath, to: pluginConfigPath(targetOrigin, rec.id) };
+      if (existsSync(dataDir.to)) {
+        errors.push({ code: 'PLUGIN_REANCHOR_CONFLICT', params: { pluginId: from, ref: dataDir.to, reason: 'data-dir-exists' } });
+        continue;
+      }
+      if (existsSync(config.to)) {
+        errors.push({ code: 'PLUGIN_REANCHOR_CONFLICT', params: { pluginId: from, ref: config.to, reason: 'config-exists' } });
+        continue;
+      }
+      moves.push({
+        from,
+        fromOrigin: rec.origin,
+        to,
+        id: rec.id,
+        version: { ...rec.version },
+        enabled: rec.enabled,
+        state: rec.state,
+        authorFingerprint: rec.authorFingerprint,
+        dataDir: { ...dataDir, exists: existsSync(dataDir.from) },
+        config: { ...config, exists: existsSync(config.from) },
+      });
+    }
+
+    // ④ 别人的授权会被改成什么（批内互指也一起改对 ⇒ 用同一张映射表同时替换）
+    const map = new Map(moves.map((m) => [m.from, m.to]));
+    const grantRewrites: ReanchorPlan['grantRewrites'] = [];
+    for (const rec of file.plugins) {
+      const pairs: { from: string; to: string }[] = [];
+      for (const g of rec.grants) {
+        const to = rewritePoint(g, map);
+        if (to !== undefined) pairs.push({ from: g, to });
+      }
+      if (pairs.length > 0) grantRewrites.push({ ref: pluginRef(rec), pairs });
+    }
+    const batch = new Set(moves.map((m) => m.from));
+    const needsReload = grantRewrites
+      .filter((a) => !batch.has(a.ref) && this.loaded.has(a.ref))
+      .map((a) => a.ref)
+      .sort();
+
+    // ⑤ 依赖方：已装载的拦、已启用没在跑的只提示
+    const blockedBy: ReanchorPlan['blockedBy'] = [];
+    const idle = new Set<string>();
+    for (const m of moves) {
+      const dependents = this.activeDependents(m.from).filter((r) => !batch.has(r));
+      if (dependents.length > 0) blockedBy.push({ ref: m.from, dependents });
+      for (const rec of file.plugins) {
+        const ref = pluginRef(rec);
+        if (batch.has(ref) || !rec.enabled || this.loaded.has(ref)) continue;
+        if (this.directDeps(rec).includes(m.from)) idle.add(ref);
+      }
+    }
+    for (const b of blockedBy) {
+      errors.push({
+        code: 'PLUGIN_IN_USE',
+        params: { pluginId: b.ref, dependents: b.dependents.join(', '), action: 'reanchor' },
+      });
+    }
+
+    // ⑥ 提示（能搬，但管理员该知道）
+    if (bucket && !bucket.enabled) warnings.push({ code: 'REANCHOR_TARGET_DISABLED', params: { origin: targetOrigin } });
+    if (bucket?.suspended) {
+      warnings.push({ code: 'REANCHOR_TARGET_SUSPENDED', params: { origin: targetOrigin, reason: bucket.suspended.reason } });
+    }
+    if (bucket?.kind === 'market') {
+      // 从"没有更新渠道"搬进一个有源的源：**一次实质的信任升级**（§3.6 要求必须提示）
+      const fromUnanchored = moves.some((m) => {
+        const rec = findRecord(file, m.from);
+        return rec?.signedBy === null || rec?.signedBy === undefined;
+      });
+      warnings.push({ code: fromUnanchored ? 'REANCHOR_BECOMES_ANCHORED' : 'REANCHOR_KEEPS_CHANNEL', params: { origin: targetOrigin } });
+    } else if (moves.some((m) => (findRecord(file, m.from)?.signedBy ?? null) !== null)) {
+      warnings.push({ code: 'REANCHOR_LOSES_CHANNEL', params: { origin: targetOrigin } });
+    }
+    if (target.anchorFingerprint !== null) {
+      warnings.push({ code: 'REANCHOR_ANCHOR_MATCHED', params: { origin: targetOrigin, fingerprint: target.anchorFingerprint } });
+    }
+    if (idle.size > 0) {
+      warnings.push({ code: 'REANCHOR_IDLE_DEPENDENTS', params: { refs: [...idle].sort().join(', ') } });
+    }
+
+    return { target, moves, grantRewrites, needsReload, blockedBy, idleDependents: [...idle].sort(), warnings, errors };
+  }
+
+  /**
+   * **执行换源**（批量、原子）。顺序是设计好的，不要调换：
+   *
+   * ① 锁内**重算计划**（TOCTOU）→ ② **停机**（依赖方优先；改 ref 前必须停干净：能力登记 / `loaded` /
+   * `needsReload` 全以 ref 为键）→ ③ **先搬磁盘再写记录**（记录是"已经搬完"的凭证，反过来就会出现
+   * "记录说搬了、目录没搬"；磁盘失败则回滚已搬目录，记录一个字都没改 ⇒ 状态自洽）→ ④ 重写记录
+   * （别人的授权点名随源变 + 自己的 `origin`/`configPath`）→ ⑤ 名册搬家 → ⑥ `needsReload` →
+   * ⑦ 重启原本 enabled 的（依赖优先，单插件失败不影响其它）→ ⑧ 审计（`pluginId` = 旧引用、`ref` = 新引用）。
+   */
+  reanchor(refs: string[], targetOrigin: string): Promise<ReanchorResult> {
+    return this.withLock(async () => {
+      const started = Date.now();
+      const plan = this.planReanchor(refs, targetOrigin);
+      if (plan.errors.length > 0) {
+        const first = plan.errors[0];
+        throw new SpcError(first.code, first.params);
+      }
+      const batch = new Set(plan.moves.map((m) => m.from));
+      const map = new Map(plan.moves.map((m) => [m.from, m.to]));
+      // 装载顺序（依赖优先）在**停机前**算好：停机要反着走，重启要正着走
+      const order = this.resolveLoadOrder(loadRecords().plugins).order.map((r) => pluginRef(r));
+
+      // ② 停机（依赖方优先）
+      for (const ref of order.filter((r) => batch.has(r)).reverse()) {
+        if (this.loaded.has(ref)) await this.stopAndUnload(ref, 'reanchor');
+      }
+
+      // ③ 搬磁盘（失败即回滚已搬的，然后把错误抛出去）
+      const moved: { from: string; to: string }[] = [];
+      const rollback: { from: string; to: string }[] = [];
+      let step = '';
+      try {
+        for (const m of plan.moves) {
+          if (m.dataDir.exists) {
+            step = `${m.dataDir.from} → ${m.dataDir.to}`;
+            // ⚠️ **目标来源的目录段通常还不存在**（新桶里一个插件都没有）⇒ 先建父目录，
+            // 否则 `rename` 直接 ENOENT（本用例抓到的实现 bug：`data/plugins/local_std-a/` 没建）
+            ensureDir(dirname(m.dataDir.to));
+            renameSync(m.dataDir.from, m.dataDir.to);
+            rollback.push({ from: m.dataDir.from, to: m.dataDir.to });
+          }
+          if (m.config.exists) {
+            step = `${m.config.from} → ${m.config.to}`;
+            ensureDir(dirname(m.config.to));
+            renameSync(m.config.from, m.config.to);
+            rollback.push({ from: m.config.from, to: m.config.to });
+          }
+          moved.push({ from: m.from, to: m.to });
+        }
+      } catch (err) {
+        for (const r of rollback.reverse()) {
+          try {
+            renameSync(r.to, r.from);
+          } catch {
+            /* 回滚失败：记录仍未改，人工介入（目录留在新位置） */
+          }
+        }
+        throw new SpcError('PLUGIN_REANCHOR_FAILED', {
+          move: step,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      // ④ 重写记录（先改别人的授权，再改自己的键 —— 顺序决定 `pluginRef(rec)` 还是旧的）
+      const file = loadRecords();
+      const affected: { ref: string; pairs: { from: string; to: string }[] }[] = [];
+      for (const rec of file.plugins) {
+        const pairs: { from: string; to: string }[] = [];
+        const next = rec.grants.map((g) => {
+          const to = rewritePoint(g, map);
+          if (to !== undefined) pairs.push({ from: g, to });
+          return to ?? g;
+        });
+        if (pairs.length > 0) {
+          rec.grants = [...new Set(next)].sort();
+          affected.push({ ref: pluginRef(rec), pairs });
+        }
+      }
+      for (const m of plan.moves) {
+        const rec = findRecord(file, m.from);
+        if (!rec) continue; // 计划刚算出来，这里不该缺
+        rec.origin = targetOrigin;
+        rec.configPath = m.config.to;
+      }
+      saveRecords(file);
+
+      // ⑤ 名册：记忆跟着插件走（写新键 + 删旧键）
+      let authorsMoved = 0;
+      for (const m of plan.moves) {
+        if (moveAuthor({ origin: m.fromOrigin, id: m.id }, { origin: targetOrigin, id: m.id })) authorsMoved++;
+      }
+
+      // ⑥ 授权被改写的**运行中**（非批内）插件要 reload 才生效
+      for (const a of affected) {
+        if (!batch.has(a.ref) && this.loaded.has(a.ref)) this.needsReload.add(a.ref);
+      }
+      for (const m of plan.moves) this.needsReload.delete(m.from);
+
+      // ⑦ 重启（依赖优先；单插件失败不影响其它 —— 与 startAll 同一条口径）
+      const failedToStart: { ref: string; code: string }[] = [];
+      for (const oldRef of order.filter((r) => batch.has(r))) {
+        const m = plan.moves.find((x) => x.from === oldRef);
+        if (!m?.enabled) continue;
+        const rec = findRecord(loadRecords(), m.to);
+        if (!rec) continue;
+        try {
+          await this.loadAndStart(rec);
+        } catch (e) {
+          failedToStart.push({ ref: m.to, code: toErrorShape(e)?.code ?? 'PLUGIN_LOAD_FAILED' });
+        }
+      }
+
+      // ⑧ 审计：一条一插件（`pluginId` = 旧引用、`ref` = 新引用 ⇒ 旧新都在同一条里）
+      for (const m of plan.moves) {
+        audit({
+          ts: Date.now(),
+          pluginId: m.from,
+          ref: m.to,
+          method: 'plugin.reanchor',
+          target: targetOrigin,
+          paramsDigest:
+            digestParams({
+              to: m.to,
+              fingerprint: m.authorFingerprint ?? 'none',
+              ownGrantPairs: String(affected.find((a) => a.ref === m.from)?.pairs.length ?? 0),
+              involvedRecords: String(affected.length),
+              authorsMoved: String(authorsMoved),
+            }) ?? digest(m.from),
+          result: 'ok',
+          durationMs: Date.now() - started,
+        });
+      }
+
+      return { plan, moved, views: plan.moves.map((m) => this.status(m.to)), failedToStart };
+    });
   }
 
   /**

@@ -61,11 +61,14 @@ function httpStatusFor(code: string): number {
   if (code === 'SOURCE_IN_USE' || code === 'SOURCE_ALREADY_EXISTS') return 409;
   if (code === 'SOURCE_KEY_FETCH_FAILED') return 502;
   if (code === 'UNAUTHENTICATED' || code === 'PERMISSION_DENIED' || code === 'NOT_GRANTED') return 403;
-  if (
-    code === 'PLUGIN_DISABLED' ||
+  if (code === 'PLUGIN_DISABLED' ||
     code === 'PLUGIN_ALREADY_RUNNING' ||
     code === 'PLUGIN_BUSY' ||
-    code === 'PLUGIN_EXPORT_INVALID'
+    code === 'PLUGIN_EXPORT_INVALID' ||
+    // 换源：冲突与被依赖都是"当前状态不允许"，不是参数错（400）也不是内部错（500）
+    code === 'PLUGIN_IN_USE' ||
+    code === 'PLUGIN_REANCHOR_CONFLICT' ||
+    code === 'PLUGIN_ANCHOR_MISMATCH'
   ) {
     return 409;
   }
@@ -205,6 +208,35 @@ const server = createServer(async (req, res) => {
         ...(typeof body.source === 'string' ? { source: body.source } : {}),
       });
       sendJson(res, 200, { plugin: view });
+      return;
+    }
+
+    // POST /api/plugins/reanchor[/plan] { refs, origin } —— 换源（批量、原子）
+    // `plan` 是**只读预检**：不改任何东西，返回"这一搬会发生什么"；执行会在锁内重算一遍（TOCTOU）。
+    // refs 走 body 而不是路径：完整引用里有 `@` 与 `/`，塞进 URL 只会自找编码麻烦。
+    if (req.method === 'POST' && (path === '/api/plugins/reanchor' || path === '/api/plugins/reanchor/plan')) {
+      const body = (await readBody(req)) as { refs?: unknown; origin?: unknown };
+      const refs = asStringArray(body.refs);
+      const origin = asString(body.origin);
+      if (refs.length === 0) {
+        sendError(res, 400, 'INVALID_ARGS', 'REFS_REQUIRED');
+        return;
+      }
+      if (!origin) {
+        sendError(res, 400, 'INVALID_ARGS', 'SOURCE_ORIGIN_REQUIRED');
+        return;
+      }
+      if (path.endsWith('/plan')) {
+        sendJson(res, 200, { plan: manager.planReanchor(refs, origin) });
+        return;
+      }
+      const result = await manager.reanchor(refs, origin);
+      sendJson(res, 200, {
+        plan: result.plan,
+        moved: result.moved,
+        plugins: result.views,
+        failedToStart: result.failedToStart,
+      });
       return;
     }
 

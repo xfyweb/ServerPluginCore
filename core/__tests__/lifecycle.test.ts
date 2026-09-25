@@ -532,10 +532,13 @@ test('依赖按 (origin, id)：声明里的 origin 决定找哪个来源的副�
   assert.equal(view.state, 'running');
 
   // 同样声明但指向另一个来源 ⇒ 那个来源没有这个插件 ⇒ 依赖未满足（哪怕同名副本存在于 dev-x）
+  // ⚠️ 2026-09-25 起这个子情形有**专门的码**：解析不到目标、但同名同作者的插件在别的来源下
+  // ⇒ `PLUGIN_DEPENDENCY_SOURCE_CHANGED`（把"它搬到哪去了"报出来）。**仍然拒绝，不回落**：
+  // 语义还是"声明里的 origin 说了算"，只是错误信息从"没装"精确到"多半是换过源"。
   const consumer2 = makePlugin('dep-src-consumer2', `export function init(){}`, {
     dependencies: { plugins: [{ id: id('dep-src-provider'), origin: 'local:dev-y', author: { pub: devX.pub } }] },
   });
-  await rejects(() => manager.install(consumer2), 'PLUGIN_DEPENDENCY_MISSING');
+  await rejects(() => manager.install(consumer2), 'PLUGIN_DEPENDENCY_SOURCE_CHANGED');
 
   await manager.disable(id('dep-src-consumer'));
 });

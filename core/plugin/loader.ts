@@ -23,7 +23,7 @@ import { loadPluginConfig } from './config';
 import { pluginRef, type PluginRecord } from './records';
 
 /** 卸载原因（§12-2：stop 是否接收 reason 尚在待定，这里先用于审计，不注入钩子签名） */
-export type StopReason = 'reload' | 'disable' | 'shutdown' | 'failed' | 'uninstall';
+export type StopReason = 'reload' | 'disable' | 'shutdown' | 'failed' | 'uninstall' | 'reanchor';
 
 export interface LoadDeps {
   limits: PluginLimits;

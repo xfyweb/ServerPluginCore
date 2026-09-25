@@ -99,6 +99,36 @@ export function findAuthor(origin: string, id: string, data = loadAuthors()): Au
   return data.authors.find((a) => a.origin === origin && a.id === id);
 }
 
+/**
+ * **名册搬家**（reanchor / promote 用）：`(旧来源, id)` 的记忆搬到 `(新来源, id)`。
+ *
+ * 三条判据（2026-09-25 用户拍板"记忆跟着插件走"）：
+ * - **旧条目删掉**：留着它，将来**别人**在旧桶里做同名插件时会被拿旧记忆去比 ⇒ 公钥不等 ⇒
+ *   报 `PLUGIN_AUTHOR_MISMATCH` **拒装**。可那本该是"首见即记"被正常接受的 —— 旧记忆把它错认成了换钥；
+ * - 新键已存在且公钥**不同** ⇒ 抛 `AUTHORS_INVALID`（说不清谁是谁，fail-closed；正常路径不该出现，
+ *   因为目标 ref 必须空闲）；
+ * - 旧键不存在 ⇒ 什么都不做（这个包没带作者身份，名册里本来就没它）。
+ *
+ * @returns 是否真的搬了一条（调用方据此落审计）
+ */
+export function moveAuthor(from: { origin: string; id: string }, to: { origin: string; id: string }): boolean {
+  const data = loadAuthors();
+  const prev = findAuthor(from.origin, from.id, data);
+  if (!prev) return false;
+  const existing = findAuthor(to.origin, to.id, data);
+  if (existing && existing.pub !== prev.pub) {
+    throw new SpcError('AUTHORS_INVALID', {
+      file: authorsFilePath(),
+      reason: 'move-conflict',
+      ref: `${to.origin}/${to.id}`,
+    });
+  }
+  const moved: AuthorEntry = { ...prev, origin: to.origin, id: to.id };
+  data.authors = data.authors.filter((a) => a !== prev).concat(existing ? [] : [moved]);
+  saveAuthors(data);
+  return true;
+}
+
 export interface RememberResult {
   entry: AuthorEntry;
   /** true = 这条是**换钥**（原来记的是另一把）—— 调用方必须已获管理员显式接受 */

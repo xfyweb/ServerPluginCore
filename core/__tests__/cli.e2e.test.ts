@@ -237,6 +237,41 @@ test('CLI 子命令用法：没给/打错/help ⇒ 打用法且**不需要核心
   assert.match(noOrigin.stderr, /缺少来源/);
 });
 
+test('CLI plugin reanchor：先预检、非交互必须 --yes、搬完旧引用消失', async () => {
+  // 桶必须先存在（⑥a 起"桶"就是 keyring 里的源条目）
+  const made = await run(['core/cli.ts', 'source', 'add', 'local:tui-a'], env());
+  assert.equal(made.code, 0, made.stderr);
+
+  const installed = await run(['core/cli.ts', 'plugin', 'install', 'plugin/hello'], env());
+  assert.equal(installed.code, 0, installed.stderr);
+  const from = 'local:default/@xfy2412/hello';
+  const to = 'local:tui-a/@xfy2412/hello';
+
+  // 非交互（spawn 的 stdio 不是 TTY）且没给 --yes ⇒ 打计划，但**拒绝执行**
+  const refused = await run(['core/cli.ts', 'plugin', 'reanchor', from, '--origin', 'local:tui-a'], env());
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stdout, /将搬迁 1 个插件/);
+  assert.match(refused.stdout, /停机、搬完再重启/, '计划要说明它会停机重启');
+  assert.match(refused.stderr, /不是交互终端/);
+
+  const done = await run(['core/cli.ts', 'plugin', 'reanchor', from, '--origin', 'local:tui-a', '--yes'], env());
+  assert.equal(done.code, 0, done.stderr);
+  assert.match(done.stdout, /已搬迁：local:default\/@xfy2412\/hello → local:tui-a\/@xfy2412\/hello/);
+  assert.match(done.stdout, /local:tui-a\/@xfy2412\/hello@0\.0\.1 \[running\]/);
+
+  const list = await run(['core/cli.ts', 'plugin', 'list'], env());
+  assert.doesNotMatch(list.stdout, /local:default\/@xfy2412\/hello/);
+  assert.match(list.stdout, /local:tui-a\/@xfy2412\/hello/);
+  const status = await run(['core/cli.ts', 'plugin', 'status', to], env());
+  assert.equal(status.code, 0, status.stderr);
+
+  // 搬不了的计划：逐条说清"为什么搬不了、该怎么办"，且**不进入确认**
+  const missing = await run(['core/cli.ts', 'plugin', 'reanchor', to, '--origin', 'local:nope'], env());
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.stdout, /不能执行/);
+  assert.match(missing.stdout, /源未配置|来源非法/);
+});
+
 test('CLI about：输出品牌与构建指纹（本地信息，无需 daemon）', async () => {
   const r = await run(['core/cli.ts', 'about'], env());
   assert.equal(r.code, 0, r.stderr);

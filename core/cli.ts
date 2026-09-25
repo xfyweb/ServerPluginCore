@@ -5,6 +5,7 @@
 // 所有写操作经 daemon（记录由 daemon 拥有），CLI 不直接碰 plugins.json。
 import { request } from 'node:http';
 import { resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { t, tError, type RenderableError } from './i18n';
 import { verifyDaemon } from './handshake';
 import { BRAND } from './version';
@@ -130,8 +131,122 @@ function printPlugin(p: PluginView): void {
  * 原先 `spc source`（无子命令）会撞上"缺少来源"（用法兜底写在了参数检查之后，永远到不了），
  * 而 `spc source help` 直接报错，用户看不到任何帮助。
  */
-const PLUGIN_VERBS = ['list', 'install', 'status', 'grant', 'revoke', 'enable', 'disable', 'reload', 'uninstall'];
+const PLUGIN_VERBS = ['list', 'install', 'status', 'grant', 'revoke', 'enable', 'disable', 'reload', 'uninstall', 'reanchor'];
 const SOURCE_VERBS = ['list', 'add', 'remove', 'enable', 'disable', 'alias', 'anchor'];
+
+/**
+ * 换源预检计划（CLI 侧的**结构副本**）。
+ * ⚠️ 改这里要同步 `core/plugin/manager.ts` 的 `ReanchorPlan`。
+ */
+interface ReanchorPlanView {
+  target: {
+    origin: string;
+    kind: string | null;
+    alias: string;
+    enabled: boolean;
+    suspended: string | null;
+    anchorFingerprint: string | null;
+  };
+  moves: {
+    from: string;
+    fromOrigin: string;
+    to: string;
+    id: string;
+    version: { code: number; name: string };
+    enabled: boolean;
+    state: string;
+    authorFingerprint: string | null;
+    dataDir: { from: string; to: string; exists: boolean };
+    config: { from: string; to: string; exists: boolean };
+  }[];
+  grantRewrites: { ref: string; pairs: { from: string; to: string }[] }[];
+  needsReload: string[];
+  blockedBy: { ref: string; dependents: string[] }[];
+  idleDependents: string[];
+  warnings: { code: string; params: Record<string, string> }[];
+  errors: { code: string; params: Record<string, string> }[];
+}
+
+/** 计划里默认列出多少条点名映射（超出的只报数量；要看全部用 `--json`） */
+const REANCHOR_GRANT_SAMPLE = 5;
+
+function printReanchorPlan(plan: ReanchorPlanView): void {
+  const tgt = plan.target;
+  console.log(
+    t('cli.reanchor.target', {
+      origin: tgt.origin,
+      kind: t(
+        tgt.kind === 'local'
+          ? 'cli.reanchor.kind.local'
+          : tgt.kind === 'market'
+            ? 'cli.reanchor.kind.market'
+            : 'cli.reanchor.kind.none',
+      ),
+      alias: tgt.alias,
+      enabled: tgt.enabled ? t('cli.yes') : t('cli.no'),
+    }),
+  );
+  if (tgt.anchorFingerprint) console.log(t('cli.reanchor.anchor', { fingerprint: tgt.anchorFingerprint }));
+
+  if (plan.moves.length > 0) {
+    console.log(t('cli.reanchor.moves', { count: plan.moves.length }));
+    for (const m of plan.moves) {
+      console.log(
+        t(m.enabled ? 'cli.reanchor.move.restart' : 'cli.reanchor.move', {
+          from: m.from,
+          to: m.to,
+          version: m.version.name,
+          state: m.state,
+        }),
+      );
+      if (m.dataDir.exists) {
+        console.log(t('cli.reanchor.move.dataDir', { from: m.dataDir.from, to: m.dataDir.to }));
+      }
+      if (m.config.exists) {
+        console.log(t('cli.reanchor.move.config', { from: m.config.from, to: m.config.to }));
+      }
+    }
+  }
+
+  // 授权重写：默认列前 N 条 + 省略号 + 总数（2026-09-25 用户定的呈现）
+  const pairs = plan.grantRewrites.flatMap((g) => g.pairs);
+  if (pairs.length > 0) {
+    console.log(t('cli.reanchor.grants', { records: plan.grantRewrites.length, pairs: pairs.length }));
+    for (const pair of pairs.slice(0, REANCHOR_GRANT_SAMPLE)) {
+      console.log(t('cli.reanchor.grants.sample', { from: pair.from, to: pair.to }));
+    }
+    if (pairs.length > REANCHOR_GRANT_SAMPLE) {
+      console.log(t('cli.reanchor.grants.more', { count: pairs.length - REANCHOR_GRANT_SAMPLE }));
+    }
+  }
+
+  if (plan.needsReload.length > 0) {
+    console.log(t('cli.reanchor.needsReload', { refs: plan.needsReload.join(', ') }));
+  }
+  if (plan.idleDependents.length > 0) {
+    console.log(t('cli.reanchor.idle', { refs: plan.idleDependents.join(', ') }));
+  }
+  for (const w of plan.warnings) console.log(t(`cli.reanchor.warn.${w.code}`, w.params));
+  if (plan.errors.length > 0) {
+    // 每条错误直接渲染成"发生了什么 + 该怎么办"（`tError` 与其它命令同一条路）
+    console.log(t('cli.reanchor.errors', { count: plan.errors.length }));
+    for (const e of plan.errors) console.log(t('cli.reanchor.error', { text: tError(e) }));
+  }
+}
+
+/**
+ * 交互确认。**故意不带超时**：等人回答就是它存在的意义（这不是"等一个可能永不到来的异步事件"）；
+ * 非交互场景在调用点就被 `process.stdin.isTTY` 挡掉了，所以不会挂住脚本。
+ */
+async function askYesNo(prompt: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((res) => rl.question(prompt, res));
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
 
 async function pluginCommand(sub: string | undefined, args: string[]): Promise<void> {
   // 打用法**不碰 daemon**：帮助信息是本地事实，核心没跑时也该看得到
@@ -206,6 +321,61 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.grant.fail');
     console.log(t(sub === 'grant' ? 'cli.plugin.granted' : 'cli.plugin.revoked', { id }));
     printPlugin(r.body.plugin);
+    return;
+  }
+
+  if (sub === 'reanchor') {
+    const { positional, flags } = parseArgs(args);
+    // `--source` 当别名收下：install 用的就是它，同一个概念不该因为命令不同而换名字
+    const origin = flags.get('--origin') ?? flags.get('--source');
+    if (positional.length === 0 || origin === undefined) throw new Error(t('cli.reanchor.usage'));
+
+    const planRes = (await httpJson('POST', '/api/plugins/reanchor/plan', token, {
+      refs: positional,
+      origin,
+    })) as { status: number; body: { plan: ReanchorPlanView } };
+    if (planRes.status !== 200) throw httpFailure(planRes.status, planRes.body, 'cli.plugin.op.fail');
+    const plan = planRes.body.plan;
+
+    if (flags.has('--json')) {
+      // 脚本用：计划原样吐出（含 errors），由调用方判断
+      console.log(JSON.stringify(plan, null, 2));
+      if (plan.errors.length > 0) process.exitCode = 1;
+      return;
+    }
+
+    printReanchorPlan(plan);
+    if (plan.errors.length > 0) {
+      // 计划里已经逐条说了"为什么搬不了、该怎么办"，这里不再另说一句
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!flags.has('--yes')) {
+      // 交互不是禁忌，但**必须能关掉**：非 TTY 直接拒，免得脚本/CI 在没人看的时候把插件搬走
+      // （口径见 `docs/intent-capture.md` §10；`--yes` 就是那个开关）
+      if (!process.stdin.isTTY) throw new Error(t('cli.reanchor.notty'));
+      const yes = await askYesNo(t('cli.reanchor.confirm'));
+      if (!yes) {
+        console.log(t('cli.reanchor.cancelled'));
+        return;
+      }
+    }
+
+    const r = (await httpJson('POST', '/api/plugins/reanchor', token, { refs: positional, origin })) as {
+      status: number;
+      body: {
+        moved: { from: string; to: string }[];
+        plugins: PluginView[];
+        failedToStart: { ref: string; code: string }[];
+      };
+    };
+    if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.op.fail');
+    for (const m of r.body.moved) console.log(t('cli.reanchor.done', { from: m.from, to: m.to }));
+    for (const f of r.body.failedToStart) {
+      console.log(t('cli.reanchor.failedToStart', { ref: f.ref, code: f.code }));
+    }
+    for (const p of r.body.plugins) printPlugin(p);
     return;
   }
 

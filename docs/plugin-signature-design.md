@@ -392,6 +392,10 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 | `AUTHORS_INVALID` | 作者名册（`<STATE_DIR>/authors.json`）损坏 / 结构非法 / 指纹与公钥不自洽 | **拒**（绝不"当空名册继续跑"：那会把已知作者降级成首见 ⇒ 换一把钥就能静默装进来） |
 | `PLUGIN_DEPENDENCY_IDENTITY` | 依赖目标的作者身份不符（`params.reason` = `author-mismatch` / `author-unknown`） | 依赖不满足 ⇒ 拒载 |
 | `PLUGIN_DEPENDENCY_SOURCE` | 依赖声明本身不成立（如**市场包依赖本地源**） | 拒绝该声明 |
+| `PLUGIN_DEPENDENCY_SOURCE_CHANGED` | 依赖解析不到目标，但**同名同作者**的插件在**别的来源**下（`params.foundAt` = 它在哪） | 拒载 + **把"它搬到哪去了"报出来**（多半是换过源：reanchor / promote；要么把依赖方一起搬，要么把它搬回来） |
+| `PLUGIN_ANCHOR_MISMATCH` | 换源时目标桶绑的**作者锚**与被搬插件的 `authorFingerprint` 不符（插件没有作者身份而桶有锚，`params.actual = none`，同样这条） | 拒（那条桶声明不成立）；换一个桶，或先 `spc source anchor` 改锚 |
+| `PLUGIN_REANCHOR_CONFLICT` | 换源的目标位置被占用（`params.reason` = `target-occupied` / `same-origin` / `data-dir-exists` / `config-exists`） | 拒（**不做合并**：静默合并两份数据/配置是事故） |
+| `PLUGIN_REANCHOR_FAILED` | 搬文件失败（`params.move` = 哪一步、`reason` = 底层错误） | 记录**未改动**（已搬目录尽力回滚）⇒ 检查目标位置后重试 |
 | `SOURCE_IN_USE` | 删源时该来源**仍有插件归属**（`params.count` = 已装个数） | 拒；先搬走（reanchor）或卸载 |
 | `SOURCE_BUILTIN` | 删的是**内置来源**（官方市场 / 杂桶 `local:default`） | 拒；它由核心在启动时播种，删了下次启动还会回来 |
 | `SOURCE_KEY_FETCH_FAILED` | `spc source add <市场域名>` 不带 `--pub` 时远程拉取状态文档失败（`params.reason` = 状态文档的码） | **不添加该来源**（公钥未知的源等于谁都验不了的源） |

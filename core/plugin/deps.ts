@@ -53,6 +53,37 @@ function identityMatches(rec: PluginRecord, pub: string, ctx: DepResolutionConte
 }
 
 /**
+ * 「解析不到目标，但**同名同作者**的插件在别的来源下」——**换源（reanchor / promote）之后最典型的症状**。
+ *
+ * 为什么不能就此报"没装"：管理员真正需要知道的是"它搬到哪去了"（用户 2026-09-25 要求）。
+ * 精确来源那份记录没了，但同一把作者公钥签的同名插件还在另一个来源里 ⇒ 把它报出来。
+ * 匹配到的候选**不止一个**时不给提示（说不清是哪个），退回普通的 `PLUGIN_DEPENDENCY_MISSING`。
+ */
+function otherOriginHint(dep: DependencyDecl, ctx: DepResolutionContext, missingRef: string): string | undefined {
+  const hits = ctx.records.filter(
+    (r) => r.id === dep.id && `${r.origin}/${r.id}` !== missingRef && identityMatches(r, dep.author.pub, ctx),
+  );
+  return hits.length === 1 ? `${hits[0].origin}/${hits[0].id}` : undefined;
+}
+
+/** 找不到就抛：先看是不是"换过源"，再退回普通的"没装" */
+function throwMissing(dep: DependencyDecl, self: { ref: string }, ctx: DepResolutionContext, missingRef: string, reason?: string): never {
+  const moved = otherOriginHint(dep, ctx, missingRef);
+  if (moved !== undefined) {
+    throw new SpcError('PLUGIN_DEPENDENCY_SOURCE_CHANGED', {
+      pluginId: self.ref,
+      dependency: missingRef,
+      foundAt: moved,
+    });
+  }
+  throw new SpcError('PLUGIN_DEPENDENCY_MISSING', {
+    pluginId: self.ref,
+    dependency: missingRef,
+    ...(reason === undefined ? {} : { reason }),
+  });
+}
+
+/**
  * 把一条依赖声明解析成**实际引用**（`<origin>/<id>`）。
  *
  * 只做"引用 + 身份"这一段；"装没装 / 跑没跑"仍由调用方的 `dependencyStatus()` 回答
@@ -60,7 +91,8 @@ function identityMatches(rec: PluginRecord, pub: string, ctx: DepResolutionConte
  *
  * @param self 声明方自己（`origin` 用于四格规则；`ref` 只为了让错误文案能说清"是谁的依赖"）
  * @throws SpcError `PLUGIN_DEPENDENCY_IDENTITY`（身份对不上）/ `PLUGIN_DEPENDENCY_SOURCE`（声明本身不成立）/
- *                  `PLUGIN_REF_AMBIGUOUS`（本地范围内多个匹配）/ `PLUGIN_DEPENDENCY_MISSING`（找不到目标）
+ *                  `PLUGIN_REF_AMBIGUOUS`（本地范围内多个匹配）/ `PLUGIN_DEPENDENCY_MISSING`（找不到目标）/
+ *                  `PLUGIN_DEPENDENCY_SOURCE_CHANGED`（找不到，但**同名同作者**的在别的来源下 ⇒ 多半是换过源）
  */
 export function resolveDependency(
   dep: DependencyDecl,
@@ -82,9 +114,7 @@ export function resolveDependency(
     }
     const ref = `${dep.origin}/${dep.id}`;
     const rec = ctx.records.find((r) => `${r.origin}/${r.id}` === ref);
-    if (!rec) {
-      throw new SpcError('PLUGIN_DEPENDENCY_MISSING', { pluginId: self.ref, dependency: ref });
-    }
+    if (!rec) throwMissing(dep, self, ctx, ref);
     assertIdentity(rec, dep, ref, ctx);
     return ref;
   }
@@ -93,9 +123,7 @@ export function resolveDependency(
   if (!selfLocal) {
     const ref = `${selfOrigin}/${dep.id}`;
     const rec = ctx.records.find((r) => `${r.origin}/${r.id}` === ref);
-    if (!rec) {
-      throw new SpcError('PLUGIN_DEPENDENCY_MISSING', { pluginId: self.ref, dependency: ref });
-    }
+    if (!rec) throwMissing(dep, self, ctx, ref);
     assertIdentity(rec, dep, ref, ctx);
     return ref;
   }
@@ -125,11 +153,7 @@ export function resolveDependency(
       actual: sameId[0].authorFingerprint ?? 'none',
     });
   }
-  throw new SpcError('PLUGIN_DEPENDENCY_MISSING', {
-    pluginId: self.ref,
-    dependency: dep.id,
-    reason: 'not-in-local-sources',
-  });
+  throwMissing(dep, self, ctx, dep.id, 'not-in-local-sources');
 }
 
 /** 精确目标的身份比对：名册里没有它的公钥 ⇒ `author-unknown`（对端没有可验证的作者身份） */
