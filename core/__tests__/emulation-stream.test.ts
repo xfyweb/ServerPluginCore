@@ -53,6 +53,15 @@ function record(trace: Trace, owner: any, events: string[]): void {
   }
 }
 
+/**
+ * 给"剧本自己会等"的用例留的余量。
+ *
+ * ⚠️ **它只是固定墙钟窗口，不是会合点**：剧本里若有**异步**回调（定时器、异步 `_write` 的续体…），
+ * 满负载下这一侧可能被采样到"只跑了一半"的那一刻 —— 2026-09-25 实测：16 路 CPU 抢占下，
+ * "异步 `_write` 的回调顺序与 drain"那条 10 遍红 1 遍（`actual` 比 `expected` 多一段）。
+ * ⇒ **凡是剧本里有异步的，都让剧本返回一个 Promise**（`diff` 的 `guard` 支持），
+ *    用"事件（`finish`/`end`/回调）"当确定性会合点，别靠这个窗口。
+ */
 function settle(ms = 30): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -191,18 +200,27 @@ describe('仿真 node:stream —— 与宿主 Node 差分（终态 + 事件集�
   });
 
   diff('Writable：异步 _write 的回调顺序与 drain', (s, trace) => {
-    const w = new s.Writable({
-      highWaterMark: 1,
-      write(chunk: any, _e: any, cb: any) {
-        setTimeout(() => {
-          trace.data.push('w:' + Buffer.from(chunk).toString());
-          cb();
-        }, 1);
-      },
+    // ⚠️ **必须返回一个"跑完整条链"的 Promise**（2026-09-25 修）：这条剧本的 `write` 是**异步**的
+    // （内部 `setTimeout(…, 1)` 才 push + `cb()`），而 `diff` 末尾那个 `settle()` 只是**固定 30ms 窗口** ——
+    // 满负载下宿主侧会在"只写完两段"的那一刻被采样（实测：16 路 CPU 抢占下 10 遍红 1 遍，
+    // `actual=['w:a','w:b','w:c']` vs `expected=['w:a','w:b']`；整跑时也命中过一次）。
+    // ⇒ 用 `'finish'` 当**确定性会合点**：两侧各自把三段写完、`end` 落定之后才比对。
+    // 若某侧根本不发 `'finish'`，`guard` 会在 2.5 秒后报"剧本没跑完"（比"数据不一致"好定位得多）。
+    return new Promise<void>((resolve) => {
+      const w = new s.Writable({
+        highWaterMark: 1,
+        write(chunk: any, _e: any, cb: any) {
+          setTimeout(() => {
+            trace.data.push('w:' + Buffer.from(chunk).toString());
+            cb();
+          }, 1);
+        },
+      });
+      record(trace, w, ['finish', 'drain', 'close']);
+      trace.returns.push(w.write('a'), w.write('b'));
+      w.on('finish', () => resolve());
+      w.end('c');
     });
-    record(trace, w, ['finish', 'drain', 'close']);
-    trace.returns.push(w.write('a'), w.write('b'));
-    w.end('c');
   });
 
   diff('Writable：写完再写 → ERR_STREAM_WRITE_AFTER_END（响亮报错）', (s, trace) => {
