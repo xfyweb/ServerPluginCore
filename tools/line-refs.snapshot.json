@@ -799,17 +799,6 @@
     }
    ]
   },
-  "core\\sandbox.ts|@nodelib/fs.walk/out/readers/async.js": {
-   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/readers/async.js",
-   "refs": [
-    {
-     "ref": "@nodelib/fs.walk/out/readers/async.js:26",
-     "num": 26,
-     "sha": "6d20e72a9aa6",
-     "gone": false
-    }
-   ]
-  },
   "core\\__tests__\\emulation-crypto.test.ts|dotenv/lib/main.js": {
    "file": "_deps-survey/node_modules/dotenv/lib/main.js",
    "refs": [
@@ -1158,6 +1147,17 @@
      "ref": "vendor/quickjs/libregexp.c:63",
      "num": 63,
      "sha": "24f3f5fd046e",
+     "gone": false
+    }
+   ]
+  },
+  "core\\guest\\bootstrap.js|@nodelib/fs.walk/out/readers/async.js": {
+   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/readers/async.js",
+   "refs": [
+    {
+     "ref": "@nodelib/fs.walk/out/readers/async.js:26",
+     "num": 26,
+     "sha": "6d20e72a9aa6",
      "gone": false
     }
    ]

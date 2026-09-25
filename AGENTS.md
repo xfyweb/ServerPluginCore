@@ -103,9 +103,13 @@ ServerPluginCore 是一个**宿主最小、能力全插件化**的服务端核�
 **验证三件套**：
 
 ```bash
-pnpm test          # 当前基线：985 用例 / 981 通过 / 0 失败 / 4 平台跳过
+pnpm test          # 当前基线：1066 用例 / 1062 通过 / 0 失败 / 4 平台跳过
 npx tsc --noEmit   # 0 错
 ```
+
+> ⚠️ `pnpm test` 起不来且报 **"This drive is locked by BitLocker Drive Encryption"** 时，是**环境**问题不是代码问题：
+> 本机 pnpm 的 store 在 **`F:`**（`F:\.pnpm-store\v10\v11`，BitLocker 卷）—— 解锁 F: 即恢复；
+> 应急可等价地直跑 `node node_modules/tsx/dist/cli.mjs --test sdk/__tests__/*.test.ts core/__tests__/*.test.ts`。
 
 仿真层的改动还要跑**差分电池**（与宿主 Node 对跑，**0 分歧才算对齐**）：
 
@@ -152,6 +156,8 @@ node tools/batteries/events-battery.mjs      # events 语义：34 组剧本
 ```
 core/               核心：沙箱 / 桥 / 插件生命周期 / 权限 / 审计 / 服务与 CLI
   sandbox-modules/    被仿真的 Node 模块（那些"勿手改"的表就在这里）
+  guest/              **跑在 VM 里的 guest 代码**（引导层 / Node 全局）：由 sandbox.ts 读成字符串后求值，
+                      不进 tsc、不随插件分发；改它们必须跑真沙箱用例（见 guest/*.js 的文件头）
   __tests__/          测试（含差分用例）
 sdk/                插件作者用的类型与校验（契约面）
 plugin/             示例插件
