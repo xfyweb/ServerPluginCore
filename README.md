@@ -11,10 +11,10 @@
 
 **插件化的服务器管理核心** —— 本体最小，能力全插件化
 
-[![Stars](https://img.shields.io/github/stars/xfy2412/ServerPluginCore?label=Stars)](https://github.com/xfy2412/ServerPluginCore)
-[![Release](https://img.shields.io/github/v/release/xfy2412/ServerPluginCore?label=Release)](https://github.com/xfy2412/ServerPluginCore/releases)
+[![Stars](https://img.shields.io/github/stars/xfyweb/ServerPluginCore?label=Stars)](https://github.com/xfyweb/ServerPluginCore)
+[![Release](https://img.shields.io/github/v/release/xfyweb/ServerPluginCore?label=Release)](https://github.com/xfyweb/ServerPluginCore/releases)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen)](https://github.com/xfy2412/ServerPluginCore/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen)](https://github.com/xfyweb/ServerPluginCore/pulls)
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-339933?logo=nodedotjs&logoColor=white)
