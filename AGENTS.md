@@ -159,8 +159,10 @@ core/               核心：沙箱 / 桥 / 插件生命周期 / 权限 / 审计
   guest/              **跑在 VM 里的 guest 代码**（引导层 / Node 全局）：由 sandbox.ts 读成字符串后求值，
                       不进 tsc、不随插件分发；改它们必须跑真沙箱用例（见 guest/*.js 的文件头）
   __tests__/          测试（含差分用例）
-sdk/                插件作者用的类型与校验（契约面）
-plugin/             示例插件
+sdk/                插件作者用的类型与校验（契约面）：`@host/api` / `@spc/sdk` 是这里的 ambient 声明，
+                    插件放 `plugin/` 下就自动拿到类型（tsconfig 的 include 含 plugin）
+plugin/             **插件开发工作区**：一个插件一个目录、各自独立 git；本体忽略 `plugin/*/`（只留示例 hello）
+                    ⇒ 形态与工具见 docs/build-layer-design.md §10（`.spcdev/`、`spc keygen|build|pack|check`）
 scripts/            门禁脚本（进 CI 的那类）
 tools/              取证工具：把行为打成矩阵，供设计判断。**先读 tools/README.md**
 docs/               权威设计文档（见下）

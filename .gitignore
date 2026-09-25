@@ -16,6 +16,15 @@ tools/smoke/bundles/
 *.key
 *.p12
 
+# 插件开发工作区（2026-09-25 定；见 docs/build-layer-design.md §10）
+#   · 每个插件是**独立仓库**（作者自己 git init）⇒ 本体忽略 plugin/*/，
+#     只放行**随本体分发的两个示例**（README 与设计文档都引它们：hello 是综合示例、counter 是最小示例）
+#   · .spcdev/ 放打包配置与**作者私钥**（*.key 已被上面覆盖，整目录再忽略一道是双保险）
+.spcdev/
+/plugin/*/
+!/plugin/hello/
+!/plugin/counter/
+
 # 日志与临时
 *.log
 *.tmp

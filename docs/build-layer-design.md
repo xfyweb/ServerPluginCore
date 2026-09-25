@@ -12,9 +12,12 @@
 
 **目标**
 
-- `pnpm build:plugin <目录>` → 产物目录（`bundle.js` + 清单文件；**不产出 `plugin.meta.json`**，见 §2）；
+- `spc build [<目录>]` → 产物目录（`bundle.js` + 清单文件；**不产出 `plugin.meta.json`**，见 §2）；
+  **作者签名是强制的**（"不存在无签名包"）⇒ 同一批还要有 `spc keygen`（见 §10）；
 - 依赖闭包**静态解析 + 内建登记表校验**，违规**构建失败**（不是运行期拒绝）；
-- 产物可被现有 `spc plugin install` 装载（`plugin-lifecycle-design` 不改契约）。
+- 产物可被现有 `spc plugin install` 装载（`plugin-lifecycle-design` 不改契约）；
+- **作者工作区那套工具与目录形态**（`keygen` / `plugin new` / `check` / `permission list` / `pack` / `dev` +
+  `.spcdev/`）**同批定下并给出**，见 **§10** —— 没有真插件的验收等于没验收（用户 2026-09-25 的动因）。
 
 **非目标（本阶段不做）**
 
@@ -200,4 +203,115 @@ node tools/gate-probe.mjs        # 两道闸的可行性（§3）
    构建器解析出的 `resolved` 写进清单（§2），与作者声明比对；
 4. **依赖托管**（平台提供依赖源码、不打进产物）：**未排期**，属开源后社区讨论项。
    分析见 ADR-005 §7 v3 补记 与 `.github/ISSUE_DRAFT-hosted-dependencies.md`；
-5. **`neutral` + 自定义 resolve 条件**是否比 `node` 更可控：留待真实包踩坑后再评估，当前不引入额外复杂度。
+5. **`neutral` + 自定义 resolve 条件**是否比 `node` 更可控：留待真实包踩坑后再评估，当前不引入额外复杂度；
+6. ~~**分发容器后缀**~~ **✅ 已定（2026-09-25，用户拍板）**：**`.spc` = 确定性 zip**，见 §10.6；
+7. ~~**作者私钥形态**~~ **✅ 已定（2026-09-25）**：`.spcdev/keys/author.key` 单文件 JSON、默认无 passphrase、`chmod 600`，见 §10.4；
+8. ~~**`releasedAt` 归谁写**~~ **✅ 已定（2026-09-25）**：**构建期填 + 市场核对/拒签**（改由市场定就要"市场改写字节 + 缩小作者签名覆盖范围"，代价更大）。
+
+## 10. 作者工作区与工具面（2026-09-25 定，用户拍板）
+
+> 这一节回答的是"**作者怎么开发一个插件**"，与 §1–§9 的"怎么把源码变成产物"是同一层的两半。
+> 定它的动因：累计到 ⑥c 的能力已经够跑通一条完整链路，但**没有真插件就没有真验收**（用户原话：
+> "我前面实测了两下 CLI 就出来两个问题"）⇒ 构建层要顺手把作者要用的那套工具一起给出来。
+
+### 10.1 工作区布局
+
+```
+ServerPluginCore/                      ← 克隆本体 = 插件开发工作区（**必须克隆本体**：类型与构建器都在里面）
+├── core/ sdk/ tools/ docs/ …          ← 本体
+├── plugin/                            ← 插件都在这里，一个插件一个目录
+│   ├── hello/  · counter/             ← **随本体分发的两个示例**（前者综合、后者最小；README 与设计文档都引它们）
+│   └── my-plugin/                     ← 作者新建的插件（**自己一个 git 仓库**）
+│       ├── manifest.json              ← 作者声明：权限 + reason / exports / dependencies
+│       ├── main.ts                    ← 入口（`import { fs } from '@host/api'`）
+│       ├── package.json               ← 只为第三方依赖（构建层只**校验**闭包，不装）
+│       ├── tsconfig.json              ← 让编辑器认识 `@host/api` / `@spc/sdk`
+│       ├── README.md / .gitignore
+│       └── dist/                      ← 构建产物（`bundle.js` + 带产物事实的清单；已 gitignore）
+└── .spcdev/                           ← **开发期固定目录**（从待打包目录往上找最近的一个）
+    ├── config.json                    ← 打包配置（产物目录 / 默认来源 / 是否自动签名…）
+    └── keys/{author.key,author.pub}   ← 作者私钥（`*.key` 已被 `.gitignore` 忽略）+ 公钥
+```
+
+**为什么插件放 `plugin/` 下**：本体的 `tsconfig.json` 的 `include` 里已经有 `plugin`，而 `@host/api` /
+`@spc/sdk` 是 `sdk/*.d.ts` 里的 **ambient 模块声明** ⇒ 插件只要在 `plugin/` 下就**自动拿到类型**，
+不需要 `paths` 映射、也不需要发布类型包。这是"必须克隆本体"最实在的理由。
+
+### 10.2 `.spcdev/`：开发期固定目录
+
+- **发现规则**：`spc build|pack|check|dev` 从**待打包目录**往上逐级找最近的 `.spcdev/`
+  （`package.json` / `.git` 那种发现方式）⇒ "本体根放一份，一个作者一把钥管所有插件"成立，
+  "某个插件目录里单独放一份"也成立，**近者优先**。
+- **为什么不复用 `.spc/`**：那是**运行期状态**目录（`plugins.json` / `keyring.json` / `audit/` / `data/`）。
+  把开发期密钥塞进宿主状态兜里，等于让"清状态"和"删密钥"变成同一个动作。
+- `config.json` **可选**（全部有默认值）：`{ "outDir": "dist", "source": "local:default", "sign": true, "key": "keys/author.key" }`。
+- `.gitignore`：本体与插件模板都忽略整个 `.spcdev/`（私钥已被 `*.key` 规则覆盖，整目录忽略是双保险 ——
+  防手滑命名成 `author.key.txt`）。
+
+### 10.3 插件目录与 git
+
+- **每个插件是独立仓库**（作者自己 `git init` / 推远端）；**本体仓库忽略 `plugin/*/`**，
+  只放行随本体分发的两个示例（`plugin/hello/`、`plugin/counter/` —— ⚠️ 少放行一个，往它里面加文件就会被**静默忽略**，
+  `git status` 也看不到）。于是本体 `git status` 永远干净，作者也不必为了写插件去 fork 本体。
+- 第三方依赖由**作者自己** `npm i`（各自的 `package.json` / `node_modules`）；构建层**不跑安装**（§1 非目标），
+  只解析真实闭包并写 `resolved`（§2）——声明与实解不一致即**构建失败**。
+
+### 10.4 作者密钥（`spc keygen`）
+
+```jsonc
+// .spcdev/keys/author.key  —— chmod 600，永不进包（*.key 已在 .gitignore 里）
+{ "schema": 1, "alg": "ed25519", "seed": "<base64 32B>",
+  "pub": "<base64 裸 32 字节>", "fingerprint": "sha256:…", "createdAt": "…" }
+```
+
+- **默认无 passphrase**（它保护的是"身份连续性"，不是数据机密性）；将来要加，加一个可选字段即可（只增不改）。
+- 公钥同时写一份 `author.pub`（便于复制给别人 / 贴到 README）；指纹按 §4 的全局规则算，**打印出来让人抄下来**。
+- 只产**作者签名**（`plugin.meta.json` 的 `authorPub` + `plugin.author.sig`）；市场签名属 P4。
+
+### 10.5 工具清单
+
+| 工具 | 档 | 做什么 |
+|---|---|---|
+| `spc keygen` | **必须** | 生成作者密钥到 `.spcdev/keys/`（§10.4） |
+| `spc plugin new <名字>` | **必须** | 脚手架：按模板在 `plugin/<名字>/` 生成最小可跑插件（清单 + 入口 + tsconfig + README + .gitignore）。⏳ 发布 `create-spc-plugin` 到 npm（"没克隆本体也能起一个"）记进待办 |
+| `spc build [<目录>]` | **必须** | bundle + **两道闸**（§5）+ 产物事实写清单（§2）+ **作者签名**；同输入字节一致（§8 第 8 条） |
+| `spc check [<目录>]` | 便捷 | **只校验不打包**（清单 schema + 依赖闭包可行性 + **权限点对账**），秒级反馈，给编辑器与 CI 用 |
+| `spc permission list` | 便捷 | 列出本机**已注册的权限点**（写 `permissions[].name` 时照抄）；纯本地、不需要 daemon |
+| `spc pack [<目录>]` | 便捷 | 打 `.spc` 容器（§10.6）；本地分发与"全链路验收"要用 |
+| `spc dev [<目录>]` | 稍后 | watch 重建 + 自动 `plugin reload`（走已有管理通道）；不做 HMR，就是省掉手敲两条命令 |
+
+**`spc check` 的"权限点对账"**（用户 2026-09-25 要求，两向都报）：静态扫入口用到的 `@host/api` 成员 →
+映射到**权限点族** → 与清单 `permissions[]` 比对：
+
+- **代码用了、清单没声明** ⇒ 报（运行时会撞 `NOT_DECLARED`）；
+- **清单声明了、代码没用** ⇒ 也报（可能是升级后的残留；`host` / `explicit` 档尤其值得清理）。
+
+⚠️ **能力边界（必须写进输出与文档）**：① 路径决定的档位**静态判不出**（`fs.read.data` 还是 `fs.read.host`
+取决于运行期路径）⇒ 只报到**族**；② `plugins.call` / `events.subscribe` 两族的点名里带引用，
+静态只能报"用到了跨界调用"，精确对齐要看清单的 `dependencies.plugins[].call`；③ 它**不代替**运行期判定。
+
+**明确不做**：运行期装依赖（`npm i` 是作者的事）· `.node` loader（§7 结论 4 的硬约束，要有测试守住）·
+依赖分级勾选（ADR-005 §7 v2 已否）· HMR。
+
+### 10.6 `.spc` 容器与**两条装载路径**
+
+- **容器 = 确定性 zip，后缀 `.spc`**（`plugin-signature-design.md` §12-1 的待定项就此定下）：
+  手写 local file header + central directory（`zlib` 做 raw deflate），**不引新依赖**；时间戳固定 ⇒ **同输入字节一致**。
+  载荷就是 §2 的产物目录（清单与载荷同级），`plugin.meta.json` / 签名将来由市场追加。
+- **两条入口，同一条安装管线**（身份 / 授权 / 审计 / 记录语义完全一样，只有载荷放哪不同）：
+
+| 入口 | 载荷在哪 | 用途 |
+|---|---|---|
+| `spc plugin install <目录>` | **就地**（作者给的 `dir`，今天的行为） | 开发：改源码 → `reload` 即生效 |
+| `spc plugin install <文件.spc>` | **托管副本**：daemon 解包到 `<STATE_DIR>/packages/<来源>/<id>/`，`record.dir` 指向它 | 分发：产物不可变 ⇒ 与源目录无关；市场安装流以后走同一条路 |
+
+- 从 `.spc` 安装是**本地语义**（不验市场签名 ⇒ `unanchored`、没有更新渠道）——
+  正好就是 `reanchor` 的"先本地发放、后上市场"场景。
+
+### 10.7 全链路验收（真插件，不是夹具）
+
+`spc keygen` → `spc plugin new demo` → 写点真代码（权限 + 一个端点 + 一次跨插件调用）→ `spc check` →
+`spc build` → `spc pack` → `spc plugin install demo.spc` → 真跑起来（daemon + 审计）→ 改一行 → `spc dev`/`reload` →
+`spc source add` + `reanchor` 搬桶 → 面板/CLI 看到的能力与授权都对。
+**这条链路跑通才算构建层验收**（§8 的 9 条是单元级，这一条是端到端）。
+
