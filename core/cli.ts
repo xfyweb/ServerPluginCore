@@ -6,7 +6,8 @@
 import { request } from 'node:http';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { t, tError, type RenderableError } from './i18n';
+import { printAbout } from './about';
+import { renderThrown, t, tError, type RenderableError } from './i18n';
 import { verifyDaemon } from './handshake';
 import { BRAND } from './version';
 
@@ -596,7 +597,10 @@ async function main() {
   const args = process.argv.slice(3);
 
   if (cmd === 'about') {
-    console.log(BRAND);
+    // 本地信息，不需要 daemon。⚠️ 多打几行"这条命令是哪来的"：
+    // 同一个名字可能来自 `npm link`、将来的全局包、或直接 `node core/cli.ts` ——
+    // 三者对应的代码可能不是同一份，"工具与本体不一致"是最难查的一类错（2026-09-25 定）。
+    printAbout('admin');
     return;
   }
 
@@ -658,6 +662,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`[spc] ${e instanceof Error ? e.message : e}`);
+  // 顶层兜底：SpcError 渲染成"码 + 参数"的本地化文案（`e.message` 只有英文码，参数会丢）
+  console.error(`[spc] ${renderThrown(e)}`);
   process.exit(1);
 });

@@ -6,6 +6,7 @@
 import { join } from 'node:path';
 import { initAudit } from './audit';
 import { configFile, loadConfig, pluginsFile, stateDir } from './config';
+import { renderThrown } from './i18n';
 import { manager } from './plugin/manager';
 import { registry } from './permissions/registry';
 
@@ -63,6 +64,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[spc] failed:', err instanceof Error ? err.message : err);
+  console.error('[spc] failed:', renderThrown(err));
   process.exit(1);
 });

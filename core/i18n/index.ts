@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toErrorShape } from '../errors';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,4 +54,18 @@ export function tError(err: RenderableError): string {
   if (hasKey) return t(key, err.params);
   const params = err.params && Object.keys(err.params).length > 0 ? ` ${JSON.stringify(err.params)}` : '';
   return `${err.code}${params}`;
+}
+
+/**
+ * CLI 顶层兜底：把"抛出来的任何东西"渲染成一行。
+ *
+ * 为什么不能只打 `e.message`：`SpcError` 的 message **就是英文码**（见 `core/errors.ts`），
+ * 于是 `spcdev new demo --id BadName` 只会打一句 `PLUGIN_ID_INVALID` —— 哪个 id 非法、该改成什么样，全丢了；
+ * 而**没接住**时更糟：Node 把整段堆栈打给用户（内部路径 + 行号），那不是"该怎么办"。
+ * 非 SpcError（网络、fs 之类）没有码可翻，退回 message。
+ */
+export function renderThrown(e: unknown): string {
+  const shape = toErrorShape(e);
+  if (shape) return tError(shape);
+  return e instanceof Error ? e.message : String(e);
 }

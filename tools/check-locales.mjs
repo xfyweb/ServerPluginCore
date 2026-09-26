@@ -27,6 +27,7 @@ const INTERNAL = [
   { re: /\bADR-\d+/i, why: 'ADR 编号' },
   { re: /§/, why: '章节号（§x）' },
   { re: /(^|[^A-Za-z0-9])P[1-9](?![0-9A-Za-z])/, why: '阶段号（P1–P9）' },
+  { re: /[①-⑳]/, why: '阶段号（⑦b 这类带圈编号）' },
   { re: /\b(?:scope|state|tier|grant|pluginId|paramsDigest)\s*=/, why: '内部字段名（x=…）' },
   {
     re: /(module-emulation-design|api-contract|plugin-lifecycle-design|plugin-signature-design|market-license-design|intent-capture|events-and-hooks-design)/,
@@ -37,6 +38,24 @@ const INTERNAL = [
 
 /** 已退役的字段/占位符（加进来是为了"别再回来"） */
 const RETIRED = ['{reserved}', 'reserved='];
+
+/**
+ * 终端**不渲染** markdown：`**加粗**` 会连着星号一起打出来，反引号同理。
+ * 文案是给运维/作者在终端里读的，所以这里当硬失败拦。
+ */
+const MARKDOWN = [
+  { re: /\*\*/, why: 'markdown 加粗（**…**）' },
+  { re: /`/, why: 'markdown 反引号' },
+];
+
+/**
+ * 重复键：`JSON.parse` **看不见**它（后一个静默覆盖前一个），
+ * 而"被覆盖掉的那份的参数名"正是 `{placeholder}` 原样打出来的来源 ——
+ * 2026-09-25 实测：`err.PLUGIN_ID_INVALID` 两边各写了两遍，生效的那条收 `{id}`，
+ * 而构件层（`build/scaffold.ts`）传的是 `{pluginId}`，于是 CLI 打出字面的 `{id}`。
+ * 所以这里**按行扫原文**，重复即硬失败。
+ */
+const KEY_LINE = /^\s*"([^"]+)"\s*:/;
 
 /** 收代码里出现过的标识符（占位符必须能在代码里找到"有人传"的痕迹） */
 function codeIdentifiers() {
@@ -54,6 +73,8 @@ function codeIdentifiers() {
   };
   walk(path.join(REPO_ROOT, 'core'));
   walk(path.join(REPO_ROOT, 'sdk'));
+  // 构建层（`build/`）也是产品代码：它的 `t()` 调用同样是"有人传"的证据
+  walk(path.join(REPO_ROOT, 'build'));
   return out;
 }
 
@@ -71,6 +92,22 @@ for (const f of FILES) {
   } catch (err) {
     problems.push(`${f} 不是合法 JSON：${err instanceof Error ? err.message : err}`);
   }
+}
+
+// 重复键体检（必须在 JSON.parse 之外做，见 KEY_LINE 处的说明）
+for (const f of FILES) {
+  const file = path.join(LOCALES, f);
+  if (!fs.existsSync(file)) continue;
+  const seen = new Map();
+  fs.readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .forEach((line, i) => {
+      const m = KEY_LINE.exec(line);
+      if (!m) return;
+      if (seen.has(m[1])) {
+        problems.push(`${f} 重复键 ${m[1]}（第 ${seen.get(m[1])} 行与第 ${i + 1} 行，生效的是后者）`);
+      } else seen.set(m[1], i + 1);
+    });
 }
 
 if (tables[FILES[0]] && tables[FILES[1]]) {
@@ -104,6 +141,9 @@ for (const f of FILES) {
     }
     for (const r of RETIRED) {
       if (text.includes(r)) problems.push(`${f} ${k}：文案里还有已退役的 ${r}`);
+    }
+    for (const { re, why } of MARKDOWN) {
+      if (re.test(text)) problems.push(`${f} ${k}：文案里出现${why}（终端不渲染）`);
     }
     for (const s of slotsOf(text)) {
       if (!ids.has(s)) warnings.push(`${f} ${k}：占位符 {${s}} 在代码里找不到同名标识符（没人传？）`);

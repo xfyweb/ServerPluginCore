@@ -2,6 +2,7 @@
   "name": "serverplugin-core",
   "version": "0.0.0",
   "private": true,
+  "bin": { "spc": "bin/spc.mjs", "spcdev": "bin/spcdev.mjs" },
   "type": "module",
   "description": "Plugin-driven server management core (spike)",
   "packageManager": "pnpm@12.4.2",
@@ -9,8 +10,9 @@
     "spike": "tsx core/main.ts",
     "daemon": "tsx core/server.ts",
     "spc": "tsx core/cli.ts",
+    "spcdev": "tsx core/cli-dev.ts",
     "verify:sandbox": "node scripts/verify-quickjs-patch.mjs",
-    "test": "tsx --test sdk/__tests__/*.test.ts core/__tests__/*.test.ts",
+    "test": "tsx --test sdk/__tests__/*.test.ts core/__tests__/*.test.ts build/__tests__/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "license": "MIT",

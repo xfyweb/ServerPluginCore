@@ -95,7 +95,7 @@ foo-1.2.0.spc/                  （zip 容器；校验不依赖容器字节）
 - **它买到**：**完整性**（换一个字节就验不过）+ **连续性**（同一作者的后续版本仍由同一把密钥签）；
 - **它买不到**："这个作者到底是谁"。有源包由**市场命名空间间接背书**（`author.id = user@origin`，见 §8 的 `AUTHOR_MISMATCH`）；本地包只有 TOFU（首见即记，见下面的名册）；
 - ⚠️ **验证永远用"期望的公钥"**（依赖声明里的 `author.pub` / 名册首见值），**绝不用包里的 `authorPub`**——否则就是自签自证；
-- **产出分工**：`plugin.meta.json` + `plugin.author.sig` 由**构建工具**产出（`spc keygen` / `spc build --key`，**只产作者签名**）；`plugin.meta.sig` 由**市场**在审核通过后追加。市场的义务：核对 `files[]` 与实际载荷一致、核对它要背书的事实；**不认可就拒签**；
+- **产出分工**：`plugin.meta.json` + `plugin.author.sig` 由**构建工具**产出（`spcdev keygen` / `spcdev build --key`，**只产作者签名**）；`plugin.meta.sig` 由**市场**在审核通过后追加。市场的义务：核对 `files[]` 与实际载荷一致、核对它要背书的事实；**不认可就拒签**；
 - **端到端链路**：市场签名 → meta → 每个文件哈希 → 载荷（客户端安装时仍**逐文件核哈希**）。
 
 **作者名册（宿主侧，`authors.json`）**：`(origin, id) → { pub, fingerprint, firstSeenAt }`
@@ -501,7 +501,7 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 2. 状态文档的 TTL 默认值与是否允许管理员调整。
 3. 一次性验签（"仅下载该插件"）是否也写入 `highWater`（当前设计：不写）。
 4. ~~**`releasedAt` 归谁写**（v4 新增）~~ **✅ 已定（2026-09-25，用户拍板）**：**构建期填 + 市场核对/拒签**（本文原口径）。理由：meta 由构建工具产出、市场只追加签名 ⇒ 让市场自己定就得改成"市场改写字节 + 作者签名缩小覆盖范围"，代价更大。将来市场若要加自己的事实，用独立的签名对象，不要改写 meta。
-5. **作者私钥怎么保管**（`spc keygen` 的形态）：文件格式与路径约定、要不要 passphrase；私钥**永不进包**，建议 `chmod 600`。
+5. **作者私钥怎么保管**（`spcdev keygen` 的形态）：文件格式与路径约定、要不要 passphrase；私钥**永不进包**，建议 `chmod 600`。
 6. ~~**`keyring` 里 `kind: 'local'` 的具体形状**~~ **✅ 语义已定（2026-09-24，§3bis + §5 末）**：本地源 = **一个作者的桶**（可选 `authorAnchor`）+ `local:default` 杂桶 + 同钥第二例建议独立成源（promote）。**✅ 条目与 `spc source` CLI 已落地（2026-09-25，⑥a）**（面板源清单仍属 P3）；promote 的搬运复用 **⑥ reanchor**（批量、原子、列全会被打断的依赖方）。
 7. ~~**`authors.json` 的换钥接受流程**~~ **✅ 已定（2026-09-24）**：安装时 **`--accept-key-change`**（显式、落审计含旧/新指纹）；不给该开关就 `PLUGIN_AUTHOR_MISMATCH` 拒装，错误里同时给"换个桶"那条出路。面板入口归 P3。
 8. **promote 的触发与呈现细节**：建议在"安装成功后"打印（非交互），是否还要一个 `spc source suggest` / 面板上的一键搬迁入口，留到 P4 与源清单一并定。

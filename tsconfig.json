@@ -11,5 +11,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["core", "sdk", "plugin", "scripts"]
+  "include": ["core", "sdk", "plugin", "scripts", "build"]
 }

@@ -103,9 +103,12 @@ ServerPluginCore 是一个**宿主最小、能力全插件化**的服务端核�
 **验证三件套**：
 
 ```bash
-pnpm test          # 当前基线：1114 用例 / 1110 通过 / 0 失败 / 4 平台跳过
+pnpm test          # 当前基线：1142 用例 / 1138 通过 / 0 失败 / 4 平台跳过
 npx tsc --noEmit   # 0 错
 ```
+
+> **动了文案（`core/i18n/locales/*.json`）就跑 `node tools/check-locales.mjs`**：两份 locale 同键同占位符、
+> 无重复键、无 markdown（终端不渲染）、不引内部编号。工具**不进 `pnpm test`**，所以它不会自己跑。
 
 > ⚠️ `pnpm test` 起不来且报 **"This drive is locked by BitLocker Drive Encryption"** 时，是**环境**问题不是代码问题：
 > 本机 pnpm 的 store 在 **`F:`**（`F:\.pnpm-store\v10\v11`，BitLocker 卷）—— 解锁 F: 即恢复；
@@ -159,10 +162,12 @@ core/               核心：沙箱 / 桥 / 插件生命周期 / 权限 / 审计
   guest/              **跑在 VM 里的 guest 代码**（引导层 / Node 全局）：由 sandbox.ts 读成字符串后求值，
                       不进 tsc、不随插件分发；改它们必须跑真沙箱用例（见 guest/*.js 的文件头）
   __tests__/          测试（含差分用例）
+bin/                `spc`（管理面）与 `spcdev`（作者工具）两个命令的启动器（仓库根 `npm link` 后任何目录可用）
 sdk/                插件作者用的类型与校验（契约面）：`@host/api` / `@spc/sdk` 是这里的 ambient 声明，
                     插件放 `plugin/` 下就自动拿到类型（tsconfig 的 include 含 plugin）
-plugin/             **插件开发工作区**：一个插件一个目录、各自独立 git；本体忽略 `plugin/*/`（只留示例 hello）
-                    ⇒ 形态与工具见 docs/build-layer-design.md §10（`.spcdev/`、`spc keygen|build|pack|check`）
+build/              **构建层 = `spcdev` 的实现**（作者工具，本地命令，不连 daemon）：工作区发现 / 作者密钥 / 脚手架 /
+                    自检（含权限点对账）/ 权限点清单 / 权限映射快照 —— 见 docs/build-layer-design.md §10
+plugin/             **插件开发工作区**：一个插件一个目录、各自独立 git；本体忽略 `plugin/*/`（只留示例 hello、counter）
 scripts/            门禁脚本（进 CI 的那类）
 tools/              取证工具：把行为打成矩阵，供设计判断。**先读 tools/README.md**
 docs/               权威设计文档（见下）

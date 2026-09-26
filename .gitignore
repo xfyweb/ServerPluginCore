@@ -2,6 +2,9 @@
 node_modules/
 dist/
 build/
+# ⚠️ 例外：**顶层 `build/` 是构建层工具的源码**（不是产物）—— 见 docs/build-layer-design.md §10.5。
+# 上面那条不锚定，是为了让任何层级的 `build/` 产物默认不入库；这条例外只放行仓库根这一层。
+!/build/
 *.tsbuildinfo
 core/bin/
 

@@ -12,8 +12,8 @@
 
 **目标**
 
-- `spc build [<目录>]` → 产物目录（`bundle.js` + 清单文件；**不产出 `plugin.meta.json`**，见 §2）；
-  **作者签名是强制的**（"不存在无签名包"）⇒ 同一批还要有 `spc keygen`（见 §10）；
+- `spcdev build [<目录>]` → 产物目录（`bundle.js` + 清单文件；**不产出 `plugin.meta.json`**，见 §2）；
+  **作者签名是强制的**（"不存在无签名包"）⇒ 同一批还要有 `spcdev keygen`（见 §10）；
 - 依赖闭包**静态解析 + 内建登记表校验**，违规**构建失败**（不是运行期拒绝）；
 - 产物可被现有 `spc plugin install` 装载（`plugin-lifecycle-design` 不改契约）；
 - **作者工作区那套工具与目录形态**（`keygen` / `plugin new` / `check` / `permission list` / `pack` / `dev` +
@@ -229,7 +229,7 @@ ServerPluginCore/                      ← 克隆本体 = 插件开发工作区�
 │       ├── README.md / .gitignore
 │       └── dist/                      ← 构建产物（`bundle.js` + 带产物事实的清单；已 gitignore）
 └── .spcdev/                           ← **开发期固定目录**（从待打包目录往上找最近的一个）
-    ├── config.json                    ← 打包配置（产物目录 / 默认来源 / 是否自动签名…）
+    ├── config.json                    ← 开发配置（作者 ID / 产物目录 / 默认来源 / 是否自动签名…）
     └── keys/{author.key,author.pub}   ← 作者私钥（`*.key` 已被 `.gitignore` 忽略）+ 公钥
 ```
 
@@ -239,12 +239,19 @@ ServerPluginCore/                      ← 克隆本体 = 插件开发工作区�
 
 ### 10.2 `.spcdev/`：开发期固定目录
 
-- **发现规则**：`spc build|pack|check|dev` 从**待打包目录**往上逐级找最近的 `.spcdev/`
+- **发现规则**：`spcdev build|pack|check|dev` 从**待打包目录**往上逐级找最近的 `.spcdev/`
   （`package.json` / `.git` 那种发现方式）⇒ "本体根放一份，一个作者一把钥管所有插件"成立，
   "某个插件目录里单独放一份"也成立，**近者优先**。
 - **为什么不复用 `.spc/`**：那是**运行期状态**目录（`plugins.json` / `keyring.json` / `audit/` / `data/`）。
   把开发期密钥塞进宿主状态兜里，等于让"清状态"和"删密钥"变成同一个动作。
-- `config.json` **可选**（全部有默认值）：`{ "outDir": "dist", "source": "local:default", "sign": true, "key": "keys/author.key" }`。
+- `config.json` **可选**（除作者 ID 外全部有默认值）：
+  `{ "outDir": "dist", "source": "local:default", "sign": true, "key": "keys/author.key", "author": "" }`。
+- **作者 ID**（`author`）**是唯一没有默认值的一项**：它就是清单里 `@<作者 ID>/<名字>` 的 `@` 前缀
+  （= `sdk/types.ts` 的 `Manifest.id` 那个**发布者命名空间段**，同一件东西的两种叫法：工具面叫"作者 ID"、
+  清单面叫"发布者命名空间"）。由 **`spcdev keygen` 问一次**写进来，之后 `spcdev new` 直接取用
+  —— 于是**不再有 `--id`**：插件的 id 恒等于 `@<配置里的作者 ID>/<目录名>`。
+  ⚠️ 没声明又没显式 `--author` 时**一律拒**（`AUTHOR_ID_REQUIRED`）：身份是一次性决定、且会印进插件 id，
+  工具**不猜**（`git config user.name` 只用作交互提问时的默认答案，绝不顶替回答）。
 - `.gitignore`：本体与插件模板都忽略整个 `.spcdev/`（私钥已被 `*.key` 规则覆盖，整目录忽略是双保险 ——
   防手滑命名成 `author.key.txt`）。
 
@@ -256,7 +263,7 @@ ServerPluginCore/                      ← 克隆本体 = 插件开发工作区�
 - 第三方依赖由**作者自己** `npm i`（各自的 `package.json` / `node_modules`）；构建层**不跑安装**（§1 非目标），
   只解析真实闭包并写 `resolved`（§2）——声明与实解不一致即**构建失败**。
 
-### 10.4 作者密钥（`spc keygen`）
+### 10.4 作者密钥与作者 ID（`spcdev keygen`）
 
 ```jsonc
 // .spcdev/keys/author.key  —— chmod 600，永不进包（*.key 已在 .gitignore 里）
@@ -267,20 +274,46 @@ ServerPluginCore/                      ← 克隆本体 = 插件开发工作区�
 - **默认无 passphrase**（它保护的是"身份连续性"，不是数据机密性）；将来要加，加一个可选字段即可（只增不改）。
 - 公钥同时写一份 `author.pub`（便于复制给别人 / 贴到 README）；指纹按 §4 的全局规则算，**打印出来让人抄下来**。
 - 只产**作者签名**（`plugin.meta.json` 的 `authorPub` + `plugin.author.sig`）；市场签名属 P4。
+- **作者 ID 也是这一步问的**（2026-09-25 用户定）：钥里没有名字，而"这段 id 属于谁"必须有个地方写清楚 ⇒
+  `keygen` 问一句（默认答案取 `git config user.name` 归一化后的值，回车即用）、写进 `config.json` 的 `author`。
+  - **先写配置、再产钥**：反过来的话，配置写失败会留下"有钥但没身份"的死角（下次 keygen 被 `AUTHOR_KEY_EXISTS` 挡住，
+    只剩手改配置或 `--force` 换钥两条路）；这个顺序最坏只是"声明了身份还没钥"，重跑一次就接上。
+  - **钥在、作者 ID 没登记 ⇒ 只登记，绝不碰密钥**（拷 `keys/` 换机器的常见场景）；配置里已有作者 ID 时，
+    跑 `keygen` 又回到"换钥要 `--force`"的老规矩。
+  - **非 TTY（脚本 / CI）不给 `--author` ⇒ 拒**（照 ⑥b"非交互要给 `--yes`"的先例）：不拿 git 推断值顶替回答。
+- ⏳ **⑦b 必须核对"清单里的作者 == 工作区作者 ID"**（用户 2026-09-26 定；**先记着，⑦b 时做**）：构建读的是**工作区密钥**，
+  而插件挂谁名下写在 `manifest.id` 里 ⇒ `spcdev build` 要核对 `manifest.id` 的作者段等于 `config.author`；
+  不符即**构建失败**，`config.author` 为空同样失败（复用 `AUTHOR_ID_REQUIRED`）。理由：两处不一致时产出的包就是
+  "**用 A 的钥签了挂在 B 名下的插件**"，而那是发出去就改不回来的事。
+  ❓ 两个细节留到 ⑦b 一起定：新码叫什么（倾向 `BUILD_AUTHOR_MISMATCH`）；`spcdev check` 是否也报（建议报 warn，build 才是硬闸）。
 
 ### 10.5 工具清单
 
-| 工具 | 档 | 做什么 |
-|---|---|---|
-| `spc keygen` | **必须** | 生成作者密钥到 `.spcdev/keys/`（§10.4） |
-| `spc plugin new <名字>` | **必须** | 脚手架：按模板在 `plugin/<名字>/` 生成最小可跑插件（清单 + 入口 + tsconfig + README + .gitignore）。⏳ 发布 `create-spc-plugin` 到 npm（"没克隆本体也能起一个"）记进待办 |
-| `spc build [<目录>]` | **必须** | bundle + **两道闸**（§5）+ 产物事实写清单（§2）+ **作者签名**；同输入字节一致（§8 第 8 条） |
-| `spc check [<目录>]` | 便捷 | **只校验不打包**（清单 schema + 依赖闭包可行性 + **权限点对账**），秒级反馈，给编辑器与 CI 用 |
-| `spc permission list` | 便捷 | 列出本机**已注册的权限点**（写 `permissions[].name` 时照抄）；纯本地、不需要 daemon |
-| `spc pack [<目录>]` | 便捷 | 打 `.spc` 容器（§10.6）；本地分发与"全链路验收"要用 |
-| `spc dev [<目录>]` | 稍后 | watch 重建 + 自动 `plugin reload`（走已有管理通道）；不做 HMR，就是省掉手敲两条命令 |
+| 工具 | 档 | 状态 | 做什么 |
+|---|---|---|---|
+| `spcdev keygen` | **必须** | ✅ ⑦a | **问一次作者 ID 写进 `.spcdev/config.json`** + 生成作者密钥到 `.spcdev/keys/`（§10.4） |
+| `spcdev new <名字>` | **必须** | ✅ ⑦a | 脚手架：按模板在 `plugin/<名字>/` 生成最小可跑插件（清单 + 入口 + tsconfig + README + .gitignore）。**id = `@<配置里的作者 ID>/<名字>`**（没有 `--id`；换作者用 `--author`）。⏳ 发布 `create-spc-plugin` 到 npm（"没克隆本体也能起一个"）记进待办 |
+| `spcdev build [<目录>]` | **必须** | ⏳ ⑦b | bundle + **两道闸**（§5）+ 产物事实写清单（§2）+ **作者签名** + **核对清单作者 == 工作区作者 ID**（§10.4）；同输入字节一致（§8 第 8 条） |
+| `spcdev check [<目录>]` | 便捷 | ✅ ⑦a | **只校验不打包**（清单 schema + **权限点对账** + 导入面：内建是否已仿真 / 第三方是否解析得到），秒级反馈，给编辑器与 CI 用 |
+| `spcdev permission list` | 便捷 | ✅ ⑦a | 列出本机**已注册的权限点**（冻结表；动态族只给形状）；纯本地、不需要 daemon |
+| `spcdev pack [<目录>]` | 便捷 | ⏳ ⑦c | 打 `.spc` 容器（§10.6）；本地分发与"全链路验收"要用 |
+| `spcdev watch [<目录>]` | 稍后 | ⏳ ⑦c | watch 重建 + 自动 `plugin reload`（走已有管理通道）；不做 HMR，就是省掉手敲两条命令 |
 
-**`spc check` 的"权限点对账"**（用户 2026-09-25 要求，两向都报）：静态扫入口用到的 `@host/api` 成员 →
+> **两个命令、两份受众**（2026-09-25 用户拍板）：**`spc` = 管理面**（status / daemon / plugin / source；多数要 daemon；
+> P5 起随核心运行时一起分发）· **`spcdev` = 作者工具**（本节这一切；全程本地；**必须与这份仓库同版本**）。
+> 为什么不做成"一个命令下的子指令集"：受众、前提、发布节奏都不同 —— 混在一个入口里迟早出现"工具与本体不一致"
+> （工具说没问题、本体说不行），而那是本项目最难查的一类错。
+>
+> **代码落点**（⑦a 已落地）：新顶层 `build/` —— `workspace.ts`（`.spcdev/` 发现 + 配置）· `keys.ts`（作者密钥）·
+> `scaffold.ts`（脚手架）· `check.ts`（自检）· `permissions.ts`（权限点清单）· `apimap.ts` + `api-permission-map.json`
+> （**权限映射快照**）· `cli.ts`（子命令实现 + `runDevCli` 分发）。两个入口：`core/cli.ts`（`spc`）与
+> `core/cli-dev.ts`（`spcdev`），共用 `core/about.ts`（about 打印**仓库根 + 启动方式**）。
+> **短命令**：仓库根跑一次 `npm link` ⇒ 任何目录都能直接 `spc` / `spcdev`（`pnpm` 没有 `link --global`；
+> 不 link 也能用 `pnpm spc` / `pnpm spcdev`，插件模板的 `package.json` 里也带了 `spcdev` 脚本）。
+> ⚠️ 权限映射是**生成物**：改 `core/hostApi.ts` 后跑 `node node_modules/tsx/dist/cli.mjs build/refresh-api-map.mts`；
+> 守卫用例（`build/__tests__/workspace-keys.test.ts`）会重抽一遍比对，漂了就红。
+
+**`spcdev check` 的"权限点对账"**（用户 2026-09-25 要求，两向都报）：静态扫入口用到的 `@host/api` 成员 →
 映射到**权限点族** → 与清单 `permissions[]` 比对：
 
 - **代码用了、清单没声明** ⇒ 报（运行时会撞 `NOT_DECLARED`）；
@@ -310,8 +343,8 @@ ServerPluginCore/                      ← 克隆本体 = 插件开发工作区�
 
 ### 10.7 全链路验收（真插件，不是夹具）
 
-`spc keygen` → `spc plugin new demo` → 写点真代码（权限 + 一个端点 + 一次跨插件调用）→ `spc check` →
-`spc build` → `spc pack` → `spc plugin install demo.spc` → 真跑起来（daemon + 审计）→ 改一行 → `spc dev`/`reload` →
+`spcdev keygen` → `spcdev new demo` → 写点真代码（权限 + 一个端点 + 一次跨插件调用）→ `spcdev check` →
+`spcdev build` → `spcdev pack` → `spc plugin install demo.spc` → 真跑起来（daemon + 审计）→ 改一行 → `spcdev dev`/`reload` →
 `spc source add` + `reanchor` 搬桶 → 面板/CLI 看到的能力与授权都对。
 **这条链路跑通才算构建层验收**（§8 的 9 条是单元级，这一条是端到端）。
 

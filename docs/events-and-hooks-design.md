@@ -440,7 +440,7 @@ plugin.author.sig    作者签名 —— 由**构建工具**产出，用 authorP
 - **市场的义务**（写进文档）：追加签名前核对 `files[]` 与实际载荷一致、核对它要背书的事实（如 `releasedAt`）；**不认可就拒签，不改写** —— 改写会破坏作者签名；
 - 客户端仍然**逐文件核哈希** ⇒ 即使市场疏漏，端到端链路依然成立（市场签名 → meta → 每个文件哈希 → 载荷）；
 - "**平台构建 / 自行构建**"两种来源因此走**同一套 meta 格式**：自行构建的包就是没有 `plugin.meta.sig` 的无源包（unanchored）；
-- **`spc keygen` + `spc build --key` 只产作者签名**（市场签名是市场代码的事）。
+- **`spcdev keygen` + `spcdev build --key` 只产作者签名**（市场签名是市场代码的事）。
 
 **依赖声明**（形状：2026-09-24 加 `as` / `call`）与解析四步：
 
@@ -650,7 +650,7 @@ export const endpoints = {
 | 三处**仓库外引用** | 已改写成无路径形式：`api-contract.md` §7 两处 + `core/__tests__/permissions-meta.test.ts` 一处；另清了 `core/__tests__/emulation-worker-threads.test.ts` 里一处同类措辞 |
 | **动态点这一批（2026-09-23，09-24 定型）** | `api-contract.md` 新增 §6.0（冻结表/临时表）与 §6.1（两族点、派生而非登记、可声明性）· `plugin-lifecycle-design.md` §3（登记表不写注册表）· `sdk/types.ts` 的 `permissions` 注释 · `sdk/schema/manifest.schema.json` 的 `permissions[].name`（pattern 放宽 + 说明）|
 | `sdk/types.ts` / `sdk/host-api.d.ts` | ⏳ **未做（属代码面）**：`publish[].ask`、`request` / `on` / `off` 的类型。⚠️ 现在加类型＝给插件承诺一个还没实现的字段与方法 ⇒ 与事件面本体一起做 |
-| **本文 §3（调用面 + 带源身份）** | **① `endpoints` 改名 ✅、② 身份主键 `(origin, id)` + 本地来源具名 ✅（2026-09-22）、③ 动态点 ✅（2026-09-23）、④ 作者签名 ✅（2026-09-25）、⑤ `plugins.call` 本体 ✅（2026-09-25）、⑥ reanchor ✅（2026-09-25，见 §3.6 的"已落地"块）**；剩下 **⑦ 构建层签名**（`spc keygen` / `spc build --key`）|
+| **本文 §3（调用面 + 带源身份）** | **① `endpoints` 改名 ✅、② 身份主键 `(origin, id)` + 本地来源具名 ✅（2026-09-22）、③ 动态点 ✅（2026-09-23）、④ 作者签名 ✅（2026-09-25）、⑤ `plugins.call` 本体 ✅（2026-09-25）、⑥ reanchor ✅（2026-09-25，见 §3.6 的"已落地"块）**；剩下 **⑦ 构建层签名**（`spcdev keygen` / `spcdev build --key`）|
 
 ### 4.2 待定
 
@@ -660,7 +660,7 @@ export const endpoints = {
 4. ~~**Linux 引用的行号基准**~~ **已办**：体检工具加了第四个源码根（Linux 内核树），本文的 Linux 引用已经写成"文件:行号"，基准是 **6.12.110**（工具从工作区那份官方包的包名读出并记进快照基线 `linux=`）。部分子树里缺的文件（`kernel/notifier.c`、`security/security.c`）已从同版本包里补进树；以后再引到别的文件，按同一办法补即可；
 5. 意见的 `decision` 取值要不要收敛成固定枚举（现在是"约定 + 允许扩展字符串"）；
 6. **`releasedAt` 归谁写**（⚠️ **这条要用户拍**）：元数据由构建工具产出、市场只追加签名 ⇒ 若 `releasedAt` 由构建期填，市场只能"核对后拒签"而不能改写；但它同时是**授权判定锚点**（`market-license-design.md` §3：可下载 ⟺ `releasedAt ≤ maintenanceUntil`）。本文按"**构建期填 + 市场核对/拒签**"写；要让市场自己定这个值，就得改成"市场改写字节 + 作者签名缩小覆盖范围"，代价更大。**将来市场若要加自己的事实，用独立的签名对象，不要改写 meta**；
-7. **作者私钥怎么保管**（`spc keygen` 的形态）：私钥文件格式与路径约定、要不要 passphrase —— 它**永不进包**，文档建议 `chmod 600`；不做 passphrase 也说得过去（它保护的是"身份连续性"，不是数据机密性）；
+7. **作者私钥怎么保管**（`spcdev keygen` 的形态）：私钥文件格式与路径约定、要不要 passphrase —— 它**永不进包**，文档建议 `chmod 600`；不做 passphrase 也说得过去（它保护的是"身份连续性"，不是数据机密性）；
 8. ~~**本地源在 keyring 的具体形状**~~ **✅ 语义已定（2026-09-24）**：本地源 = **一个作者的桶**（身份 = 那把作者公钥，名字只是标签）+ `local:default` **杂桶** + 同钥第二例**建议独立成源（promote）**；条目带可选 `authorAnchor`（市场源不许带）。**✅ 条目与 `spc source` CLI 已落地（2026-09-25，⑥a）**（面板源清单仍属 P3）；**✅ promote 的搬运（= ⑥ reanchor：批量 / 原子 / 列全会被打断的依赖方）已落地（同日，⑥b）**。细节见 `plugin-signature-design.md` §3bis 与 §5 末；
 9. ~~**端点 `path` 命名空间的前缀规则**~~ **✅ 已关闭（2026-09-25）**：**不需要任何前缀**。
    带 origin 的方案与 K2 冲突（调用方要把它写进自己清单的 `call`，两处都在被签名的字节里 ⇒ 换源即断，见 §3.1）；
@@ -680,7 +680,7 @@ export const endpoints = {
 | 5 | ~~**调用本体**：`plugins.call`（句柄锚定解析 + 投递链 + 有界重试 + 审计 `callId` + 深度上限）；清单面加 `dependencies.plugins[].as` / `.call`（schema + 类型 + 装载期物化）~~ **✅ 已做（2026-09-25）**：`core/plugin/call-retry.ts`（有界重试策略，单独成文件以便判别性测试）· 投递链在 `core/plugin/manager.ts` 的 `dispatchCall`（门槛④ `callable` + 目标可用性 + 深度上限 + 调用方/被调方两条审计共用一个 `callId`）· 宿主方法 `plugins.call` 在 `core/hostApi.ts`（门槛①② 在 `permissionFor`，即权限判定之前）· 沙箱侧 `callEndpoint` + 引导层 `__spcInvokeEndpoint`（`core/sandbox.ts` + **`core/guest/bootstrap.js`**）· **被调方导出 `endpoints` 映射、装载期核对"声明 ⟺ 实现"**（见 §3.7）· 清单面 `as` / `call` / `callable` + 句柄唯一性的语义闸（`sdk/validate.ts`）· 顶层 API `sdk/host-api.d.ts` 的 `plugins` 组 · 8 个新错误码 + 双语词条 · 用例 `core/__tests__/plugins-call.test.ts`（17 条）。⚠️ **顺带修的现状**：`install --grant` 原先只认 `permissions[]`，不认依赖 `call` 派生出的点 ⇒ 那条合法路径会被 `NOT_DECLARED` 挡掉（现由 `manager.declaredPoints` 统一口径） | 依赖前四步；也是 §3.9 那条硬依赖通知的前提 |
 | 6 | ~~**reanchor 动作**（CLI；面板入口属 P3）~~ **✅ 已做（2026-09-25，见 §3.6 的"已落地"块）**：`spc plugin reanchor <引用...> --origin <新源>` + `/api/plugins/reanchor[/plan]`；批量原子 / 只读预检 / 依赖方保护 / 名册搬家 / 审计 `plugin.reanchor` | 前面都就位后才谈得上"搬家" |
 | **6.5** | ~~**本地安装落桶**~~ **✅ 已做（2026-09-25）**：① "期望值解析"接上**源锚**那一级（源锚 → 名册首见 → 首见即记；不符即 `PLUGIN_ANCHOR_MISMATCH`，**`--accept-key-change` 绕不过锚**）；② 未给 `--source` 时按包的公钥找绑了同一把锚的桶 ⇒ 恰好一个就用、多个歧义拒（`PLUGIN_SOURCE_AMBIGUOUS`）、零个落 `local:default`；显式 `--source` 指向不存在的桶 ⇒ `SOURCE_NOT_CONFIGURED`；③ 装完打印 **promote 建议 + 现成命令**（`manager.promoteSuggestion`；同一把钥第二例才建议，搬完自动消失） | ⑥ 是"搬得动"，6.5 是"装得对" —— promote 闭环的两半；缺了它，桶建好了也没人往里装 |
-| 7 | **构建层**（P2 尾）：`spc keygen` + `spc build --key` —— **产出 `plugin.meta.json`（含 `authorPub`）与 `plugin.author.sig`，只出作者签名**（市场签名由市场代码追加） | 与构建层那一批合流；在此之前仓库内 fixtures 用**测试密钥**签名（明确标注不是真身份），市场侧的追加签名流程属 P4 |
+| 7 | **构建层**（P2 尾）：`spcdev keygen` + `spcdev build --key` —— **产出 `plugin.meta.json`（含 `authorPub`）与 `plugin.author.sig`，只出作者签名**（市场签名由市场代码追加） | 与构建层那一批合流；在此之前仓库内 fixtures 用**测试密钥**签名（明确标注不是真身份），市场侧的追加签名流程属 P4 |
 
 ### 4.4 引用口径（四份冻结的帧，怎么引）
 
