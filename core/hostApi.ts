@@ -500,7 +500,7 @@ function canonicalWatchPathSoft(p: string): string {
 /**
  * fd 句柄背后的真资源。
  *
- * ⚠️ **存的是 `FileHandle` 而不是裸 fd**（2026-09-21 实测定的）：判卷人 v22.22.1 的 `node:fs/promises`
+ * ⚠️ **存的是 `FileHandle` 而不是裸 fd**（2026-09-21 实测定的）：判卷人的 `node:fs/promises`
  * **没有** `read`/`write`/`close`/`fsync`/`ftruncate`（那些只在 `FileHandle` 上），也不接受数字 fd
  * （`fsp.stat(3)` ⇒ `ERR_INVALID_ARG_TYPE`）⇒ **真异步的 fd I/O 只有 `FileHandle` 这一条路**。
  * 于是：同步面用 `fh.fd`（同一个真描述符），异步面用 `fh` 自己（`await fh.read(...)`）——
@@ -1021,7 +1021,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
   }
 
   /**
-   * **异步面**的打开：走 `fs/promises.open` 拿 `FileHandle`（判卷人 v22.22.1 实测：
+   * **异步面**的打开：走 `fs/promises.open` 拿 `FileHandle`（判卷人实测：
    * `fs/promises` **没有** `read`/`write`/`close`/`fsync`/`ftruncate`，也不收数字 fd
    * —— 真异步 fd I/O 只有 `FileHandle` 这一条路）。同一个真描述符同时供同步面用（`fh.fd`）。
    * 登记失败时的收尾同上（`releaseFd` 会同步关描述符 + 收掉 `FileHandle`）。
@@ -1820,7 +1820,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     // 而 `fs.readFileSync` 那条路必须把整个文件搬进 32 MiB 的沙箱堆。fd 面让插件**流式**处理大文件，
     // 也让句柄表的四种收口（正常释放 / 上限 / 卸载强回收 / 审计）第一次管到**真的会泄漏的 OS 资源**。
     //
-    // 契约（官方 node v22.22.1 与宿主 v24 逐条实测一致）：
+    // 契约（v22.22.1 与 v24 实测一致）：
     //   · `openSync` 返回**数字**；非法旗标 ⇒ `ERR_INVALID_ARG_VALUE`（TypeError，由**宿主 Node 自己**报出，
     //     我们只把旗标原样转交 —— 不自己复刻 Node 的旗标表）；
     //   · `closeSync` 两次 / 读写方向不符 / 目录 fd 上 `read` ⇒ `EBADF`(close|read|write) / `EISDIR`(read)；
@@ -2065,7 +2065,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     // `fs.read.data` / `fs.write.data`（与 `fs.readText`/`fs.writeText` 同一条取舍：
     // **仿真模块不得引入新的权限语义**）。
     //
-    // 语义全部照判卷人实测（官方 node v22.22.1；与宿主 v24 逐条一致）：
+    // 语义全部照判卷人实测（v22.22.1 与 v24 实测一致）：
     //   · `fh.readFile()` **从当前偏移读到 EOF**（连续两次调用第二次给空 Buffer），**不关句柄**；
     //   · `fh.writeFile(d)` 与 `fh.appendFile(d)` **都是"从当前偏移写"**，两者逐字节相同
     //     （Node 的 `FileHandle.appendFile` 就是 `writeFile`；真正的追加来自句柄自己的 'a' 旗标）；
@@ -2130,7 +2130,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       permission: 'crypto.hash',
       fn: (algJson: string) => {
         const alg = assertCryptoText(algJson, 'algorithm');
-        // **懒校验照 Node**（判卷人实测 v22.22.1 与宿主 v24 一致）：`createHash('nope')` 不抛，
+        // **懒校验照 Node**（v22.22.1 与 v24 实测一致）：`createHash('nope')` 不抛，
         // 到 `digest()` 才抛 `Digest method not supported`（而且**没有 code**）——所以这里不预检算法名。
         const hash = runCrypto(() => crypto.createHash(alg));
         // 释放 = 丢掉引用（Node 的 Hash 没有 close，native 状态随 GC 回收）；
