@@ -354,7 +354,7 @@ core/sandbox.ts
 
 **errno 与文案是 Linux 真值**：`err.errno` 用 Linux 的负值（`ENOENT` = -2），`err.message` 用
 `CODE: strerror, syscall 'path'` 的 Node 格式，strerror 文案取 **Linux**（`no such file or directory`…）——
-出处是 WSL 上的 node v22.22.1 运行值（`tools/truth/fs-url-truth.mjs` → `tools/truth/data/fs-url-truth.json`），
+出处是 WSL 上的 node 运行值（`tools/truth/fs-url-truth.mjs` → `tools/truth/data/fs-url-truth.json`，**2026-09-27 重采于 v24.20.0**），
 与 `path`(posix)、`constants`(Linux) 同一个取向。开发机是 Windows 时宿主的 errno（-4058）与文案都不同，
 **不能拿宿主当判卷人**（测试里按 `process.platform === 'linux'` 才与宿主对照）。
 
@@ -416,7 +416,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 |---|---|---|
 | 1 | **只有微任务，没有 `process.nextTick` / `setImmediate` 的区分**（沙箱补的是 `queueMicrotask`）。Node 的流内部靠这个区分排续体 | **事件交错顺序可能与宿主不同** ⇒ 差分测试只比"**终态 + 事件集合**"（`emulation-stream.test.ts` 的 `diff()` 就是这么写的）。真实依赖只看"数据对不对、有没有 `end`/`finish`、错误码是什么"，所以这个差异可接受 |
 | 2 | **没有完整背压阈值**：`highWaterMark` 只影响 `write()` 的返回值，不影响数据路径（我们缓冲不设上限） | 保证"不丢数据、不卡死"；`'drain'` 在排空且**未 `end()`** 时发。依赖用 `write()` 的返回值做流控时行为正确，但"内存不会因为不读而涨"这条不成立 |
-| 3 | `pipeline`/`finished` 只做**基础**串联与错误传播 | 不做 `AbortSignal`（`addAbortSignal` 抛错）、不做 `stream/web`、不做 `compose`。成功时回调参数是 **`undefined`**（不是 `null`——基线 v22.22.1 实测） |
+| 3 | `pipeline`/`finished` 只做**基础**串联与错误传播 | 不做 `AbortSignal`（`addAbortSignal` 抛错）、不做 `stream/web`、不做 `compose`。成功时回调参数是 **`undefined`**（不是 `null`——判卷人实测） |
 | 4 | legacy `Stream.call(this)` 只初始化**事件面** | 与 Node 一致（Node 的 `Stream` 本来就是空壳）；`graceful-fs` 那条路只用到事件面 |
 | 5 | **`Transform` 的结束是"我们补的"**：队列排空 → `_flush` → `push(null)` → `'finish'` | 这是照 `node/lib/internal/streams/transform.js:126-152` 的 `final()` 做的（子类实现 `_final` 时 Node 不补，我们不支持那种写法）。少了它可读侧永远不发 `'end'`，`pipeline`/`for await` 会**挂住且无报错** |
 
@@ -703,7 +703,7 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 | 上限 fail-closed | 每 kind 256 条（`MAX_DIGEST_HANDLES`）⇒ `HANDLE_LIMIT_EXCEEDED` | 同一用例里"只开不关到 300"必须停在 **256** 并拿到该码 |
 | 卸载强回收 | `bridge.releaseHandles`（沙箱 `teardown()` 调）⇒ `HandleTable.releaseAll()` + 审计 | `handles.test.ts` 的 `releaseAll` 断言（各恰好释放一次、leaked 列表正确） |
 
-另外两条来自判卷人实测（v22.22.1）的保真细节，别想当然：
+另外两条来自判卷人实测的保真细节，别想当然：
 - **`Hmac` 不是 `Hash` 的子类**：`hmac instanceof crypto.Hash === false`、`Hmac.prototype instanceof Hash === false`、
   **`hm.copy` 不存在**（`TypeError: hm.copy is not a function`）。旧实现把它们别名成同一个类，三处都不对。
 - **终态语义不对称**：`Hash` 二次 `digest()` 抛 `ERR_CRYPTO_HASH_FINALIZED`；**`Hmac` 二次 `digest()` 返回空值**
@@ -730,7 +730,7 @@ QuickJS 错误对象里的 `stack` 丢掉了，只剩一句 `no setter for prope
 | 旗标合法性 | **原样交宿主 Node 判**（非法 ⇒ `ERR_INVALID_ARG_VALUE`） | 不复刻 Node 的旗标表（那份在 `node/lib/internal/fs/utils.js`，抄就会漂） |
 | 单次读写 | 每次 ≤ **8 MiB**（`MAX_FD_IO_BYTES`，超了用循环读） | 一次要整块过桥；fd 面的意义正是"不必整块进沙箱堆"，但单次仍要有闸 |
 
-**判卷人真值**（官方 node v22.22.1，与宿主 v24 逐条一致）：
+**判卷人真值**（**v22.22.1 时实测**；基线迁 v24.20.0 后这几条**尚未重验**）：
 `closeSync` 二次 ⇒ `EBADF … close`；只读 fd 上写 / 只写 fd 上读 ⇒ `EBADF … write|read`；
 目录 fd 能打开但 `readSync` ⇒ `EISDIR … read`；`offset+length` 越界 ⇒ `ERR_OUT_OF_RANGE`
 （文案 `... It must be <= -94. Received 1` —— 上界是 `buffer.length - offset`，照抄）。
