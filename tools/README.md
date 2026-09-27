@@ -165,14 +165,24 @@ node tools/batteries/events-battery.mjs
   path-win32-cases.mjs → path-win32-cases-win.mjs                     ← path.win32 的用例与 Windows 侧真值
         ↓  产物都在 tools/truth/data/
 生成（把真值写进仿真模块，**改表走这条链，别手抄**）
-  gen-constants2.mjs → core/sandbox-modules/node-constants.js
-  gen-fs-tables.mjs / splice-fs-tables.mjs → node-fs.js
-  gen-crypto-tables.mjs / gen-zlib-tables2.mjs / wire-zlib.mjs → node-crypto.js / node-zlib.js
+  gen-constants2.mjs → core/sandbox-modules/node-constants.js      ← 整文件生成
+  gen-fs-tables.mjs  → node-fs.js                                  ← **就地替换标记之间**（可反复重跑）
+  gen-zlib-tables2.mjs → node-zlib.js                              ← 同上（就地替换标记之间）
+  gen-crypto-tables.mjs → node-crypto.js                           ← 同上
+  wire-zlib.mjs                                                    ← ⛔ 一次性接线，**已执行，别再跑**
+  公共拼接器：generated-block.mjs（上面两处"就地替换"都走它）
         ↓
 校验
   verify-constants.mjs / cmp-constants.mjs          ← 逐键核对
   path-win32-diff.mjs                               ← 与真 Windows 的差异（判据：363/366 + 3 条记账边界）
 ```
+
+> **生成物怎么落进仿真模块（2026-09-27 定的两种形态，别再发明第三种）**：
+> ① **整文件生成**（`node-constants.js`）——重跑就是覆盖；
+> ② **就地替换标记之间**（`node-fs.js`）——表与手写逻辑同处一个文件，因为 shim 是**宿主读成源码字符串**注入 VM 的
+> （不能 `import` 兄弟数据文件），而十来份 `emulation-*.test.ts` 又把它**逐字节拷**出去当真 ESM 跑。
+> ⇒ 用 `// >>> GENERATED:<名字>` 与 `// <<< GENERATED:<名字>` 圈住，工具只重写这一段（**幂等**，第二次跑报"未变化"）。
+> ⛔ **不要用一次性占位符**（旧的 `/*__ERRNO_TABLE__*/` 就是反面教材：替换一次就没了 ⇒ 工具再也跑不了）。
 
 **判卷人**（Windows 侧真值）是官方 `node-v22.22.1-win-x64` 解压出的 `node.exe`——**仓库外**，需自行下载。
 

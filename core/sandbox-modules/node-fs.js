@@ -124,9 +124,10 @@ function callBytes(name, ...args) {
   return raw;
 }
 
-// ──────────────────────────── errno 翻译（设计 §7）────────────────────────────
-
-// 表由 `tools/truth/gen-fs-tables.mjs` 从 WSL 真值生成（node v22.22.1 的运行值）——**勿手改**
+// ──────────────── errno 翻译与 `fs.constants`（设计 §7）────────────────
+// 下面两张表都是**生成物**：`tools/truth/gen-fs-tables.mjs` 从 `tools/truth/data/fs-url-truth.json`
+// （Linux 真值）重写标记之间的内容 —— **勿手改；重跑那个工具即替换**（可反复重跑）。
+// >>> GENERATED:fs-tables（**勿手改**：由 tools/truth/gen-fs-tables.mjs 生成，重跑即替换本区间）
 const ERRNO = {
   EPERM          : [  1, "operation not permitted"],
   ENOENT         : [  2, "no such file or directory"],
@@ -193,9 +194,6 @@ const ERRNO = {
   ECANCELED      : [125, "operation canceled"],
 };
 
-// ──────────────────────────── 常量 ────────────────────────────
-
-// `fs.constants` 也是 Linux 真值（同 node-constants.js 的取向），同一份生成脚本产出——**勿手改**
 const FS_CONSTANTS = {
   COPYFILE_EXCL               : 1,
   COPYFILE_FICLONE            : 2,
@@ -254,6 +252,9 @@ const FS_CONSTANTS = {
   W_OK                        : 2,
   X_OK                        : 1,
 };
+// 无真值文案的 errno（libuv 不认识）：EBADMSG ECHILD EDEADLK EDOM EDQUOT EIDRM EINPROGRESS EMULTIHOP ENETRESET ENOLCK ENOLINK ENOMSG ENOSR ENOSTR ESTALE ETIME
+// 共 63 个 errno、56 个 fs 常量
+// <<< GENERATED:fs-tables
 
 /** 写旗标全集（把"Node 认但本仿真不支持"与"真的非法旗标"分开报） */
 const READ_WRITE_FLAGS = new Set(['a', 'ax', 'a+', 'ax+', 'as', 'as+', 'w', 'wx', 'w+', 'wx+']);

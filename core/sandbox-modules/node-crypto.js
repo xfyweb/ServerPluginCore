@@ -697,7 +697,7 @@ function timingSafeEqual(a, b) {
 
 // ──────────────────────────── 静态清单（固定 22.22.1 基线）────────────────────────────
 
-// 由 `tools/truth/gen-crypto-tables.mjs` 从 WSL 真值生成——**勿手改**
+// >>> GENERATED:crypto-tables（**勿手改**：由 tools/truth/gen-crypto-tables.mjs 生成，重跑即替换本区间）
 const HASHES = Object.freeze([
   "RSA-MD5", "RSA-RIPEMD160", "RSA-SHA1", "RSA-SHA1-2",
   "RSA-SHA224", "RSA-SHA256", "RSA-SHA3-224", "RSA-SHA3-256",
@@ -833,6 +833,9 @@ const CONSTANTS = Object.freeze({
   POINT_CONVERSION_HYBRID                      : 6,
   defaultCipherList                            : "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
 });
+
+// getHashes 52 项 / getCiphers 134 项 / getCurves 82 项 / constants 56 键
+// <<< GENERATED:crypto-tables
 
 function getHashes() {
   return HASHES.slice();

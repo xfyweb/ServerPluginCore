@@ -1,56 +1,17 @@
-import { readFileSync, writeFileSync } from 'node:fs';
-import { TRUTH_DATA } from '../paths.mjs';
-// ① 填表
-const shim = 'core/sandbox-modules/node-zlib.js';
-let s = readFileSync(shim, 'utf8');
-const tables = readFileSync(TRUTH_DATA + '/zlib-tables.txt', 'utf8').split('\n// constants ')[0].trimEnd();
-if (!s.includes('/*__ZLIB_TABLES__*/')) throw new Error('占位符不在');
-s = s.replace('/*__ZLIB_TABLES__*/', tables);
-writeFileSync(shim, s, 'utf8');
-// ② 权限点
-const perm = 'core/permissions/registry.ts';
-let p = readFileSync(perm, 'utf8');
-const anchor = "registry.register({\n  name: 'crypto.hash',";
-const add = `// zlib 组：压缩/解压也是**宿主代工**（原生压缩库不可复刻），scope=self 同理——输入输出都在调用方手里。
-registry.register({
-  name: 'zlib.compress',
-  group: 'zlib',
-  description: '压缩（deflate/gzip 及其 raw 形态）与 crc32',
-  scope: 'self',
-  confidentiality: 'public',
-  executionLevel: 'low',
-});
-
-registry.register({
-  name: 'zlib.decompress',
-  group: 'zlib',
-  description: '解压（inflate/gunzip/unzip 及其 raw 形态）',
-  scope: 'self',
-  confidentiality: 'public',
-  executionLevel: 'low',
-});
-
-` + anchor;
-if (!p.includes(anchor)) throw new Error('权限锚点没找到');
-p = p.replace(anchor, add);
-writeFileSync(perm, p, 'utf8');
-// ③ 登记表
-const reg = 'core/sandbox-modules/registry.ts';
-let r = readFileSync(reg, 'utf8');
-const regAnchor = "];\n\nconst BY_CANONICAL";
-const regAdd = `  {
-    canonical: 'zlib',
-    stage: 'P3',
-    needsHost: true,
-    note: '最小集：**同步面 + 回调面**（\\\`deflateRawSync\\\`/\\\`inflateRawSync\\\`/\\\`gzipSync\\\`/\\\`crc32\\\` … 与对应的回调形态），宿主代工、字节进字节出；错误保真（\\\`Z_DATA_ERROR\\\`/\\\`Z_BUF_ERROR\\\` + message + errno）。**流式入口**（\\\`createGzip\\\` 一族）与 brotli/zstd **明确抛错**（前者等 \\\`stream\\\`，后者无实测需求）',
-  },
-];\n\nconst BY_CANONICAL`;
-if (!r.includes(regAnchor)) throw new Error('登记表锚点没找到');
-r = r.replace(regAnchor, regAdd);
-writeFileSync(reg, r, 'utf8');
-// ④ JSON 结果组（crc32 走 JSON 解码；bytes 方法由 binaryResult 决定用 __bin）
-const sb = 'core/sandbox.ts';
-let x = readFileSync(sb, 'utf8');
-x = x.replace("new Set(['fs', 'lifecycle', 'events', 'url', 'crypto'])", "new Set(['fs', 'lifecycle', 'events', 'url', 'crypto', 'zlib'])");
-writeFileSync(sb, x, 'utf8');
-console.log('ok：表/权限/登记表/结果组都就位');
+// ⛔ **一次性接线脚本 —— 已执行完毕，别再跑**（跑它只会打印一行提示并以 1 退出）。
+//
+// 它当时做了四件事，**现在都已经在文件里**（这段注释就是它留下的记录 ——
+// 看代码能看到"结果"，看不到"当时要动的是哪三处"）：
+//   ① 把 zlib 两张表填进 `core/sandbox-modules/node-zlib.js` 的占位符 `/*__ZLIB_TABLES__*/`
+//      ⇒ 那个占位符**早已不存在**；表现在由 `tools/truth/gen-zlib-tables2.mjs` 写进生成区间（**可反复重跑**）；
+//   ② `core/permissions/registry.ts`：注册 `zlib.compress` / `zlib.decompress` 两个权限点；
+//   ③ `core/sandbox-modules/registry.ts`：登记 `canonical: 'zlib'` 的模块条目；
+//   ④ `core/sandbox.ts`：JSON 结果组的 `Set` 里加 `'zlib'`。
+//
+// 为什么不能再跑：它按**字符串替换**改那三个文件，第二遍必然找不到锚点、或者重复插入。
+// 为什么留档而不删：②③④ 是"zlib 要在哪几处登记"的清单，删了就只剩结果、没有清单。
+console.error(
+  'wire-zlib.mjs 是一次性接线脚本，已执行完毕（四件事见文件头注释）。' +
+    '要更新 zlib 表请跑：node tools/truth/gen-zlib-tables2.mjs',
+);
+process.exit(1);

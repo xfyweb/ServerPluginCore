@@ -241,9 +241,8 @@ function crc32(data, value) {
 
 // ──────────────────────────── 静态表（固定 22.22.1 基线）────────────────────────────
 
-// 由 `tools/truth/gen-zlib-tables2.mjs` 从 WSL 真值生成——**勿手改**
-
-/** zlib 常量表（v22.22.1 基线；含 zlib / brotli / zstd 三族） */
+// >>> GENERATED:zlib-tables（**勿手改**：由 tools/truth/gen-zlib-tables2.mjs 生成，重跑即替换本区间）
+/** zlib 常量表（含 zlib / brotli / zstd 三族） */
 const CONSTANTS = Object.freeze({
   Z_NO_FLUSH                                           : 0,
   Z_PARTIAL_FLUSH                                      : 1,
@@ -443,6 +442,7 @@ const CODES = Object.freeze((() => {
   }
   return map;
 })());
+// <<< GENERATED:zlib-tables
 
 // ──────────────────────────── 明确不支持的 ────────────────────────────
 

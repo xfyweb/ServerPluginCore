@@ -1,4 +1,4 @@
-/** zlib 常量表（v22.22.1 基线；含 zlib / brotli / zstd 三族） */
+/** zlib 常量表（含 zlib / brotli / zstd 三族） */
 const CONSTANTS = Object.freeze({
   Z_NO_FLUSH                                           : 0,
   Z_PARTIAL_FLUSH                                      : 1,
