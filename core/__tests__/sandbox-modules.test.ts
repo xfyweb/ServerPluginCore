@@ -1466,8 +1466,22 @@ console.log('CPUS ' + os.cpus().length + '/' + os.cpus()[0].model + '/' + os.cpu
 `);
     const [osLine, procLine, tmpLine, cpus] = out.split('\n');
     // platform 与 EOL **跟随宿主**（P2-E / 模型 B）：linux 上 `\n`（长度 1）、win32 上 `\r\n`（长度 2）
-    assert.equal(osLine, 'OS ' + process.platform + '/' + nodeOs.EOL.length + '/28');
-    assert.equal(procLine, 'PROC ' + process.platform + '/v22.22.1/28'); // 版本是固定仿真值
+    // ⚠️ 末段是 `os.homedir().length` / `process.cwd().length` —— 那是**数据目录的路径长度**，
+    // 临时目录名一换就变（原来写死 `28`，本机实测 `24` ⇒ 一跑就红）。改成断言**不变式**：
+    // 非空，且沙箱里 homedir 与 cwd 指向**同一个目录**（都在数据目录内）。
+    // ⚠️ 用正则解析，别 `split('/')`：platform 那一段是 `OS win32`（含空格、不含斜杠），
+    // 直接 split 会把 ['OS win32','2','28'] 当成 4 段（我第一版就这么错的）。
+    const osMatch = /^OS (.+)\/(\d+)\/(\d+)$/.exec(osLine);
+    const procMatch = /^PROC (.+)\/(v[^/]+)\/(\d+)$/.exec(procLine);
+    assert.ok(osMatch && procMatch, `两行格式不对：${osLine} | ${procLine}`);
+    assert.equal(osMatch[1], process.platform);
+    assert.equal(Number(osMatch[2]), nodeOs.EOL.length);
+    assert.equal(procMatch[1], process.platform);
+    assert.equal(procMatch[2], 'v22.22.1'); // 版本是固定仿真值
+    const homeLen = Number(osMatch[3]);
+    const cwdLen = Number(procMatch[3]);
+    assert.ok(homeLen > 0 && cwdLen > 0, `homedir / cwd 长度应当为正（拿到 ${homeLen}/${cwdLen}）`);
+    assert.equal(homeLen, cwdLen, '沙箱里 homedir 与 cwd 指向同一个目录（数据目录）');
     assert.equal(tmpLine, 'TMPINSIDE yes'); // tmpdir 必须落在数据目录内（fs 作用域里）
     assert.equal(cpus, 'CPUS ' + nodeOs.availableParallelism() + '//0'); // 条数=容量类真值；身份字段空
   });
