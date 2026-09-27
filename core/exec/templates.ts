@@ -5,7 +5,7 @@
 // 沙箱插件永远只能调用注册表里的模板，没有自由命令。
 import { existsSync, statSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { SpcError } from '../errors';
 
 export type ParamType = 'enum' | 'pattern' | 'whitelist' | 'path';
@@ -148,15 +148,30 @@ export function assertExecutableInSystemDirs(cmd: string, allowlist = executable
   } catch {
     throw new SpcError('TEMPLATE_COMMAND_NOT_ALLOWED', { command: cmd, reason: 'not-found' });
   }
-  const inside = allowlist.some((dir) => {
-    let real = dir;
-    try {
-      real = realpathSync(dir);
-    } catch {
-      /* 目录不存在则用原值比较 */
-    }
-    return pathInside(resolved, real);
-  });
+  // 判定有**两条**，任一成立即通过（2026-09-27 修；在此之前只有第 ② 条）：
+  //
+  //   ① **字面路径**归一后落在白名单目录内 —— 覆盖"**系统目录里的符号链接**"。
+  //      白名单的语义是"**插件写不到那里**"（见 `executableAllowlist()` 的注释），
+  //      而系统目录里的链接是**发行版自己装的**：usrmerge 的 `/bin`→`/usr/bin`、
+  //      以及把 coreutils 换成 `/usr/lib/cargo/bin/coreutils/*` 的那种布局
+  //      （本机 WSL 实测：`/bin/echo` 的 realpath 正是后者）⇒ 只看 realpath 会把**系统装的**
+  //      合法二进制判成越界，而插件根本没机会碰它。
+  //      ⚠️ 用 `resolve()` 归一掉 `.` / `..`（`/bin/../../tmp/evil` **必须不算**在 `/bin` 内），
+  //      但**不做 realpath** —— 做了就等于把系统自己的跳转也否掉，正是这条要修的东西。
+  //   ② realpath 落在白名单目录的 realpath 内 —— **保留原有语义**：挡"插件自己目录里的软链指向系统目录"
+  //      这类绕法（此时执行的内容仍是系统二进制，不构成越权，但保留这条不会放松任何东西）。
+  const lexical = resolve(cmd);
+  const inside =
+    allowlist.some((dir) => pathInside(lexical, dir)) ||
+    allowlist.some((dir) => {
+      let real = dir;
+      try {
+        real = realpathSync(dir);
+      } catch {
+        /* 目录不存在则用原值比较 */
+      }
+      return pathInside(resolved, real);
+    });
   if (!inside) {
     throw new SpcError('TEMPLATE_COMMAND_NOT_ALLOWED', { command: cmd, reason: 'outside-system-dirs' });
   }
