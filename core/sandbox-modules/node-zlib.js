@@ -18,7 +18,7 @@
 //     具体 message（"invalid block type"/"unexpected end of file"/"incorrect header check"…）。
 //     桥只带 `{code, params}`，所以宿主把 name/message/errno 放进 params，这里还原（设计 §7 的约定）。
 //     依赖就是按这些分支的：`adm-zip` 的 inflater 与 deflate 路径都读 `error.code`。
-//  6. **`constants` 是固定 22.22.1 基线**（WSL 真值生成），与 path=posix / crypto 的静态清单同一取向：
+//  6. **`constants` 是固定基线**（见 §13.1 第 4 条；WSL 真值生成），与 path=posix / crypto 的静态清单同一取向：
 //     宿主 zlib/OpenSSL 版本会变，插件不该在两种机器上看到不同的常量表。计算仍交宿主。
 //  7. **字符串输入按 utf8 编成字节**（实测 `deflateSync('abc')` 可用）——走 bytes 通道，需要 `bytes.encode`。
 //
@@ -239,7 +239,7 @@ function crc32(data, value) {
   return callJson('zlib.crc32', buf, String(seed));
 }
 
-// ──────────────────────────── 静态表（固定 22.22.1 基线）────────────────────────────
+// ──────────────────────────── 静态表（**固定基线**，见 §13.1 第 4 条）────────────────────────────
 
 // >>> GENERATED:zlib-tables（**勿手改**：由 tools/truth/gen-zlib-tables2.mjs 生成，重跑即替换本区间）
 /** zlib 常量表（含 zlib / brotli / zstd 三族） */

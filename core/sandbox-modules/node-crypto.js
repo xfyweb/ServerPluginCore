@@ -28,7 +28,7 @@
 //     所以这条会体现为"还要声明 bytes.encode"——见 HANDOFF 里那条待办（取消 self 声明要求）。
 //  6. 编码参数照 Node 的**宽容**行为（实测）：`update(str, 'zzz')` 当作 utf8（不报错），
 //     而 `digest('zzz')`/`digest('buffer')` 返回 **Buffer**（不是字符串）。两个入口两条规则，别统一。
-//  7. 静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`）是**固定 22.22.1 基线**
+//  7. 静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`）是**固定基线**（见 §13.1 第 4 条）
 //     （WSL 真值，`tools/truth/data/crypto-truth*.json` 生成），与 path=posix / constants=Linux / os 三分法同一取向：
 //     宿主 OpenSSL 的清单会随机器变，而插件不该在两种机器上看到不同的算法表。**计算**仍交宿主，
 //     宿主不支持某个算法时如实报错（不假装成功）。
@@ -251,7 +251,7 @@ function toKeyMaterial(value, what, enc) {
 
 /**
  * 终态误用的 Node 真值：`Digest already called` + `ERR_CRYPTO_HASH_FINALIZED`。
- * 判卷人实测（v22.22.1，与宿主 v24 一致）：`digest()` 之后再 `digest()`/`update()`/`copy()` 三条路都是它。
+ * 判卷人实测（v22.22.1 与 v24 实测一致）：`digest()` 之后再 `digest()`/`update()`/`copy()` 三条路都是它。
  */
 function hashFinalizedError() {
   const e = new Error('Digest already called');
@@ -350,7 +350,7 @@ class Hash extends EventEmitter {
  * `Hmac.prototype instanceof Hash === false`），而且**没有 `copy`**（`hm.copy is not a function`）。
  * 所以这里是独立的类，不继承 Hash —— 之前那份实现把它别名成 `Hash`，三处都跟 Node 不一样。
  *
- * 终态差异（与 Hash **不同**，判卷人实测 v22.22.1 与宿主 v24 一致）：
+ * 终态差异（与 Hash **不同**，判卷人实测 v22.22.1 与 v24 一致）：
  * `digest()` 之后再 `digest()` **不抛**，返回**空值**（带编码 ⇒ `''`；不带编码 ⇒ 空 Buffer）；
  * 而 `update()` 之后再 update 仍抛 `ERR_CRYPTO_HASH_FINALIZED`。
  */
@@ -695,7 +695,7 @@ function timingSafeEqual(a, b) {
   }
 }
 
-// ──────────────────────────── 静态清单（固定 22.22.1 基线）────────────────────────────
+// ──────────────────────────── 静态清单（**固定基线**，见 §13.1 第 4 条）────────────────────────────
 
 // >>> GENERATED:crypto-tables（**勿手改**：由 tools/truth/gen-crypto-tables.mjs 生成，重跑即替换本区间）
 const HASHES = Object.freeze([
