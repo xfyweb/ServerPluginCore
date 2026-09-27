@@ -3,8 +3,8 @@
 // 判卷人有三个，各管一段（照 emulation-os-process.test.ts / emulation-fs.test.ts 的分工）：
 //   1. **宿主 Node**：平台无关的面逐条差分对跑——宿主通道用的是**真的宿主 API**
 //      （`buildHostApi` + 一个只做"取参 / JSON 化 / 错误信封"三件事的假桥），宿主实现一行都不重写；
-//   2. **v22.22.1 真值**（`tools/truth/data/fs-url-truth.json`，WSL node v22.22.1 实测 + `tools/truth/data/url-probe*.json`）：
-//      仿真基线固定 v22.22.1，宿主 v24 在个别地方已经偏离（最典型的是 `URLPattern` 进了导出面、
+//   2. **真值表**（`tools/truth/data/fs-url-truth.json`，WSL node 实测、2026-09-27 重采于 v24.20.0 + `tools/truth/data/url-probe*.json`）：
+//      基线 = v24.20.0（与判卷人同版）；`URLPattern` 这类 v24 才有的名字我们**有意不仿真**（§13.1 第 12 条）、
 //      非法端口从"当路径段"改成抛错）。凡是与平台无关的那些值，直接把录下来的真值写死在这里断言——
 //      这台开发机是 Windows，拿宿主当判卷人在这些点上会得出错误结论；
 //   3. **结构性断言**：凡是我们**有意与 Node 不同**的地方（POSIX 文件 URL 基线、不发 DeprecationWarning、
@@ -120,7 +120,7 @@ describe('仿真 node:url —— 导出面', () => {
       '导出面应当 = 真值表减去有意不仿真的名字',
     );
     // 下面这份内联名单是 v22 基线时留下的记录 —— 保留作**对照**：两份不一致就说明真值表或 shim 动过。
-    // 与 v22.22.1 对齐而不是与宿主对齐：宿主 v24 多了一个 `URLPattern`
+    // 与**真值表**对齐而不是与宿主对齐；`URLPattern` 有意不仿真（§13.1 第 12 条）
     // （它是独立的内置绑定，Node 在 v24 才挂到 url 模块上），仿真基线里没有它。
     assert.deepStrictEqual(Object.keys(U).sort(), [
       'URL',
@@ -152,7 +152,7 @@ describe('仿真 node:url —— 导出面', () => {
 
 describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，真值表逐条）', () => {
   // 绝对路径的结果**与平台无关**（我们的 resolve 固定 posix），所以这些真值在任何宿主上都成立：
-  // 出处 tools/truth/data/fs-url-truth.json + tools/truth/data/url-probe2.json（WSL node v22.22.1）。
+  // 出处 tools/truth/data/fs-url-truth.json + tools/truth/data/url-probe2.json（WSL node；2026-09-27 重采于 v24.20.0）。
   const PTF_TRUTH: Array<[string, string]> = [
     ['/tmp/a b#c.txt', 'file:///tmp/a%20b%23c.txt'],
     ['/', 'file:///'],
@@ -168,7 +168,7 @@ describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，
     ['/tmp/a\u0001b\u007fc', 'file:///tmp/a%01b%7Fc'],
   ];
 
-  it('绝对路径的转义与 v22.22.1 逐条一致（宿主是 Windows 也成立）', () => {
+  it('绝对路径的转义与真值表逐条一致（宿主是 Windows 也成立）', () => {
     for (const [input, expected] of PTF_TRUTH) {
       assert.equal(U.pathToFileURL(input).href, expected, `pathToFileURL(${JSON.stringify(input)})`);
     }
@@ -419,9 +419,9 @@ describe('仿真 node:url —— legacy Url/parse/format/resolve', () => {
     assert.deepStrictEqual([ipv6.host, ipv6.hostname, ipv6.port], ['[::1]:8080', '::1', '8080']);
   });
 
-  it('非法端口按 **v22.22.1 基线**处理（v27 检出已改成抛错，那不在仿真基线里）', () => {
+  it('非法端口按**基线**处理（v27 检出已改成抛错，那不在仿真基线里）', () => {
     // url.js:519-521（本地 v27）里这里是 `throw ERR_INVALID_ARG_VALUE('url','Invalid port in url')`，
-    // 而 v22.22.1（真值表 + 宿主 v24）把 `:abc` 当路径段。仿真基线固定 v22.22.1（设计 §13.1 第 4 条），
+    // 而基线（真值表与 v24 宿主）把 `:abc` 当路径段。仿真基线 = v24.20.0（设计 §13.1 第 4 条），
     // 所以按基线移植——这条用例就是那条决策的守门人。
     assert.equal(U.parse('http://x:abc/a').href, 'http://x/:abc/a');
     assert.equal(hostUrl.parse('http://x:abc/a').href, 'http://x/:abc/a', '宿主 v24 与基线一致');

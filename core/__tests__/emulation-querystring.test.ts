@@ -2,7 +2,7 @@
 //
 // 判卷人：
 //   1. **宿主 Node**：纯计算模块，剧本逐条与 `node:querystring` 差分（本模块就是它的逐行移植）；
-//   2. **形状真值**（`tools/truth/data/qs-shape-truth.json`，WSL node v22.22.1）：别名身份（`encode === stringify`）、
+//   2. **形状真值**（`tools/truth/data/qs-shape-truth.json`，WSL node；2026-09-27 重采于 v24.20.0）：别名身份（`encode === stringify`）、
 //      常量、坏转义回退这类"差分脚本里容易漏掉"的点按真值断言；
 //   3. **真沙箱冒烟**：QuickJS 里跑一遍（真实的 UTF-8 回退要走宿主 bytes 通道）。
 import { strict as assert } from 'node:assert';
@@ -223,7 +223,7 @@ describe('仿真 node:querystring —— 形状与有意不同', () => {
   });
 
   it('`escape` 的保留字符集按基线：`!-._~\'()*` 与字母数字**不转义**（空格 → `%20`）', () => {
-    // 真值 `tools/truth/data/qs-shape-truth.json`（v22.22.1）：`"!'()*~%20-._"`
+    // 真值 `tools/truth/data/qs-shape-truth.json`（2026-09-27 重采于 v24.20.0）：`"!'()*~%20-._"`
     // 容易记反：`encodeURIComponent` 保留 `!'()*`，而 querystring 的 noEscape 表里 `!` 根本不置位
     // ⇒ 我们与宿主**都不**转义它们，四种输入给同一个串
     const expected = "!'()*~%20-._";
@@ -240,7 +240,7 @@ describe('仿真 node:querystring —— 形状与有意不同', () => {
   });
 
   it('unescapeBuffer 的长度为**实际写出的字节**（整段/截断两条路都与 Node 一致）', () => {
-    // 基线 v22.22.1（`tools/truth/qs-unescbuf-truth.mjs`）：有 hex ⇒ 截断到写出长度；无 hex ⇒ 整段。
+    // 基线（`tools/truth/qs-unescbuf-truth.mjs`）：有 hex ⇒ 截断到写出长度；无 hex ⇒ 整段。
     // `@types/node` 没给 `unescapeBuffer` 的类型（它漏了这个公开 API）⇒ 这里显式收窄
     const hostUnesc = (hostQs as unknown as { unescapeBuffer: (s: string, sp: boolean) => Buffer })
       .unescapeBuffer;

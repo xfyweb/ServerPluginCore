@@ -128,7 +128,7 @@ describe('仿真 node:os —— 仿真平台跟随宿主（P2-E / 模型 B）vs 
     assert.equal(Array.isArray(list), true);
     assert.equal(list.length, nodeOs.availableParallelism()); // 与 availableParallelism 同源
     assert.equal(list.length, osShim.availableParallelism());
-    // 形状与基线一致：三个键、times 五个计数（真值 `tools/truth/data/os-cpus-truth.json`，v22.22.1）
+    // 形状与基线一致：三个键、times 五个计数（真值 `tools/truth/data/os-cpus-truth.json`，2026-09-27 重采于 v24.20.0）
     assert.deepEqual(Object.keys(list[0]), ['model', 'speed', 'times']);
     assert.deepEqual(Object.keys(list[0].times), ['user', 'nice', 'sys', 'idle', 'irq']);
     // 身份字段不给宿主真值（不给型号、也不编造主频）
@@ -149,7 +149,7 @@ describe('仿真 node:os —— 仿真平台跟随宿主（P2-E / 模型 B）vs 
       ? ['dlopen', 'errno', 'priority', 'signals']
       : ['dlopen', 'errno', 'priority', 'signals'];
     assert.deepEqual(Object.keys(c).sort(), expectedGroups);
-    // 逐项对**宿主真值**（不是写死的 Linux 值）：v22.22.1 上 ENOENT 两边都是 2，但 EADDRINUSE 不是
+    // 逐项对**宿主真值**（不是写死的 Linux 值）：v22.22.1 与 v24 上 ENOENT 两边都是 2，但 EADDRINUSE 不是
     assert.equal(c.errno.ENOENT, nodeOs.constants.errno.ENOENT);
     assert.equal(c.errno.EACCES, nodeOs.constants.errno.EACCES);
     assert.equal(c.errno.EADDRINUSE, nodeOs.constants.errno.EADDRINUSE); // win=100 / linux=98
@@ -281,7 +281,7 @@ describe('仿真 node:process —— 只读事实与明确的边界', async () =
       assert.equal(processShim[name](), 1000, `${name}() 应当恒为 1000`);
       assert.equal(processShim.default[name](), 1000);
     }
-    // 基线核对：Linux/node v22.22.1 上这四个都存在；Windows 宿主上**属性不存在**
+    // 基线核对：Linux/node 上这四个都存在；Windows 宿主上**属性不存在**
     // （`internal/bootstrap/node.js:214` 的 implementsPosixCredentials 门），
     // 我们统一给"Linux 基线"的答案 ⇒ 与 `path` 恒 posix 同一取向。
     assert.equal(typeof (nodeProcess as any).getuid, process.platform === 'linux' ? 'function' : 'undefined');

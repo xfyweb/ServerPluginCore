@@ -3,7 +3,7 @@
 // 判卷人：
 //   1. **宿主 Node**：本机宿主与我们的实现**用的是同一个 zlib**（我们把计算整体交宿主），
 //      所以压缩输出、错误码/文案、options 校验都能逐条差分——这是本模块最省事的一点；
-//   2. **固定基线真值**（`tools/truth/data/zlib-truth.json`，WSL node v22.22.1）：`constants`/`codes` 表按基线断言
+//   2. **固定基线真值**（`tools/truth/data/zlib-truth.json`，WSL node；2026-09-27 重采于 v24.20.0）：`constants`/`codes` 表按基线断言
 //      （宿主 zlib/OpenSSL 版本会变），另外用真值里的**压缩产物**做解压方向的输入向量
 //      （解压是跨版本稳定的，压缩不是——所以压缩只比往返与宿主交叉解压）；
 //   3. **结构性断言**：流式入口/brotli/zstd 明确抛错（本批不做，见 shim 文件头边界 1/2）。
@@ -108,7 +108,7 @@ function compare(name: string, run: (z: any) => unknown): void {
 }
 
 const SAMPLE = Buffer.from('hello zlib hello zlib hello zlib hello zlib'.repeat(4));
-// 真值表里的压缩产物（Linux v22.22.1 采的）——**解压方向**的输入向量，跨版本稳定
+// 真值表里的压缩产物（Linux 采的）——**解压方向**的输入向量，跨版本稳定
 const TRUTH_RAW_HEX = 'cb48cdc9c957a8cac94c52c820c00400';
 
 describe('仿真 node:zlib —— 与宿主 Node 差分对跑', () => {
@@ -119,7 +119,7 @@ describe('仿真 node:zlib —— 与宿主 Node 差分对跑', () => {
       return [c(SAMPLE).length > 0, back.toString('utf8') === SAMPLE.toString('utf8'), c(Buffer.alloc(0)).length, c(SAMPLE, { level: 0 }).length, c(SAMPLE, { level: 9 }).length];
     });
   }
-  compare('解压真值向量（Linux v22.22.1 的 deflateRaw 产物）', (z) => z.inflateRawSync(Buffer.from(TRUTH_RAW_HEX, 'hex')).toString('utf8'));
+  compare('解压真值向量（Linux 的 deflateRaw 产物）', (z) => z.inflateRawSync(Buffer.from(TRUTH_RAW_HEX, 'hex')).toString('utf8'));
   compare('unzipSync 自动识别 gzip/deflate', (z) =>
     [z.unzipSync(z.gzipSync(SAMPLE)).toString('utf8') === SAMPLE.toString('utf8'), z.unzipSync(z.deflateSync(SAMPLE)).toString('utf8') === SAMPLE.toString('utf8')],
   );
@@ -149,7 +149,7 @@ describe('仿真 node:zlib —— 与宿主 Node 差分对跑', () => {
 });
 
 describe('仿真 node:zlib —— 静态表、回调面与有意不同', () => {
-  it('constants / codes 按 **v22.22.1 基线**（含双向 codes 映射）', () => {
+  it('constants / codes 按**固定基线**（含双向 codes 映射）', () => {
     assert.equal(Object.keys(shim.constants).length, 170);
     assert.equal(shim.constants.Z_DATA_ERROR, -3);
     assert.equal(shim.constants.Z_BEST_COMPRESSION, 9);

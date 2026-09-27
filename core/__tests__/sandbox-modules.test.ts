@@ -259,7 +259,7 @@ describe('仿真 node:path —— 与 node:path.posix 对齐', async () => {
 
   it('`path.win32` 的真语义有一条**本地判卷人**：与真 Windows node 的差分脚本', () => {
     // 这里只钉几个"最容易被顺手改坏"的点；完整差分（366 组）在
-    // `tools/truth/path-win32-diff.mjs`（判卷人 = `_tools/node-v22.22.1-win-x64/node.exe`）
+    // `tools/truth/path-win32-diff.mjs`（判卷人 = 本机 node）
     assert.equal(shim.win32.resolve('C:/x/../y'), 'C:\\y');
     assert.equal(shim.win32.normalize('C:/a//b/./c/'), 'C:\\a\\b\\c\\');
     assert.equal(shim.win32.isAbsolute('C:a'), false); // 盘符**相对**路径不是绝对
@@ -1505,7 +1505,7 @@ describe('仿真 node:constants', async () => {
   });
 
   it('**两张平台表都在，且按 `__spcEnv.platform` 选**（P2-E 模型 B，离线可跑）', async () => {
-    // 判据取 Windows v22.22.1 的真值（`tools/truth/data/const-win.json`）——**不依赖判卷人在场**：
+    // 判据取 Windows 侧真值（`tools/truth/data/const-win.json`；2026-09-27 重采于 v24.20.0）——**不依赖判卷人在场**：
     // 那几个值是编译期定的，写死在用例里正好当"表没被改坏"的守门人。
     const prev = (globalThis as any).__spcEnv;
     try {

@@ -32,7 +32,7 @@ after(() => rmSync(DATA_DIR, { recursive: true, force: true }));
 (globalThis as any).__spcEnv = JSON.stringify(buildEnvFacts(DATA_DIR));
 const wt = await import(pathToFileURL(join(SHIM_DIR, 'node-worker_threads.js')).href);
 
-/** 事实面：与"主线程"这个语境一致（真值取自官方 node **v22.22.1** 的实跑——那个发行版就是判卷人） */
+/** 事实面：与"主线程"这个语境一致（真值取自**判卷人**的实跑——即本机 node v24.20.0） */
 describe('仿真 node:worker_threads —— 事实面', () => {
   it('threadId/isMainThread/workerData/parentPort 与基线主线程一致', () => {
     assert.equal(wt.threadId, 0);

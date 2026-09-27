@@ -2,7 +2,7 @@
 //
 // 判卷人三个（同 emulation-fs/url 的分工）：
 //   1. **宿主 Node**：摘要/HMAC/对称解密的**输出是确定性的**，逐条差分（同一个输入喂两边比结果）；
-//   2. **v22.22.1 真值**：静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`）按`仿真基线`断言，
+//   2. **固定基线真值**：静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`）按`仿真基线`断言，
 //      不与宿主比——那些清单随宿主 OpenSSL 版本变，而"插件不该在两种机器上看到不同的算法表"；
 //   3. **结构性断言**：有意不同的面（`Hash` 不是流、`Decipheriv` 一次性、WebCrypto 抛错、非对称拒绝）。
 //
