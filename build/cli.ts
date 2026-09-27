@@ -1,15 +1,21 @@
-// 构建层的 CLI 面（`spcdev keygen` / `spcdev new` / `spcdev check` / `spcdev permission list`）
+// 构建层的 CLI 面（`spcdev keygen` / `new` / `check` / `permission list` / `build`）
 //
-// 分层照本项目一贯的做法：**这里只产出/渲染**，判定在 `keys.ts` / `scaffold.ts` / `check.ts` 里，
-// 文案走 `t()` / `tError()`（核心与工具只给码 + 参数）。这些子命令**都是本地的**：不握手、不连 daemon。
-import { existsSync, statSync } from 'node:fs';
+// 分层照本项目一贯的做法：**这里只产出/渲染**，判定在 `keys.ts` / `scaffold.ts` / `check.ts` / `bundle.ts` /
+// `facts.ts` / `sign.ts` 里，文案走 `t()` / `tError()`（核心与工具只给码 + 参数）。这些子命令**都是本地的**：
+// 不握手、不连 daemon（`build` 也不联网：它只读源码与 node_modules）。
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
 import { SpcError } from '../core/errors';
 import { renderThrown, t, tError } from '../core/i18n';
-import { generateAuthorKey, loadAuthorKey, saveAuthorKey } from './keys';
+import { validateManifest } from '../sdk/validate';
+import type { Manifest } from '../sdk/types';
+import { bundlePlugin } from './bundle';
 import { checkPlugin, type CheckResult, type Finding } from './check';
+import { closureOf, reconcile, type BuildFacts, type DeclaredDep } from './facts';
+import { generateAuthorKey, loadAuthorKey, saveAuthorKey } from './keys';
 import { DYNAMIC_POINT_HINT, listPermissions } from './permissions';
+import { checkAuthor, metaOf, payloadFiles, writeEnvelope } from './sign';
 import { scaffoldPlugin } from './scaffold';
 import {
   checkAuthorId,
@@ -20,6 +26,9 @@ import {
   workspaceConfigFile,
   type Workspace,
 } from './workspace';
+
+/** 产物里的 bundle 文件名（`dist/manifest.json` 的 `entry` 指向它 —— 见 `build-layer-design.md` §6） */
+const BUNDLE_FILE = 'bundle.js';
 
 /** 问一句（交互）；抽成可注入的 IO，好让用例覆盖"回车用默认值 / 非法值被拒"而不必真开一个终端 */
 export type AskFn = (question: string) => Promise<string>;
@@ -218,7 +227,7 @@ export async function runPluginNew(args: string[], io: CliIo = {}): Promise<numb
 /** `spcdev check [<目录>] [--json]`：不打包的静态自检 */
 export function runCheck(args: string[]): number {
   const { positional, flags } = parseArgs(args);
-  const target = resolveCheckTarget(positional[0]);
+  const target = resolvePluginTarget(positional[0]);
   const result = checkPlugin(target);
 
   if (flags.has('--json')) {
@@ -241,6 +250,155 @@ export function runCheck(args: string[]): number {
   );
   if (result.ok) console.log(t('cli.check.ok'));
   return result.ok ? 0 : 1;
+}
+
+/**
+ * `spcdev build [<目录>] [--out <目录>] [--released-at <ISO>]`
+ *
+ * **顺序本身是设计的一部分**（前两步在打包之前，`build-layer-design.md` §5 的施工顺序 + 用户 2026-09-27 的追加要求）：
+ *   ① 读清单 → **先按 schema 校验**：非法清单不该出得了货（否则要到 install 才被拦，白构建一趟）；
+ *   ② 核对**清单作者段 == 工作区作者 ID**（§10.4 末条）—— 这条要在打包前拦，别产出一个装不进自己机器的包；
+ *   ③ 打包（两道闸）；
+ *   ④ 产物事实写进产物清单 + 与作者声明对账（不一致 ⇒ 构建失败）；
+ *   ⑤ 作者信封（`plugin.meta.json` + `plugin.author.sig`）。
+ */
+export async function runBuild(args: string[], io: CliIo = {}): Promise<number> {
+  const { positional, flags } = parseArgs(args);
+  const dir = resolvePluginTarget(positional[0]);
+
+  // `--released-at` 与 `SPC_RELEASED_AT` 都给时**环境变量优先**（§2.1 的口子；确定性用例靠它固定时间）
+  const releasedRaw = process.env.SPC_RELEASED_AT ?? flags.get('--released-at');
+  let releasedAt = new Date().toISOString();
+  if (releasedRaw !== undefined && releasedRaw !== '') {
+    const t0 = Date.parse(releasedRaw);
+    if (Number.isNaN(t0)) {
+      console.error(t('cli.dev.build.badTime', { value: releasedRaw }));
+      return 2; // 用法错误（cli-contract 的退出码表）
+    }
+    releasedAt = new Date(t0).toISOString();
+  }
+
+  // 清单三步走，与 `spcdev check` 的三种 finding 同一套词汇：**没了** / **读不成 JSON** / **不合 schema**
+  const manifestFile = join(dir, 'manifest.json');
+  if (!existsSync(manifestFile)) throw new SpcError('BUILD_MANIFEST_MISSING', { file: 'manifest.json' });
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(manifestFile, 'utf8'));
+  } catch {
+    throw new SpcError('BUILD_MANIFEST_MALFORMED', { file: 'manifest.json' });
+  }
+
+  // ① 清单校验：用**同一个**校验器（sdk/validate），构建层不另写一套规则
+  const validated = validateManifest(raw);
+  if (!validated.ok) {
+    throw new SpcError('BUILD_MANIFEST_INVALID', { detail: validated.errors.slice(0, 3).join('；') });
+  }
+  const manifest = raw as Manifest;
+
+  // ② 作者对账（工作区没声明作者 ⇒ 复用已有的 AUTHOR_ID_REQUIRED，身份不猜）
+  const ws = loadWorkspace(dir, {});
+  const author = checkAuthor(manifest, ws.config.author);
+  if (!author.ok) {
+    if (author.reason === 'workspace-unset') {
+      throw new SpcError('AUTHOR_ID_REQUIRED', { file: workspaceConfigFile(ws) });
+    }
+    throw new SpcError('BUILD_AUTHOR_MISMATCH', {
+      reason: author.reason,
+      expected: author.expected,
+      actual: author.actual,
+    });
+  }
+  const key = loadAuthorKey(ws.keyPath); // 缺钥 ⇒ AUTHOR_KEY_MISSING（含"先跑 keygen"的提示）
+
+  // ③ 打包
+  const entry = manifest.entry ?? 'main.ts';
+  const bundled = await bundlePlugin({ dir, entry });
+
+  // ④ 产物事实 + 与声明对账
+  const closure = closureOf(bundled.metafile, dir);
+  const declared: DeclaredDep[] = (manifest.dependencies?.npm ?? []).map((d) => ({ ...d }));
+  const check = reconcile(declared, closure);
+  if (check.unused.length > 0) {
+    throw new SpcError('BUILD_DEP_UNUSED', { name: check.unused.join(', ') });
+  }
+  if (check.versionMismatch.length > 0) {
+    const m = check.versionMismatch[0];
+    throw new SpcError('BUILD_DEP_MISMATCH', { name: m.name, declared: m.declared, resolved: m.resolved });
+  }
+
+  const facts: BuildFacts = { closure, builtins: bundled.builtins, bytes: bundled.bytes };
+  const outDir = flags.get('--out') ?? ws.config.outDir;
+  const distDir = resolve(dir, outDir === '' ? ws.config.outDir : outDir);
+
+  // 产物清单 = 作者清单 + 构建器写入的事实。⚠️ `entry` 改指向 bundle：产物目录里它才是入口
+  // （同一个字段两种语义，见 schema 的 entry 说明；不给产物另起字段，因为那是改契约）
+  const srcDeps = (raw as { dependencies?: Record<string, unknown> }).dependencies;
+  const distManifest = {
+    ...(raw as Record<string, unknown>),
+    entry: BUNDLE_FILE,
+    // 作者没写 dependencies 就不凭空造一个空对象出来（产物清单要能被逐字 diff）
+    ...(srcDeps !== undefined || declared.length > 0
+      ? {
+          dependencies: {
+            ...(srcDeps ?? {}),
+            ...(declared.length > 0
+              ? {
+                  npm: declared.map((d) => {
+                    const resolved = check.resolved.get(d.name);
+                    return resolved === undefined ? d : { ...d, resolved };
+                  }),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    build: facts,
+  } as unknown as Manifest;
+
+  mkdirSync(distDir, { recursive: true });
+  writeFileSync(join(distDir, BUNDLE_FILE), bundled.code);
+  writeFileSync(join(distDir, 'manifest.json'), `${JSON.stringify(distManifest, null, 2)}\n`);
+
+  // ⑤ 作者信封（载荷 = 刚写的两个文件；信封自己不算载荷）
+  const meta = metaOf({ manifest: distManifest, files: payloadFiles(distDir), authorPub: key.pub, releasedAt });
+  const written = writeEnvelope(distDir, meta, key);
+
+  // 输出：把"构建器看到的事实"打给作者看（构建成功 ≠ 没问题，所以 stub 与未核项都要出声）
+  console.log(t('cli.dev.build.header', { dir, out: distDir }));
+  console.log(t('cli.dev.build.entry', { entry, file: BUNDLE_FILE, bytes: bundled.bytes }));
+  console.log(
+    bundled.builtins.length > 0
+      ? t('cli.dev.build.builtins', { list: bundled.builtins.join(', ') })
+      : t('cli.dev.build.builtins.none'),
+  );
+  console.log(
+    closure.length > 0
+      ? t('cli.dev.build.closure', {
+          count: closure.length,
+          bytes: closure.reduce((n, c) => n + c.bytes, 0),
+        })
+      : t('cli.dev.build.closure.none'),
+  );
+  if (check.transitive.length > 0) {
+    console.log(t('cli.dev.build.transitive', { list: check.transitive.join(', ') }));
+  }
+  if (bundled.stubbed.length > 0) {
+    console.log(t('cli.dev.build.stubbed', { list: bundled.stubbed.join(', ') }));
+  }
+  if (check.uncheckedRange.length > 0) {
+    console.log(
+      t('cli.dev.build.unchecked', {
+        list: check.uncheckedRange.map((u) => `${u.name} ${u.declared} → ${u.resolved}`).join(', '),
+      }),
+    );
+  }
+  if (check.unknownVersion.length > 0) {
+    console.log(t('cli.dev.build.unknownVersion', { list: check.unknownVersion.join(', ') }));
+  }
+  console.log(t('cli.dev.build.author', { author: author.namespace, fingerprint: key.fingerprint }));
+  console.log(t('cli.dev.build.releasedAt', { at: releasedAt }));
+  console.log(t('cli.dev.build.dist', { dir: distDir, meta: written.metaBytes, sig: written.sigBytes }));
+  return 0;
 }
 
 /** `spcdev permission list [--json]`：列本机已注册的权限点（冻结表；动态族另附形状） */
@@ -272,8 +430,8 @@ export function runPermission(args: string[]): number {
   return 0;
 }
 
-/** 位置参数可以是目录、插件名（相对工作区的 `plugin/<名字>`），缺省 = 当前目录 */
-function resolveCheckTarget(arg: string | undefined): string {
+/** 位置参数可以是目录、插件名（相对工作区的 `plugin/<名字>`），缺省 = 当前目录（`check` 与 `build` 共用） */
+function resolvePluginTarget(arg: string | undefined): string {
   if (arg === undefined) return process.cwd();
   const direct = resolve(arg);
   if (existsSync(join(direct, 'manifest.json'))) return direct;
@@ -298,9 +456,9 @@ function renderFinding(f: Finding): string {
 
 /**
  * `spcdev` 的分发：作者工具全集（**本地**命令，不握手、不连 daemon）。
- * ⑦b/⑦c 的 `build` / `pack` / `watch` 也挂这里 —— 现在先明确报"还没做"，别让作者空等一个不存在的动词。
+ * ⑦c 的 `pack` / `watch` 还没落地，先明确报"还没做"，别让作者空等一个不存在的动词。
  *
- * `async` 是因为 `keygen` 要**问一句**（作者 ID）；`io` 只为用例留缝（真跑时用默认的 readline）。
+ * `async` 是因为 `keygen` 要**问一句**（作者 ID）、`build` 要 await esbuild；`io` 只为用例留缝。
  */
 export const DEV_VERBS = ['keygen', 'new', 'check', 'permission', 'build', 'pack', 'watch'] as const;
 
@@ -316,9 +474,10 @@ export async function runDevCli(cmd: string, args: string[], io: CliIo = {}): Pr
       case 'permission':
         return runPermission(args);
       case 'build':
+        return await runBuild(args, io);
       case 'pack':
       case 'watch':
-        // ⑦b（build）/ ⑦c（pack、watch）尚未落地：明确说清楚，而不是给一句"未知命令"
+        // ⑦c 尚未落地：明确说清楚，而不是给一句"未知命令"
         console.log(t('cli.dev.notYet', { verb: cmd }));
         return 1;
       default:
@@ -330,7 +489,9 @@ export async function runDevCli(cmd: string, args: string[], io: CliIo = {}): Pr
     // 少了这一层，Node 会把整段堆栈打出来（内部路径、scaffold.ts:199…）—— 对作者毫无用处，
     // 而那本该是一条"哪个值非法、该改成什么样"的提示。
     console.error(`[spcdev] ${renderThrown(e)}`);
-    return 1;
+    // 退出码：`BUILD_*` 一族是**门禁失败**（作者写错了/环境缺东西），与一般失败分开 —— 好让 CI 能区分
+    // （docs/cli-contract.md 的退出码表：0 成功 / 1 一般失败 / 2 用法 / 3 门禁 / 4 需要交互但非 TTY）
+    return e instanceof SpcError && e.code.startsWith('BUILD_') ? 3 : 1;
   }
 }
 

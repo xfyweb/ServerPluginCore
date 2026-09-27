@@ -294,11 +294,66 @@
       "maxLength": 500
     },
     "entry": {
-      "description": "构建源入口（如 main.ts/main.js），构建层从这里开始打包；缺省 main.ts",
+      "description": "入口文件，缺省 main.ts。**同一个字段两种语义**：在**源码目录**里是构建源入口（构建层从这里开始打包），在**产物目录**里由构建层改写成指向打包产物（`dist/manifest.json` 的 entry = bundle.js）—— 不给产物另起字段，因为那是改契约",
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
       "default": "main.ts"
+    },
+    "build": {
+      "description": "**产物事实**：由构建器（`spcdev build`）写入产物目录里的清单，**作者不写**（源码清单里没有这个字段）。ADR-005 §6：事实来源是构建器，不是 manifest 里的手写字段。核心装载**不读它**（它不参与任何判定），用途是透明与归因：管理员一眼看到这个插件里有哪几坨第三方代码、各占多少产物体积、用到了哪些宿主仿真模块",
+      "type": "object",
+      "required": [
+        "closure",
+        "builtins",
+        "bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "closure": {
+          "description": "真实依赖闭包（构建器从入口静态解析出来的，不是读声明）——含传递依赖；按 name 升序",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "version",
+              "bytes"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "description": "包名（作用域包的 `@scope/name` 原样）",
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "description": "该包**自己** package.json 里的版本；读不到时是占位符而不是编一个",
+                "type": "string",
+                "minLength": 1
+              },
+              "bytes": {
+                "description": "它在**产物里**占的字节（不是磁盘上的大小）",
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "builtins": {
+          "description": "用到的**已登记**宿主仿真模块（规范名，如 `path` / `fs/promises`），按名升序 —— 审查面",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "bytes": {
+          "description": "产物体积（bundle 的字节数）",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     },
     "runtime": {
       "type": "object",
@@ -485,6 +540,12 @@
                 "maxLength": 214
               },
               "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "resolved": {
+                "description": "**构建器写入**的真实解析版本（不是上面那个区间）。与声明对账用：声明是精确版本时不一致 ⇒ 构建失败；是区间时只记录（见 build-layer-design §2/§9-3）",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64

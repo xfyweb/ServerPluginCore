@@ -71,7 +71,7 @@ foo-1.2.0.spc/                  （zip 容器；校验不依赖容器字节）
 | `metaSchema` | ✔ | 元数据 schema 版本（与 `manifest.schema` 各自演进）；**v4 = 2** |
 | `id` / `version` / `type` / `compat.minCore` | ✔ | 冗余缓存，必须与 `manifest.json` 一致，否则 `META_MANIFEST_MISMATCH` |
 | **`authorPub`** | ✔ | **作者公钥**（base64 裸 32 字节）—— 身份。**验证时必须用"期望的公钥"**（依赖声明里的 `author.pub`，或 `authors` 名册里的首见值），**不能信这个字段本身**（§3bis） |
-| `releasedAt` | ✔ | 发布时刻（授权判定锚点，见 market-license-design §3）。⚠️ **v4 起由构建期填**，市场**核对后拒签或背书**、不改写字节（待定项见 `events-and-hooks-design.md` §4.2-6） |
+| `releasedAt` | ✔ | 发布时刻（授权判定锚点，见 market-license-design §3）。⚠️ **v4 起由构建期填**，市场**核对后拒签或背书**、不改写字节（✅ 已定，见 §12-4） |
 | `build` | ✘ | 构建描述 |
 | `files[]` | ✔ | `path` 必须为相对路径且规范化后不含 `..`（复用 `core/fs/safe-path.ts` 规则）；重复 `path` → `DUPLICATE_ENTRY`；建议按 `path` 升序输出 |
 
@@ -501,7 +501,7 @@ fingerprint = "sha256:" + hex_lower( SHA-256( raw_32_bytes_of_Ed25519_public_key
 2. 状态文档的 TTL 默认值与是否允许管理员调整。
 3. 一次性验签（"仅下载该插件"）是否也写入 `highWater`（当前设计：不写）。
 4. ~~**`releasedAt` 归谁写**（v4 新增）~~ **✅ 已定（2026-09-25，用户拍板）**：**构建期填 + 市场核对/拒签**（本文原口径）。理由：meta 由构建工具产出、市场只追加签名 ⇒ 让市场自己定就得改成"市场改写字节 + 作者签名缩小覆盖范围"，代价更大。将来市场若要加自己的事实，用独立的签名对象，不要改写 meta。
-5. **作者私钥怎么保管**（`spcdev keygen` 的形态）：文件格式与路径约定、要不要 passphrase；私钥**永不进包**，建议 `chmod 600`。
+5. ~~**作者私钥怎么保管**（`spcdev keygen` 的形态）~~ **✅ 已定（2026-09-25，用户拍板）+ 已落地（V 批）**：**单文件 JSON**（`{ schema: 1, alg: 'ed25519', seed, pub, fingerprint, createdAt }`，种子是 base64 裸 32 字节）+ **无 passphrase** + `chmod 600`；私钥**永不进包**。实现：`build/keys.ts` 的 `AuthorKey` / `saveAuthorKey` / `loadAuthorKey`（种子走 PKCS#8 DER 前缀推公钥，见该文件的注释）；工作区与路径约定见 `build-layer-design.md` §10.4（`.spcdev/keys/author.key`）。
 6. ~~**`keyring` 里 `kind: 'local'` 的具体形状**~~ **✅ 语义已定（2026-09-24，§3bis + §5 末）**：本地源 = **一个作者的桶**（可选 `authorAnchor`）+ `local:default` 杂桶 + 同钥第二例建议独立成源（promote）。**✅ 条目与 `spc source` CLI 已落地（2026-09-25，⑥a）**（面板源清单仍属 P3）；promote 的搬运复用 **⑥ reanchor**（批量、原子、列全会被打断的依赖方）。
 7. ~~**`authors.json` 的换钥接受流程**~~ **✅ 已定（2026-09-24）**：安装时 **`--accept-key-change`**（显式、落审计含旧/新指纹）；不给该开关就 `PLUGIN_AUTHOR_MISMATCH` 拒装，错误里同时给"换个桶"那条出路。面板入口归 P3。
 8. **promote 的触发与呈现细节**：建议在"安装成功后"打印（非交互），是否还要一个 `spc source suggest` / 面板上的一键搬迁入口，留到 P4 与源清单一并定。

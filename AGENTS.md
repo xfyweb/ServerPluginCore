@@ -103,8 +103,8 @@ ServerPluginCore 是一个**宿主最小、能力全插件化**的服务端核�
 **验证三件套**：
 
 ```bash
-pnpm test          # 当前基线：1171 用例 / 1165 通过 / 0 失败 / 6 平台跳过（Windows）
-                   # 同一套在 Linux / node v24.20.0 上：1171 / 1169 / 0 失败 / 2 跳过
+pnpm test          # 当前基线：1188 用例 / 1182 通过 / 0 失败 / 6 平台跳过（Windows）
+                   # 同一套在 Linux / node v24.20.0 上：1188 / 1186 / 0 失败 / 2 跳过
 npx tsc --noEmit   # 0 错
 ```
 
@@ -167,7 +167,8 @@ bin/                `spc`（管理面）与 `spcdev`（作者工具）两个命�
 sdk/                插件作者用的类型与校验（契约面）：`@host/api` / `@spc/sdk` 是这里的 ambient 声明，
                     插件放 `plugin/` 下就自动拿到类型（tsconfig 的 include 含 plugin）
 build/              **构建层 = `spcdev` 的实现**（作者工具，本地命令，不连 daemon）：工作区发现 / 作者密钥 / 脚手架 /
-                    自检（含权限点对账）/ 权限点清单 / 权限映射快照 —— 见 docs/build-layer-design.md §10
+                    自检（含权限点对账）/ 权限点清单 / 权限映射快照 / **打包**（`bundle.ts` 两道闸 + `facts.ts` 产物事实与
+                    对账 + `sign.ts` 作者信封）—— 见 docs/build-layer-design.md §10
 plugin/             **插件开发工作区**：一个插件一个目录、各自独立 git；本体忽略 `plugin/*/`（只留示例 hello、counter）
 scripts/            门禁脚本（进 CI 的那类）
 tools/              取证工具：把行为打成矩阵，供设计判断。**先读 tools/README.md**
