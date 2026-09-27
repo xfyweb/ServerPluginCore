@@ -177,4 +177,5 @@ patches/            上游补丁（pnpm patch）
 **文档**（在 `docs/`）：
 `ROADMAP.md`（阶段与顺序）· `module-emulation-design.md`（仿真模块清单/阶段/限制，**含 §14 实测坑清单**）·
 `build-layer-design.md` + `build-layer-evidence.md`（构建层设计与实测）·
-`plugin-lifecycle-design.md`（限额与生命周期）· `api-contract.md` · `ADR-00x-*.md`（架构决策）。
+`plugin-lifecycle-design.md`（限额与生命周期）· `api-contract.md` ·
+`cli-contract.md`（`spc` / `spcdev` 两命令的受众、**退出码**、TTY 与输出通道）· `ADR-00x-*.md`（架构决策）。
