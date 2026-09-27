@@ -5,9 +5,9 @@
 // 就 `require('constants')` 取 `O_RDONLY` / `F_OK` / `COPYFILE_EXCL` 一类。
 //
 // **取哪张表由 `globalThis.__spcEnv.platform` 决定**（P2-E / 模型 B：仿真平台跟随宿主）。
-// 两份都是 **node v22.22.1** 的运行值真值，逐键可核：
+// 两份都是 **node v24.20.0** 的运行值真值，逐键可核：
 //   · Linux：wsl -e node tools/truth/dump-const.mjs            （linux/x64）
-//   · Windows：用官方 node v22.22.1 的 node.exe 跑 tools/truth/dump-const-win.mjs（win32/x64）
+//   · Windows：用**本机 node（判卷人）**跑 tools/truth/dump-const-win.mjs（win32/x64）
 //   → 再跑 tools/truth/gen-constants2.mjs 生成本文件（两份真值在 tools/truth/data/ 下）
 //
 // 三处**结构性**差异（不是"几个数值不同"，所以必须整表分）：

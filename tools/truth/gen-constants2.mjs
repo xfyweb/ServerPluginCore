@@ -2,7 +2,7 @@
 //
 // 用法（从仓库根）：node tools/truth/gen-constants2.mjs
 //
-// 输入（两份都是 node v22.22.1 的运行值真值）：
+// 输入（两份都是 node 的运行值真值；**生成物里的版本号从数据里读**，见下面 `VER`）：
 //   · tools/truth/data/const-linux.json  ← 在 WSL 里跑 tools/truth/dump-const.mjs
 //   · tools/truth/data/const-win.json    ← 用判卷人 node 跑 tools/truth/dump-const-win.mjs
 //
@@ -90,9 +90,12 @@ lines.push("// + `fs.constants` + `crypto.constants` 的合并（见 `lib/consta
 lines.push("// 就 `require('constants')` 取 `O_RDONLY` / `F_OK` / `COPYFILE_EXCL` 一类。");
 lines.push('//');
 lines.push('// **取哪张表由 `globalThis.__spcEnv.platform` 决定**（P2-E / 模型 B：仿真平台跟随宿主）。');
-lines.push('// 两份都是 **node v22.22.1** 的运行值真值，逐键可核：');
+// ⚠️ 版本号**从数据里读**，别在下面写死：写死过一次，基线从 v22.22.1 迁到 v24.20.0 时
+// 生成物的头注释就跟着过期了（"生成物写着 v22、数据其实是 v24"这种不一致最费人）。
+const VER = LINUX.node === WIN.node ? LINUX.node : `${LINUX.node}（Linux）/ ${WIN.node}（Windows）`;
+lines.push(`// 两份都是 **node ${VER}** 的运行值真值，逐键可核：`);
 lines.push(`//   · Linux：wsl -e node tools/truth/dump-const.mjs            （${LINUX.platform}/${LINUX.arch}）`);
-lines.push(`//   · Windows：用官方 node v22.22.1 的 node.exe 跑 tools/truth/dump-const-win.mjs（${WIN.platform}/${WIN.arch}）`);
+lines.push(`//   · Windows：用**本机 node（判卷人）**跑 tools/truth/dump-const-win.mjs（${WIN.platform}/${WIN.arch}）`);
 lines.push('//   → 再跑 tools/truth/gen-constants2.mjs 生成本文件（两份真值在 tools/truth/data/ 下）');
 lines.push('//');
 lines.push('// 三处**结构性**差异（不是"几个数值不同"，所以必须整表分）：');
