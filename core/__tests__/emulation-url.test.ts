@@ -162,10 +162,24 @@ describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，
     }
   });
 
-  it('Linux 宿主上与 node:url 完全一致（含相对路径，因为两边 cwd 相同）', () => {
+  it('Linux 宿主上与 node:url 一致：**绝对路径**逐条比宿主，**相对路径**比自洽', () => {
     if (process.platform !== 'linux') return; // 相对路径的差异见下面那条"有意不同"
-    for (const p of ['/tmp/a b#c.txt', 'rel/x.txt', '.', '/', '/tmp/dir/', '', 'a/../b']) {
+    // ⚠️ 相对路径**不能**和宿主比：宿主的 cwd 是仓库根，而沙箱里 `process.cwd()` 就是**数据目录**
+    // （`module-emulation-design` §8：沙箱可见的路径全是一个形态）。原来那句"两边 cwd 相同"是错的
+    // —— 它只在这条用例被跳过时（非 Linux）才没露。
+    for (const p of ['/tmp/a b#c.txt', '/', '/tmp/dir/']) {
       assert.equal(U.pathToFileURL(p).href, hostUrl.pathToFileURL(p).href, `pathToFileURL(${JSON.stringify(p)})`);
+    }
+    // 相对路径：两边 cwd 不同（宿主=仓库根，我们=数据目录），所以比**去掉 cwd 之后的那一段** ——
+    // 这样既验了"相对路径按自己的 cwd 解析、`..` 归一"这个形状，又不依赖谁的 cwd 长什么样。
+    const ourBase = U.pathToFileURL('.').href;
+    const hostBase = hostUrl.pathToFileURL('.').href;
+    for (const p of ['rel/x.txt', '.', '', 'a/../b']) {
+      const ours = U.pathToFileURL(p).href;
+      const theirs = hostUrl.pathToFileURL(p).href;
+      assert.ok(ours.startsWith(ourBase), `我们这边应当以自身 cwd 起头：${p} ⇒ ${ours}`);
+      assert.ok(theirs.startsWith(hostBase), `宿主那边应当以自身 cwd 起头：${p} ⇒ ${theirs}`);
+      assert.equal(ours.slice(ourBase.length), theirs.slice(hostBase.length), `相对部分应当同形：${p}`);
     }
   });
 
