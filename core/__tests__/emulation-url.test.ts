@@ -3,7 +3,7 @@
 // 判卷人有三个，各管一段（照 emulation-os-process.test.ts / emulation-fs.test.ts 的分工）：
 //   1. **宿主 Node**：平台无关的面逐条差分对跑——宿主通道用的是**真的宿主 API**
 //      （`buildHostApi` + 一个只做"取参 / JSON 化 / 错误信封"三件事的假桥），宿主实现一行都不重写；
-//   2. **真值表**（`tools/truth/data/fs-url-truth.json`，WSL node 实测、2026-09-27 重采于 v24.20.0 + `tools/truth/data/url-probe*.json`）：
+//   2. **真值表**（`tools/truth/data/fs-url-truth.json`，WSL node 实测、2026-09-27 重采于 v24.20.0 + `url-probe*.json`（后者是**存档引用**，无产出脚本））：
 //      基线 = v24.20.0（与判卷人同版）；`URLPattern` 这类 v24 才有的名字我们**有意不仿真**（§13.1 第 12 条）、
 //      非法端口从"当路径段"改成抛错）。凡是与平台无关的那些值，直接把录下来的真值写死在这里断言——
 //      这台开发机是 Windows，拿宿主当判卷人在这些点上会得出错误结论；
@@ -152,7 +152,7 @@ describe('仿真 node:url —— 导出面', () => {
 
 describe('仿真 node:url —— pathToFileURL / fileURLToPath（POSIX 基线，真值表逐条）', () => {
   // 绝对路径的结果**与平台无关**（我们的 resolve 固定 posix），所以这些真值在任何宿主上都成立：
-  // 出处 tools/truth/data/fs-url-truth.json + tools/truth/data/url-probe2.json（WSL node；2026-09-27 重采于 v24.20.0）。
+  // 出处 tools/truth/data/fs-url-truth.json + tools/truth/data/url-probe2.json（**存档引用**：v22 时手工重定向出来的，**没有产出脚本**、判定也不依赖它 —— 真值以 `fs-url-truth.json` 为准）。
   const PTF_TRUTH: Array<[string, string]> = [
     ['/tmp/a b#c.txt', 'file:///tmp/a%20b%23c.txt'],
     ['/', 'file:///'],
@@ -334,7 +334,7 @@ describe('仿真 node:url —— legacy Url/parse/format/resolve', () => {
   });
 
   it('parseQueryString=true 用 querystring 语义：重复键变数组、null 原型、上限 1000', () => {
-    // 真值：tools/truth/data/url-probe3.json（重复键 / 空段 / 非 UTF-8 百分号 / 上限）
+    // 真值：`url-probe3.json`（**存档引用**，无产出脚本）+ 本用例内联的期望值（判定用后者）——覆盖重复键 / 空段 / 非 UTF-8 百分号 / 上限）
     const q = U.parse('http://x/?b=1&b=2&b=3&a=%E4&c=+&d=%2B&e', true).query;
     assert.deepStrictEqual({ ...q }, { b: ['1', '2', '3'], a: '\uFFFD', c: ' ', d: '+', e: '' });
     assert.equal(Object.getPrototypeOf(q), null, 'query 是 { __proto__: null }');

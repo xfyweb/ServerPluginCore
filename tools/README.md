@@ -183,6 +183,10 @@ node tools/batteries/events-battery.mjs
 > （不能 `import` 兄弟数据文件），而十来份 `emulation-*.test.ts` 又把它**逐字节拷**出去当真 ESM 跑。
 > ⇒ 用 `// >>> GENERATED:<名字>` 与 `// <<< GENERATED:<名字>` 圈住，工具只重写这一段（**幂等**，第二次跑报"未变化"）。
 > ⛔ **不要用一次性占位符**（旧的 `/*__ERRNO_TABLE__*/` 就是反面教材：替换一次就没了 ⇒ 工具再也跑不了）。
+>
+> 📦 **存档引用（不是现行真值）**：`tools/truth/data/url-probe2.json` / `url-probe3.json` 是**当年手工重定向出来的**，
+> **没有产出脚本**（跑不出第二次）⇒ 它们的值停在 v22.22.1，只作**引用记录**；判定不依赖它们（用例的期望值是内联的，
+> 现行真值以 `fs-url-truth.json` 为准）。基线迁 v24.20.0 时**没有也无法重采这两份**。
 
 **判卷人**（Windows 侧真值）= **本机装的 node v24.20.0**（与契约基线同版；`tools/paths.mjs` 的 `JUDGE_NODE` 默认就是
 `process.execPath`）—— 旧的官方 `node-v22.22.1-win-x64` **已退役**（留档不删）。要复现旧版本真值才设 `SPC_JUDGE_NODE`。
