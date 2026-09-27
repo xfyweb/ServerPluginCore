@@ -32,11 +32,10 @@ export const SMOKE_BUNDLES = join(HERE, 'smoke', 'bundles');
 export const SURVEY_DIR = process.env.SPC_SURVEY_DIR ?? resolve(REPO_ROOT, '..', '_deps-survey');
 
 /**
- * Windows 判卷人（官方 node v22.22.1 解压出来的 `node.exe`）—— **仓库外**，需自行下载。
- * 默认按工作区布局猜，可用 `SPC_JUDGE_NODE` 覆盖。
+ * 判卷人（Windows 侧真值的执行者）—— 2026-09-27 起**就是本机装的 node**（= 契约基线 v24.20.0，同版）：
+ * 官方 `_tools/node-v22.22.1-win-x64` 那颗**退役**（留档不删）。想用别的版本复现旧真值，设 `SPC_JUDGE_NODE` 覆盖。
  */
-export const JUDGE_NODE =
-  process.env.SPC_JUDGE_NODE ?? resolve(REPO_ROOT, '..', '_tools', 'node-v22.22.1-win-x64', 'node.exe');
+export const JUDGE_NODE = process.env.SPC_JUDGE_NODE ?? process.execPath;
 
 /** 把本地路径转成 `file://` URL（动态 import 用）。 */
 export const fileUrl = (p) => pathToFileURL(p).href;

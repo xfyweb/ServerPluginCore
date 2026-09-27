@@ -184,7 +184,8 @@ node tools/batteries/events-battery.mjs
 > ⇒ 用 `// >>> GENERATED:<名字>` 与 `// <<< GENERATED:<名字>` 圈住，工具只重写这一段（**幂等**，第二次跑报"未变化"）。
 > ⛔ **不要用一次性占位符**（旧的 `/*__ERRNO_TABLE__*/` 就是反面教材：替换一次就没了 ⇒ 工具再也跑不了）。
 
-**判卷人**（Windows 侧真值）是官方 `node-v22.22.1-win-x64` 解压出的 `node.exe`——**仓库外**，需自行下载。
+**判卷人**（Windows 侧真值）= **本机装的 node v24.20.0**（与契约基线同版；`tools/paths.mjs` 的 `JUDGE_NODE` 默认就是
+`process.execPath`）—— 旧的官方 `node-v22.22.1-win-x64` **已退役**（留档不删）。要复现旧版本真值才设 `SPC_JUDGE_NODE`。
 
 ### `tools/smoke/dep-smoke.mts` —— 真实依赖冒烟
 
