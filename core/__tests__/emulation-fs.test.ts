@@ -362,13 +362,19 @@ describe('仿真 node:fs —— 与宿主 Node 差分对跑', () => {
         // 例外是 `ERR_FS_EISDIR`：它是 Node 的 SystemError 形状，**带正的 errno 21**（WSL 实测）。
         const isErrnoError =
           typeof ours.code === 'string' && (!ours.code.startsWith('ERR_') || ours.code === 'ERR_FS_EISDIR');
+        // `ERR_*` 契约码的文案出自 **Node 自己**（不经 libuv）⇒ 实测四个宿主（win/linux × v22.22.1/v24.x）**逐字一致**，
+        // 所以**全平台**断言；errno 系（含 `ERR_FS_EISDIR`）的文案是 libuv 的，仍只在 Linux 上断言（见文件头判卷人 2）。
+        const contractCode =
+          typeof ours.code === 'string' && ours.code.startsWith('ERR_') && ours.code !== 'ERR_FS_EISDIR';
         if (process.platform === 'linux') {
           assert.equal(ours.errno, theirs.errno, `${c.name}：errno 不一致`);
+        }
+        if (process.platform === 'linux' || contractCode) {
           assert.equal(ours.message, theirs.message, `${c.name}：message 不一致`);
-        } else if (isErrnoError) {
-          assert.equal(typeof ours.errno, 'number', `${c.name}：errno 应当是数字`);
-        } else {
-          assert.equal(ours.errno, undefined, `${c.name}：Node 契约码不该带 errno`);
+        }
+        if (process.platform !== 'linux') {
+          if (isErrnoError) assert.equal(typeof ours.errno, 'number', `${c.name}：errno 应当是数字`);
+          else assert.equal(ours.errno, undefined, `${c.name}：Node 契约码不该带 errno`);
         }
       }
     });

@@ -355,10 +355,14 @@ function withSyscall(syscall, path, dest, fn) {
   try {
     return fn();
   } catch (err) {
-    if (err && typeof err.code === 'string' && !err.spcCode) {
+    // ⚠️ `spcGuest` = **我们自己造的**参数校验错（见 `invalidArgType` / `invalidArgValue`）⇒ 必须原样上抛。
+    // 只判 `!err.spcCode` 不够：**我们造的错也没有 spcCode**，于是会被当成宿主错扔进 `toNodeError`，
+    // 而它那条 `ERR_*` 分支会把 message 换成**裸码**（`ERR_INVALID_ARG_TYPE`）⇒ 文案全丢。
+    // 这正是 `writeFileSync(p, 42)` / `writeFileSync(p, new ArrayBuffer(4))` 文案不对的根因（Linux 差分用例一直在报）。
+    if (err && typeof err.code === 'string' && !err.spcCode && !err.spcGuest) {
       throw toNodeError(err, syscall, path, dest);
     }
-    throw err; // 我们自己抛的参数校验错误（ERR_INVALID_ARG_*）原样上抛
+    throw err;
   }
 }
 
@@ -372,24 +376,57 @@ function inspectValue(v) {
   return 'an instance of ' + ((v && v.constructor && v.constructor.name) || 'Object');
 }
 
+/**
+ * Node 的 `determineSpecificType`（`lib/internal/errors.js`）—— **实测三形态**，别自己发明：
+ *   `undefined` → `undefined`（`== null` 直接 String）· `42` → `type number (42)` · `new ArrayBuffer(4)` → `an instance of ArrayBuffer`。
+ * 判卷人：本机四个宿主（Windows v24.20.0 / Linux v22.22.1 / Linux v24.20.0 / nvm v24.21.0）**逐字一致**。
+ */
 function describeType(v) {
   if (v === null) return 'null';
-  const t = typeof v;
-  if (t !== 'object') return t === 'function' ? 'function' : 'type ' + t + ' (' + String(v) + ')';
+  if (v === undefined) return 'undefined';
+  if (typeof v === 'function') return v.name ? 'function ' + v.name : 'function';
+  if (typeof v !== 'object') return 'type ' + typeof v + ' (' + String(v) + ')';
   return 'an instance of ' + ((v.constructor && v.constructor.name) || 'Object');
 }
 
+/** Node 的 `formatList(items, 'or')`：1 项直出 / 2 项 `a or b` / ≥3 项 `a, b, or c`（**牛津逗号**，实测） */
+function formatListOr(items) {
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return items[0] + ' or ' + items[1];
+  return items.slice(0, -1).join(', ') + ', or ' + items[items.length - 1];
+}
+
+/**
+ * `expected` 的渲染 —— **只实现实测到的那两种形态**，其余调用点保持原样（见下面的"已知未覆盖"）。
+ *
+ * 类组（数组项）= `an instance of ` + 列表；整张表只有一个类组时，前缀是 `must be **an instance of**`
+ * （**没有** `of type`）。四个宿主实测原文：
+ *   `['string', ['Buffer','URL']]`                    ⇒ `must be of type string or an instance of Buffer or URL`
+ *   `['string', ['Buffer','TypedArray','DataView']]`  ⇒ `must be of type string or an instance of Buffer, TypedArray, or DataView`
+ *   `[['Buffer','TypedArray','DataView']]`            ⇒ `must be an instance of Buffer, TypedArray, or DataView`
+ * （修之前我们平铺成 `string or Buffer or URL` 之类 —— 那正是 Linux 差分用例报的 `message 不一致`。）
+ *
+ * ⚠️ **已知未覆盖**：Node 还有第三种前缀 `must be one of type …`
+ * （实测 `readFileSync(p, 42)` ⇒ `The "options" argument must be one of type string or object`）。
+ * 那种要等把 Node 的 `lib/internal/errors.js` 读透再一起做；**现在那几处按原样保留** —— 没有任何用例断言它们，
+ * 凭猜改反而说不清。本条记在 `_audit/docs/plans/linux-suite-gaps.md`。
+ */
 function invalidArgType(name, expected, value) {
-  const e = new TypeError(
-    'The "' + name + '" argument must be of type ' + expected.join(' or ') + '. Received ' + describeType(value),
-  );
+  const groups = expected.map((x) => (Array.isArray(x) ? 'an instance of ' + formatListOr(x) : x));
+  const onlyGroup = expected.length === 1 && Array.isArray(expected[0]);
+  const message =
+    'The "' + name + '" argument must be ' + (onlyGroup ? '' : 'of type ') + groups.join(' or ') +
+    '. Received ' + describeType(value);
+  const e = new TypeError(message);
   e.code = 'ERR_INVALID_ARG_TYPE';
+  e.spcGuest = true; // 我们自己造的（不是宿主抛上来的）——`withSyscall` 靠它区分，别删
   return e;
 }
 
 function invalidArgValue(name, value, reason) {
   const e = new TypeError("The argument '" + name + "' " + reason + '. Received ' + inspectValue(value));
   e.code = 'ERR_INVALID_ARG_VALUE';
+  e.spcGuest = true; // 同上：自己造的参数错要能被 `withSyscall` 认出来
   return e;
 }
 
@@ -426,7 +463,7 @@ function toPathString(p, name) {
     return Buffer.from(p.buffer, p.byteOffset, p.byteLength).toString('utf8');
   }
   if (p instanceof URL) return fileURLToPath(p);
-  throw invalidArgType(name || 'path', ['string', 'Buffer', 'URL'], p);
+  throw invalidArgType(name || 'path', ['string', ['Buffer', 'URL']], p);
 }
 
 /** 调用方写的是绝对路径吗（POSIX 语义 + Windows 形态都认，与宿主 resolvePluginPath 同一判据） */
@@ -713,7 +750,7 @@ function flagSemantics(flag) {
  */
 function toByteView(data) {
   if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  throw invalidArgType('data', ['string', 'Buffer', 'TypedArray', 'DataView'], data);
+  throw invalidArgType('data', ['string', ['Buffer', 'TypedArray', 'DataView']], data);
 }
 
 // ──────────────────────────── 同步 API ────────────────────────────
@@ -735,7 +772,11 @@ function readFileCommon(textMethod, bytesMethod, path, options) {
     // syscall 照宿主真值：目标不存在时报的是 **open**；而"目标是目录"在 Node 上是读到一半才炸的
     // （syscall 是 **read**，文案 "illegal operation on a directory, read"）——两者都照抄。
     const code = errnoName(err && typeof err.code === 'string' ? err.code : 'INTERNAL');
-    throw toNodeError(err, code === 'EISDIR' ? 'read' : 'open', p);
+    // ⚠️ EISDIR 的文案**不带路径**（四个宿主实测逐字一致：`EISDIR: illegal operation on a directory, read`）：
+    // 它在 Node 上是 **read 阶段**炸的（不是 open），本来就没有路径可拼 —— 带上路径是我们多拼的，
+    // 也正是 Linux 差分用例报的 `message 不一致`。其余码（ENOENT…）照旧带路径。
+    const eisdir = code === 'EISDIR';
+    throw toNodeError(err, eisdir ? 'read' : 'open', eisdir ? undefined : p);
   }
   return result;
 }
@@ -761,13 +802,17 @@ function writeImpl(file, data, options, defaultFlag) {
   const { append, exclusive } = flagSemantics(flag);
   const p = toPathString(file);
   const payload = JSON.stringify({ append, exclusive });
+  // ⚠️ **参数校验必须在 open 之前**（Node 也这样）：坏 `data` 不该先把文件建出来/截断掉。
+  // 以前 `toByteView` 写在回调里 ⇒ ①校验发生在 open 之后 ②我们自己的参数错被 `withSyscall` 当成宿主错
+  // 翻译成裸码（两处都在这次修复里）。文本分支只判一次类型，不值当提前。
+  const bytes = typeof data === 'string' ? null : toByteView(data);
   withSyscall('open', p, undefined, () => {
     if (typeof data === 'string') {
       // 文本写：编码在宿主侧做（理由同上面的 readFileSync——不引入 bytes.* 依赖）
       callJson('fs.writeText', p, data, JSON.stringify({ append, exclusive, encoding: enc }));
       return;
     }
-    callJson('fs.writeBytes', p, toByteView(data), payload);
+    callJson('fs.writeBytes', p, bytes, payload);
   });
 }
 
@@ -787,7 +832,7 @@ function statImpl(path, options, follow, syscall) {
   // Node：`fs.statSync(fd)` 传数字时走的是 **fstat**（同一份 Stats，syscall 仍是 'fstat'）——
   // 现在 fd 面已支持，这里如实分流，别再把数字当"错误路径"报类型错。
   if (typeof path === 'number') {
-    if (follow === false) throw invalidArgType('path', ['string', 'Buffer', 'URL'], path);
+    if (follow === false) throw invalidArgType('path', ['string', ['Buffer', 'URL']], path);
     return fstatSync(path, options);
   }
   const p = toPathString(path);
@@ -1000,7 +1045,7 @@ function fdPositionArg(position) {
  */
 function assertOffsetLength(buffer, offset, length) {
   if (!ArrayBuffer.isView(buffer)) {
-    throw invalidArgType('buffer', ['Buffer', 'TypedArray', 'DataView'], buffer);
+    throw invalidArgType('buffer', [['Buffer', 'TypedArray', 'DataView']], buffer);
   }
   validateInteger(offset, 'offset', 0);
   if (typeof length !== 'number') throw invalidArgType('length', ['number'], length);
@@ -1369,7 +1414,7 @@ async function fhWriteFile(fh, syscall, data, options) {
     if (data !== null && typeof data === 'object' && typeof (data[Symbol.asyncIterator] || data[Symbol.iterator]) === 'function') {
       throw unsupported('FileHandle.' + syscall, 'writing an iterable of chunks is not implemented');
     }
-    throw invalidArgType('data', ['string', 'Buffer', 'TypedArray', 'DataView'], data);
+    throw invalidArgType('data', ['string', ['Buffer', 'TypedArray', 'DataView']], data);
   }
   withSyscall('write', undefined, undefined, () =>
     callJson('fs.fdWriteAllAsync', JSON.stringify(st.fdNum), payload, typeof data === 'string' ? enc : undefined),
@@ -1419,7 +1464,7 @@ class FileHandle extends EventEmitter {
       length = o.length === undefined ? buffer.byteLength - (offset === null ? 0 : offset) : o.length;
       position = o.position === undefined ? null : o.position;
       if (!ArrayBuffer.isView(buffer)) {
-        throw invalidArgType('buffer', ['Buffer', 'TypedArray', 'DataView'], buffer);
+        throw invalidArgType('buffer', [['Buffer', 'TypedArray', 'DataView']], buffer);
       }
     }
 
@@ -1492,7 +1537,7 @@ class FileHandle extends EventEmitter {
 
     // 字符串重载：第 2 参是 position、第 3 参是 encoding（Node：`validateStringAfterArrayBufferView` + `validateEncoding`）
     if (typeof buffer !== 'string') {
-      throw invalidArgType('buffer', ['string', 'Buffer', 'TypedArray', 'DataView'], buffer);
+      throw invalidArgType('buffer', ['string', ['Buffer', 'TypedArray', 'DataView']], buffer);
     }
     const bytes = fdStringBytes(buffer, length);
     const pos = offset === undefined || offset === null ? undefined : validatePosition(offset, 'position', bytes.length);
