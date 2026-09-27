@@ -511,7 +511,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 9 | `stream` 是否入批 | 入第二批之后（单独一步）：按实测属性清单做**极小形状** shim，以"跑通那 5 个包"为界 | 见 ROADMAP |
 | 10 | `process.getuid` 一族的语义（第三批） | **返回固定仿真事实 `1000`**（四个 getter 一致），不是抛错也不是宿主真值。理由：Linux 基线上 `process.getuid` 是**函数**（`internal/bootstrap/node.js:214` 的 `implementsPosixCredentials` 门），于是 `!process.getuid \|\| process.getuid() !== 0` 这种"探测自己是不是 root"的写法（`write-file-atomic/lib/index.js:70`）会去**调用**它 —— 抛错等于让包在探测环境这一步就死；给宿主真值则泄露身份且随部署漂移。`getgroups` 与 `setuid`/`setgid` 仍抛错（组/权限变更不是事实） | `node-process.js`、`emulation-os-process.test.ts` |
 | 11 | `querystring` 与 `node-url.js` 里那份 legacy 子集 | **并存、有意不合并**：`node-url.js` 的那份只服务 `url.parse(..., true)`（默认分隔符、无 `unescapeBuffer`），新 shim 是面向 `node:querystring` 的完整面。合并不省多少行，却要动已验证的模块 ⇒ 等真有需要 | `node-querystring.js` 文件头 |
-| 12 | 基线迁 v24.20.0 后**宿主多出来的导出名** | **`URLPattern`（`node:url`）有意不仿真**：不登记 ⇒ 插件里取到 `undefined`。理由：一整套 pattern matcher，插件依赖面上罕见、实现成本高，真有人用再说。⚠️ **这不是"漏了"**：导出面真值（`tools/truth/data/fs-url-truth.json` 的 `urlExportKeys`，采集时就是 `Object.keys(require('node:url')).sort()`）**含它**，用例的断言 = 真值表**减去这份名单** —— 漏别的名字会红，漏这个名字是**有意**的 | `node-url.js`、`emulation-url.test.ts` |
+| 12 | 基线迁 v24.20.0 后**宿主多出来的导出名** | **有意不仿真的名单**：`URLPattern`（`node:url`）、`path.win32.matchesGlob`（`node:path`）—— 都不登记 ⇒ 插件里取到 `undefined`。理由：两者都是 v24 才挂上、插件依赖面上罕见、实现成本不低（`URLPattern` 是一整套 pattern matcher），真有人用再说。⚠️ **这不是"漏了"**：导出面真值（`tools/truth/data/fs-url-truth.json` 的 `urlExportKeys`，采集时就是 `Object.keys(require('node:url')).sort()`；`path.win32` 另有 `path-win32-truth.json`）**含它们**，用例的断言 = 真值表**减去这份名单** —— 漏别的名字会红，漏这里的名字是**有意**的 | `node-url.js`、`node-path-win32.js`、`emulation-url.test.ts` |
 
 ### 13.2 仍未定
 

@@ -37,8 +37,8 @@
 //     与 Node 的差异见"fs 流"一节：open 在构造后的微任务里完成、`'open'` 顺序不变）。
 //     **仍未支持**：`fs.promises.watch`（异步迭代器需要"无界阶段"，见 `PROMISE_WATCH_WHY`）、
 //     `FileHandle` 上的流入口、`cp`/`glob`/`statfs`。
-//  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`tools/truth/fs-url-truth.mjs` 在 WSL node
-//     上取的运行值，生成脚本 `tools/truth/gen-fs-tables.mjs`），与 `node-path.js` 固定 posix、
+//  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`tools/truth/fs-url-truth.mjs` 在 WSL node 上取的
+//     运行值，**2026-09-27 重采于 v24.20.0**；生成脚本 `tools/truth/gen-fs-tables.mjs`），与 `node-path.js` 固定 posix、
 //     `node-constants.js` 取 Linux 是同一个取向。
 //  7. **`URL` 路径参数只在 POSIX 语义下成立**：`fileURLToPath` 是 POSIX 基线（沙箱路径语义本来就是 posix），
 //     所以 Windows 宿主上 `new URL('file:///C:/x')` 解析出的 `/C:/x` 与真实数据目录对不上。

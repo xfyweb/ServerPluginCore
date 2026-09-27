@@ -6,14 +6,15 @@
 //
 // 为什么不直接抄 Node 的源码：它依赖 `primordials`、`internal/constants`、`internal/validators` 与
 // `process.env['=C:']`（每盘一个 cwd）——搬进来会带一整串沙箱里没有的内部设施。所以**照算法重写**，
-// 验收方式是**与真 Windows 上的 node v22.22.1 逐条差分**（`tools/truth/path-win32-diff.mjs`）。
+// 验收方式是**与真 Windows 上的 node（判卷人）逐条差分**（`tools/truth/path-win32-diff.mjs`；
+// 真值表是 v22.22.1 时采的，**尚未在 v24.20.0 上重采**——迁移中的显式欠账）。
 //
 // 边界（写清楚免得被当 bug）：
 //   1. **盘符相对 cwd 走沙箱 cwd**：Node 用 `process.cwd()` + `process.env['=C:']`；沙箱里
 //      `process.env` 是冻结空对象 ⇒ 统一用沙箱 cwd（数据目录）兜底。而且只有"仿真平台 = win32
 //      且宿主就是 Windows"时才会走到这里，两者的盘符本来就一致，实际分歧面很小。
-//   2. **不实现 `matchesGlob`**：v22.22.1 的 `path.win32` 上没有它（本地 v27 源码里有，那是更新的版本），
-//      沙箱基线固定 v22.22.1 ⇒ 不登记（登记了反而与基线不符）。
+//   2. **不实现 `matchesGlob`（有意不仿真）**：**v24 起宿主才挂上它**（本机 node v24.20.0 实测 `typeof` = `function`），
+//      我们不登记 ⇒ 插件里取到 `undefined`。记账见 §13.1 第 12 条；真有人用了再实现。
 //   3. `_makeLong` 是 Node 的内部别名（= `toNamespacedPath`），一并给上以对齐导出面。
 //
 // 内联约束：静态、无占位符（见 registry.ts 头注释）。
