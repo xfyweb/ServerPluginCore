@@ -1,6 +1,6 @@
 {
   "meta": {
-    "node": "v22.22.1",
+    "node": "v24.20.0",
     "platform": "linux",
     "arch": "x64"
   },
@@ -388,8 +388,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "open",
-        "message": "ENOENT: no such file or directory, open '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, open '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "readFile_isDir": {
@@ -409,8 +409,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "scandir",
-        "message": "ENOENT: no such file or directory, scandir '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, scandir '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "readdir_isFile": {
@@ -420,8 +420,8 @@
         "code": "ENOTDIR",
         "errno": -20,
         "syscall": "scandir",
-        "message": "ENOTDIR: not a directory, scandir '/tmp/spc-truth-qDBtVM/a.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/a.txt"
+        "message": "ENOTDIR: not a directory, scandir '/tmp/spc-truth-EwphMS/a.txt'",
+        "path": "/tmp/spc-truth-EwphMS/a.txt"
       }
     },
     "stat_missing": {
@@ -431,8 +431,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "stat",
-        "message": "ENOENT: no such file or directory, stat '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, stat '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "lstat_missing": {
@@ -442,8 +442,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "lstat",
-        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "unlink_missing": {
@@ -453,8 +453,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "unlink",
-        "message": "ENOENT: no such file or directory, unlink '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, unlink '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "unlink_isDir": {
@@ -464,8 +464,8 @@
         "code": "EISDIR",
         "errno": -21,
         "syscall": "unlink",
-        "message": "EISDIR: illegal operation on a directory, unlink '/tmp/spc-truth-qDBtVM/sub'",
-        "path": "/tmp/spc-truth-qDBtVM/sub"
+        "message": "EISDIR: illegal operation on a directory, unlink '/tmp/spc-truth-EwphMS/sub'",
+        "path": "/tmp/spc-truth-EwphMS/sub"
       }
     },
     "rmdir_nonEmpty": {
@@ -475,8 +475,8 @@
         "code": "ENOTEMPTY",
         "errno": -39,
         "syscall": "rmdir",
-        "message": "ENOTEMPTY: directory not empty, rmdir '/tmp/spc-truth-qDBtVM'",
-        "path": "/tmp/spc-truth-qDBtVM"
+        "message": "ENOTEMPTY: directory not empty, rmdir '/tmp/spc-truth-EwphMS'",
+        "path": "/tmp/spc-truth-EwphMS"
       }
     },
     "rmdir_missing": {
@@ -486,8 +486,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "rmdir",
-        "message": "ENOENT: no such file or directory, rmdir '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, rmdir '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "rmdir_missing_recursiveFalse": {
@@ -497,8 +497,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "rmdir",
-        "message": "ENOENT: no such file or directory, rmdir '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, rmdir '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "rmdir_recursiveOpt": {
@@ -508,8 +508,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "lstat",
-        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "rm_missing": {
@@ -519,8 +519,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "lstat",
-        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "rm_missing_force": {
@@ -533,8 +533,8 @@
         "code": "ERR_FS_EISDIR",
         "errno": 21,
         "syscall": "rm",
-        "message": "Path is a directory: rm returned EISDIR (is a directory) /tmp/spc-truth-qDBtVM/sub",
-        "path": "/tmp/spc-truth-qDBtVM/sub"
+        "message": "Path is a directory: rm returned EISDIR (is a directory) /tmp/spc-truth-EwphMS/sub",
+        "path": "/tmp/spc-truth-EwphMS/sub"
       }
     },
     "rm_dir_nonEmpty_nonRecursive": {
@@ -544,8 +544,8 @@
         "code": "ERR_FS_EISDIR",
         "errno": 21,
         "syscall": "rm",
-        "message": "Path is a directory: rm returned EISDIR (is a directory) /tmp/spc-truth-qDBtVM",
-        "path": "/tmp/spc-truth-qDBtVM"
+        "message": "Path is a directory: rm returned EISDIR (is a directory) /tmp/spc-truth-EwphMS",
+        "path": "/tmp/spc-truth-EwphMS"
       }
     },
     "mkdir_existing": {
@@ -555,8 +555,8 @@
         "code": "EEXIST",
         "errno": -17,
         "syscall": "mkdir",
-        "message": "EEXIST: file already exists, mkdir '/tmp/spc-truth-qDBtVM'",
-        "path": "/tmp/spc-truth-qDBtVM"
+        "message": "EEXIST: file already exists, mkdir '/tmp/spc-truth-EwphMS'",
+        "path": "/tmp/spc-truth-EwphMS"
       }
     },
     "mkdir_existing_recursive": {
@@ -569,13 +569,13 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "mkdir",
-        "message": "ENOENT: no such file or directory, mkdir '/tmp/spc-truth-qDBtVM/x/y'",
-        "path": "/tmp/spc-truth-qDBtVM/x/y"
+        "message": "ENOENT: no such file or directory, mkdir '/tmp/spc-truth-EwphMS/x/y'",
+        "path": "/tmp/spc-truth-EwphMS/x/y"
       }
     },
     "mkdir_missingParent_recursive": {
       "ok": true,
-      "value": "/tmp/spc-truth-qDBtVM/x"
+      "value": "/tmp/spc-truth-EwphMS/x"
     },
     "rename_missing": {
       "ok": false,
@@ -584,9 +584,9 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "rename",
-        "message": "ENOENT: no such file or directory, rename '/tmp/spc-truth-qDBtVM/nope.txt' -> '/tmp/spc-truth-qDBtVM/z'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt",
-        "dest": "/tmp/spc-truth-qDBtVM/z"
+        "message": "ENOENT: no such file or directory, rename '/tmp/spc-truth-EwphMS/nope.txt' -> '/tmp/spc-truth-EwphMS/z'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt",
+        "dest": "/tmp/spc-truth-EwphMS/z"
       }
     },
     "copyFile_missing": {
@@ -596,9 +596,9 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "copyfile",
-        "message": "ENOENT: no such file or directory, copyfile '/tmp/spc-truth-qDBtVM/nope.txt' -> '/tmp/spc-truth-qDBtVM/z'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt",
-        "dest": "/tmp/spc-truth-qDBtVM/z"
+        "message": "ENOENT: no such file or directory, copyfile '/tmp/spc-truth-EwphMS/nope.txt' -> '/tmp/spc-truth-EwphMS/z'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt",
+        "dest": "/tmp/spc-truth-EwphMS/z"
       }
     },
     "copyFile_excl_exists": {
@@ -608,9 +608,9 @@
         "code": "EEXIST",
         "errno": -17,
         "syscall": "copyfile",
-        "message": "EEXIST: file already exists, copyfile '/tmp/spc-truth-qDBtVM/a.txt' -> '/tmp/spc-truth-qDBtVM/a.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/a.txt",
-        "dest": "/tmp/spc-truth-qDBtVM/a.txt"
+        "message": "EEXIST: file already exists, copyfile '/tmp/spc-truth-EwphMS/a.txt' -> '/tmp/spc-truth-EwphMS/a.txt'",
+        "path": "/tmp/spc-truth-EwphMS/a.txt",
+        "dest": "/tmp/spc-truth-EwphMS/a.txt"
       }
     },
     "access_missing": {
@@ -620,8 +620,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "access",
-        "message": "ENOENT: no such file or directory, access '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, access '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "access_missing_rw": {
@@ -631,8 +631,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "access",
-        "message": "ENOENT: no such file or directory, access '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, access '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "readFile_badEncoding": {
@@ -682,8 +682,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "lstat",
-        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-qDBtVM/nope.txt'",
-        "path": "/tmp/spc-truth-qDBtVM/nope.txt"
+        "message": "ENOENT: no such file or directory, lstat '/tmp/spc-truth-EwphMS/nope.txt'",
+        "path": "/tmp/spc-truth-EwphMS/nope.txt"
       }
     },
     "mkdtemp_missingParent": {
@@ -693,8 +693,8 @@
         "code": "ENOENT",
         "errno": -2,
         "syscall": "mkdtemp",
-        "message": "ENOENT: no such file or directory, mkdtemp '/tmp/spc-truth-qDBtVM/nodir/p-XXXXXX'",
-        "path": "/tmp/spc-truth-qDBtVM/nodir/p-XXXXXX"
+        "message": "ENOENT: no such file or directory, mkdtemp '/tmp/spc-truth-EwphMS/nodir/p-XXXXXX'",
+        "path": "/tmp/spc-truth-EwphMS/nodir/p-XXXXXX"
       }
     },
     "mkdtemp_badPrefix": {
@@ -707,7 +707,7 @@
     }
   },
   "mkdirReturn": {
-    "recursive": "/tmp/spc-truth-qDBtVM/r1"
+    "recursive": "/tmp/spc-truth-EwphMS/r1"
   },
   "openReturn": {
     "type": "number",
@@ -720,11 +720,11 @@
     },
     {
       "label": "pathToFileURL_rel",
-      "value": "file:///mnt/d/git-repo/rel/x.txt"
+      "value": "file:///mnt/d/git-repo/ServerPluginCore/rel/x.txt"
     },
     {
       "label": "pathToFileURL_dot",
-      "value": "file:///mnt/d/git-repo"
+      "value": "file:///mnt/d/git-repo/ServerPluginCore"
     },
     {
       "label": "pathToFileURL_root",
@@ -1122,6 +1122,7 @@
       "label": "url_export_keys",
       "value": [
         "URL",
+        "URLPattern",
         "URLSearchParams",
         "Url",
         "default",
@@ -1148,6 +1149,7 @@
   ],
   "urlExportKeys": [
     "URL",
+    "URLPattern",
     "URLSearchParams",
     "Url",
     "default",
@@ -1165,15 +1167,12 @@
   "fsExportKeys": [
     "Dir",
     "Dirent",
-    "F_OK",
     "FileReadStream",
     "FileWriteStream",
-    "R_OK",
     "ReadStream",
     "Stats",
-    "W_OK",
+    "Utf8Stream",
     "WriteStream",
-    "X_OK",
     "_toUnixTimestamp",
     "access",
     "accessSync",
@@ -1224,6 +1223,7 @@
     "mkdir",
     "mkdirSync",
     "mkdtemp",
+    "mkdtempDisposableSync",
     "mkdtempSync",
     "open",
     "openAsBlob",
@@ -1287,6 +1287,7 @@
     "lutimes",
     "mkdir",
     "mkdtemp",
+    "mkdtempDisposable",
     "open",
     "opendir",
     "readFile",
