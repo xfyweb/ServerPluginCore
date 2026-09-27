@@ -457,6 +457,9 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     fs.unlinkSync(join(DATA_DIR, 'rmlink.txt'));
     assert.equal(fs.existsSync(join(DATA_DIR, 'a.txt')), false, '我们的语义是删掉目标（已在文件头写明）');
     assert.equal(fs.existsSync(join(DATA_DIR, 'rmlink.txt')), false);
+    // ⚠️ **谁破坏谁恢复**：上面这一下把 `a.txt` 删掉了，而本文件后面的 fd 面 / 回调 / promises 组都要读它。
+    // 不恢复就是"用例之间靠执行顺序"——Windows 上这条被 skip（建软链要特权）所以一直没露，Linux 上必 ENOENT。
+    writeFileSync(join(DATA_DIR, 'a.txt'), 'hello');
     symlinkSync('gone.txt', join(DATA_DIR, 'dangling.txt'));
     const err: any = (() => {
       try {
