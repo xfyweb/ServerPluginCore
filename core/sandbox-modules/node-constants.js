@@ -37,7 +37,7 @@ function currentPlatform() {
   }
 }
 
-// Linux/POSIX（node v22.22.1 / linux / x64）：undefined 键
+// Linux/POSIX（node v24.20.0 / linux / x64）：undefined 键
 const LINUX_TABLE = Object.freeze({
   // ── os.constants.dlopen（5 键）──
   RTLD_LAZY: 1,
@@ -223,8 +223,8 @@ const LINUX_TABLE = Object.freeze({
   COPYFILE_FICLONE: 2,
   UV_FS_COPYFILE_FICLONE_FORCE: 4,
   COPYFILE_FICLONE_FORCE: 4,
-  // ── crypto.constants（56 键）──
-  OPENSSL_VERSION_NUMBER: 810549328,
+  // ── crypto.constants（57 键）──
+  OPENSSL_VERSION_NUMBER: 810549360,
   SSL_OP_ALL: 2147485776,
   SSL_OP_ALLOW_NO_DHE_KEX: 1024,
   SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144,
@@ -264,6 +264,7 @@ const LINUX_TABLE = Object.freeze({
   DH_UNABLE_TO_CHECK_GENERATOR: 4,
   DH_NOT_SUITABLE_GENERATOR: 8,
   RSA_PKCS1_PADDING: 1,
+  RSA_SSLV23_PADDING: 2,
   RSA_NO_PADDING: 3,
   RSA_PKCS1_OAEP_PADDING: 4,
   RSA_X931_PADDING: 5,
@@ -416,7 +417,7 @@ const LINUX_TABLEOsGroups = Object.freeze({
   }),
 });
 
-// Windows（node v22.22.1 / win32 / x64）：undefined 键
+// Windows（node v24.20.0 / win32 / x64）：undefined 键
 const WIN32_TABLE = Object.freeze({
   // ── os.constants.errno（134 键）──
   E2BIG: 7,
@@ -609,8 +610,8 @@ const WIN32_TABLE = Object.freeze({
   COPYFILE_FICLONE: 2,
   UV_FS_COPYFILE_FICLONE_FORCE: 4,
   COPYFILE_FICLONE_FORCE: 4,
-  // ── crypto.constants（56 键）──
-  OPENSSL_VERSION_NUMBER: 810549328,
+  // ── crypto.constants（57 键）──
+  OPENSSL_VERSION_NUMBER: 810549360,
   SSL_OP_ALL: 2147485776,
   SSL_OP_ALLOW_NO_DHE_KEX: 1024,
   SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144,
@@ -650,6 +651,7 @@ const WIN32_TABLE = Object.freeze({
   DH_UNABLE_TO_CHECK_GENERATOR: 4,
   DH_NOT_SUITABLE_GENERATOR: 8,
   RSA_PKCS1_PADDING: 1,
+  RSA_SSLV23_PADDING: 2,
   RSA_NO_PADDING: 3,
   RSA_PKCS1_OAEP_PADDING: 4,
   RSA_X931_PADDING: 5,
@@ -979,6 +981,7 @@ const __C_RSA_PKCS1_PSS_PADDING = constants["RSA_PKCS1_PSS_PADDING"];
 const __C_RSA_PSS_SALTLEN_AUTO = constants["RSA_PSS_SALTLEN_AUTO"];
 const __C_RSA_PSS_SALTLEN_DIGEST = constants["RSA_PSS_SALTLEN_DIGEST"];
 const __C_RSA_PSS_SALTLEN_MAX_SIGN = constants["RSA_PSS_SALTLEN_MAX_SIGN"];
+const __C_RSA_SSLV23_PADDING = constants["RSA_SSLV23_PADDING"];
 const __C_RSA_X931_PADDING = constants["RSA_X931_PADDING"];
 const __C_RTLD_DEEPBIND = constants["RTLD_DEEPBIND"];
 const __C_RTLD_GLOBAL = constants["RTLD_GLOBAL"];
@@ -1275,6 +1278,7 @@ export {
   __C_RSA_PSS_SALTLEN_AUTO as RSA_PSS_SALTLEN_AUTO,
   __C_RSA_PSS_SALTLEN_DIGEST as RSA_PSS_SALTLEN_DIGEST,
   __C_RSA_PSS_SALTLEN_MAX_SIGN as RSA_PSS_SALTLEN_MAX_SIGN,
+  __C_RSA_SSLV23_PADDING as RSA_SSLV23_PADDING,
   __C_RSA_X931_PADDING as RSA_X931_PADDING,
   __C_RTLD_DEEPBIND as RTLD_DEEPBIND,
   __C_RTLD_GLOBAL as RTLD_GLOBAL,
