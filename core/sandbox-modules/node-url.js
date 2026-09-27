@@ -12,7 +12,7 @@
 //   · legacy `Url` / `parse` / `format` / `resolve` / `resolveObject` 与 `pathToFileURL` /
 //     `fileURLToPath` / `fileURLToPathBuffer` → **沙箱自实现**：它们是纯字符串算法、不依赖 URL 全局，
 //     逐行移植 node/lib/url.js（行号指本地 v27 检出）与 node/lib/internal/url.js，
-//     并由真值表 `tools/truth/data/fs-url-truth.json`（WSL node v22.22.1 实测）逐条差分守住。
+//     并由真值表 `tools/truth/data/fs-url-truth.json`（WSL node 实测，**2026-09-27 重采于 v24.20.0**）逐条差分守住。
 //
 // ══ 已知边界（写在这里，免得被当成 bug）══
 //   1. **路径语义固定 POSIX/Linux**（与 node-path.js 同一取向）。两处后果：
@@ -23,9 +23,9 @@
 //        对齐测试只在 Linux 宿主上跟宿主比。
 //   2. **不发 DeprecationWarning**：Node 的 `url.parse()` 首次调用发 DEP0169、非法端口发 DEP0170。
 //      沙箱里没有 process 可发（也不该把宿主告警面暴露给插件），且沙箱要"静默、可复现"。
-//   3. **非法端口按 v22.22.1 基线**：`url.parse('http://x:abc/a')` 把 `:abc` 当路径段，给出 `http://x/:abc/a`。
+//   3. **非法端口按基线行为**：`url.parse('http://x:abc/a')` 把 `:abc` 当路径段，给出 `http://x/:abc/a`。
 //      本地 v27 检出已把这里改成 `throw ERR_INVALID_ARG_VALUE`（url.js:519-521）——**那是新行为**，
-//      与"仿真基线固定 v22.22.1"（§13.1 第 4 条）冲突，故以基线为准（真值表与宿主 v24 都是基线行为）。
+//      不在仿真基线里（§13.1 第 4 条，基线 = `v24.20.0`；**v22.22.1 与 v24 实测一致**），故以基线为准。
 //   4. **`querystring` 只做 legacy 用到的那一档**：默认 `sep='&'` / `eq='='` / `maxKeys=1000`、空段跳过、
 //      "只有出现完整 `%HH` 才解码"（这是 `url.parse(..., true)` 的 `query` 语义）。自定义分隔符/解码器不存在——
 //      url.js 从不传它们。
@@ -37,7 +37,8 @@
 //      真沙箱冒烟用例就是这条不变量的回归。
 //   6. `URL.createObjectURL` / `revokeObjectURL` **明确抛 `ERR_NOT_SUPPORTED_IN_SANDBOX`**：
 //      沙箱里没有 Blob，也没有对象 URL 注册表；静默返回占位串会让 `fetch(blob:)` 这类代码安静地坏掉。
-//   7. `URLPattern` **不在导出面**：v22.22.1 的 `url` 模块导出里没有它（Node 是后来才挂上去的）。
+//   7. `URLPattern` **不在导出面**：v24 起宿主才把它挂上 `url` —— 我们**有意不仿真**（插件里取到 `undefined`），
+//      记账见 §13.1 第 12 条（用例的断言 = 真值表减去这份名单）。
 //   8. `toUSVString` 是沙箱内手写的 well-formed 化（QuickJS 没有 ES2024 的 `String.prototype.toWellFormed`）：
 //      孤立代理项 → U+FFFD，与宿主同语义。USVString 转换一律用**模板串**而不是 `String()`——
 //      Symbol 上前者抛 TypeError、后者给 `'Symbol()'`，Node 用的是前者（`u.hostname = Symbol()` 会抛）。
@@ -263,7 +264,7 @@ function spInvalidate(p) {
  * 变更后回写 URL（Node: `#markUpdated` → `setURLSearchParamsModified`）。
  *
  * **无条件的**：Node 上 `u.searchParams.delete('不存在')` 也会让 `u.href` 变化——
- * `new URL('http://x/a?b')` 上删一个不存在的键，href 会变成 `http://x/a?b=`（实测 v22.22.1）。
+ * `new URL('http://x/a?b')` 上删一个不存在的键，href 会变成 `http://x/a?b=`（判卷人实测）。
  * 因为 URL 的 href 一旦被"searchParams 已修改"标记，就整体重新序列化。少了这一条，
  * 这种"删了个寂寞却改变了 href"的行为对不上。
  */
@@ -1332,7 +1333,7 @@ Url.prototype.parse = function parse(url, parseQueryString, slashesDenoteHost) {
  * 主机名里的第一个 `/ \ # ? :` 之后都归路径。
  *
  * **与本地 v27 检出不同**：v27 在遇到 `:` 时抛 `ERR_INVALID_ARG_VALUE`（url.js:519-521），
- * v22.22.1（仿真基线）只是把它当路径段——`url.parse('http://x:abc/a').href` 给 `http://x/:abc/a`。
+ * 仿真基线（**v22.22.1 与 v24.20.0 实测一致**）只是把它当路径段——`url.parse('http://x:abc/a').href` 给 `http://x/:abc/a`。
  * 真值表与宿主 v24 都是基线行为，故按基线移植（见文件头边界 3）。
  */
 function getHostname(self, rest, hostname) {
