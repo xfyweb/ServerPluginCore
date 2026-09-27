@@ -1342,7 +1342,12 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
 
     const ours = scenario({ fs }, DATA_DIR);
     const host = scenario({ fs: hostFs as unknown as typeof fs }, HOST_DIR);
-    const differing = Object.keys({ ...ours, ...host }).filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
+    // ⚠️ **平台差异（有意）**：访问模式 3（`O_ACCMODE`）我们按 fail-closed 给 `EINVAL`（不猜一个语义去写），
+    // 而 **Linux 宿主照开不误**（只有 Windows 宿主跟着拒）⇒ 这一项**不进差分**，改成钉住我们自己的值。
+    assert.equal((ours.badAccMode as { code?: string }).code, 'EINVAL', '模式 3 必须 fail-closed 给 EINVAL');
+    const differing = Object.keys({ ...ours, ...host })
+      .filter((k) => k !== 'badAccMode')
+      .filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
     assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], '数字旗标与宿主不一致（[键, 我们, 宿主]）');
   });
 
@@ -1501,6 +1506,11 @@ describe('仿真 node:fs —— 有意与 Node 不同的地方（结构性断言
     }
     const ours = await scenario({ fs }, DATA_DIR);
     const host = await scenario({ fs: hostFs as unknown as typeof fs }, HOST_DIR);
+    // ⚠️ **平台差异**：`createWriteStream` 的**默认** `highWaterMark` Node 本来就分平台
+    // （Windows 16384 / 其余 65536，四宿主实测）⇒ 我们是 **Linux 基线**：先钉住我们自己的值，
+    // 再把**宿主那半**归一掉（否则非 Linux 宿主上这条永远红，而它红的原因是"宿主不是基线"，不是我们错）。
+    assert.equal((ours.writeProps as { hwm?: number }).hwm, 65536, '默认 hwm 必须取 Linux 基线 65536');
+    if (process.platform !== 'linux') (host.writeProps as { hwm?: number }).hwm = 65536;
     const differing = Object.keys({ ...ours, ...host }).filter((k) => JSON.stringify(ours[k]) !== JSON.stringify(host[k]));
     assert.deepEqual(differing.map((k) => [k, ours[k], host[k]]), [], 'fs 流与宿主不一致（[键, 我们, 宿主]）');
   });

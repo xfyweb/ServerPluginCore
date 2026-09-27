@@ -2150,7 +2150,9 @@ function normalizeStreamOptions(options, kind) {
   const o = options === undefined || options === null ? {} : options;
   if (typeof o !== 'object') throw invalidArgType('options', ['Object'], options);
   const out = {};
-  out.highWaterMark = o.highWaterMark === undefined ? (kind === 'read' ? 64 * 1024 : 16 * 1024) : o.highWaterMark;
+  // ⚠️ 默认 `highWaterMark` = **64 KiB（Linux 基线）**：Node 的**写侧**默认在 Windows 上是 16 KiB、
+  // 其余平台 64 KiB（四个宿主实测）⇒ 基线固定为 Linux，所以读写一律 64 KiB（读侧本来就 64 KiB）。
+  out.highWaterMark = o.highWaterMark === undefined ? 64 * 1024 : o.highWaterMark;
   out.autoClose = o.autoClose === undefined ? true : o.autoClose;
   if (typeof out.autoClose !== 'boolean') throw invalidArgType('options.autoClose', ['boolean'], o.autoClose);
   if (o.flags !== undefined) out.flags = o.flags;
