@@ -1,6 +1,6 @@
 {
  "meta": {
-  "node": "v22.22.1",
+  "node": "v24.20.0",
   "platform": "linux"
  },
  "exportKeys": [
@@ -78,7 +78,7 @@
   "Z_RLE": 3,
   "Z_FIXED": 4,
   "Z_DEFAULT_STRATEGY": 0,
-  "ZLIB_VERNUM": 4880,
+  "ZLIB_VERNUM": 4897,
   "DEFLATE": 1,
   "INFLATE": 2,
   "GZIP": 3,

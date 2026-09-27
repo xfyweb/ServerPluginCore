@@ -1,15 +1,15 @@
 {
-  "version": "v22.22.1",
+  "version": "v24.20.0",
   "count": 8,
   "available": 8,
   "first": {
     "model": "Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz",
     "speed": 0,
     "times": {
-      "user": 53450,
-      "nice": 30,
-      "sys": 22890,
-      "idle": 3340220,
+      "user": 1720,
+      "nice": 0,
+      "sys": 3020,
+      "idle": 85640,
       "irq": 0
     }
   },

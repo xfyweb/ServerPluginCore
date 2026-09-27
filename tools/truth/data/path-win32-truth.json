@@ -1,6 +1,6 @@
 {
  "meta": {
-  "node": "v22.22.1",
+  "node": "v24.20.0",
   "platform": "win32",
   "cwds": [
    "C:/Windows",

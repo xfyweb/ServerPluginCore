@@ -372,8 +372,8 @@ describe('仿真 node:crypto —— 随机性、静态清单与有意不同', ()
     assert.ok(shim.randomInt(1, 1_000_000) >= 1);
   });
 
-  it('静态清单按 **v22.22.1 基线**（不与宿主比：它随 OpenSSL 版本变）', () => {
-    // 出处：tools/truth/data/crypto-truth*.json（WSL node v22.22.1）
+  it('静态清单按**固定基线**（不与宿主比：它随 OpenSSL 版本变）', () => {
+    // 出处：tools/truth/data/crypto-truth*.json（WSL node；**2026-09-27 重采于 v24.20.0**）
     assert.equal(shim.getHashes().length, 52);
     assert.equal(shim.getCiphers().length, 134);
     assert.equal(shim.getCurves().length, 82);
@@ -382,9 +382,10 @@ describe('仿真 node:crypto —— 随机性、静态清单与有意不同', ()
     }
     assert.ok(shim.getCiphers().includes('aes-256-gcm'));
     assert.equal(shim.getFips(), 0);
-    assert.equal(Object.keys(shim.constants).length, 56);
+    assert.equal(Object.keys(shim.constants).length, 57);
     assert.equal(shim.constants.RSA_PKCS1_PADDING, 1);
-    assert.equal(shim.constants.OPENSSL_VERSION_NUMBER, 810549328);
+    assert.equal(shim.constants.RSA_SSLV23_PADDING, 2, 'v24 才有的键，重采时进来的');
+    assert.equal(shim.constants.OPENSSL_VERSION_NUMBER, 810549360);
     assert.equal(typeof shim.constants.defaultCipherList, 'string');
     assert.equal(Object.isFrozen(shim.constants), true, 'Node 的 crypto.constants 也是只读的');
     // 返回的是**副本**（插件改不动我们的表）

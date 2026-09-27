@@ -776,7 +776,7 @@ const CURVES = Object.freeze([
 ]);
 
 const CONSTANTS = Object.freeze({
-  OPENSSL_VERSION_NUMBER                       : 810549328,
+  OPENSSL_VERSION_NUMBER                       : 810549360,
   SSL_OP_ALL                                   : 2147485776,
   SSL_OP_ALLOW_NO_DHE_KEX                      : 1024,
   SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION     : 262144,
@@ -816,6 +816,7 @@ const CONSTANTS = Object.freeze({
   DH_UNABLE_TO_CHECK_GENERATOR                 : 4,
   DH_NOT_SUITABLE_GENERATOR                    : 8,
   RSA_PKCS1_PADDING                            : 1,
+  RSA_SSLV23_PADDING                           : 2,
   RSA_NO_PADDING                               : 3,
   RSA_PKCS1_OAEP_PADDING                       : 4,
   RSA_X931_PADDING                             : 5,
@@ -834,7 +835,7 @@ const CONSTANTS = Object.freeze({
   defaultCipherList                            : "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
 });
 
-// getHashes 52 项 / getCiphers 134 项 / getCurves 82 项 / constants 56 键
+// getHashes 52 项 / getCiphers 134 项 / getCurves 82 项 / constants 57 键
 // <<< GENERATED:crypto-tables
 
 function getHashes() {

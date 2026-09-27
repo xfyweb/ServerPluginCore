@@ -1,9 +1,9 @@
 {
   "meta": {
-    "node": "v22.22.1",
+    "node": "v24.20.0",
     "platform": "win32",
     "arch": "x64",
-    "collectedAt": "2026-09-18T13:13:47.664Z"
+    "collectedAt": "2026-09-27T11:05:23.760Z"
   },
   "topLevel": {
     "COPYFILE_EXCL": 1,
@@ -101,7 +101,7 @@
     "EWOULDBLOCK": 140,
     "EXDEV": 18,
     "F_OK": 0,
-    "OPENSSL_VERSION_NUMBER": 810549328,
+    "OPENSSL_VERSION_NUMBER": 810549360,
     "O_APPEND": 8,
     "O_CREAT": 256,
     "O_EXCL": 1024,
@@ -125,6 +125,7 @@
     "RSA_PSS_SALTLEN_AUTO": -2,
     "RSA_PSS_SALTLEN_DIGEST": -1,
     "RSA_PSS_SALTLEN_MAX_SIGN": -2,
+    "RSA_SSLV23_PADDING": 2,
     "RSA_X931_PADDING": 5,
     "R_OK": 4,
     "SIGABRT": 22,
@@ -524,7 +525,7 @@
     "EWOULDBLOCK": 140,
     "EXDEV": 18,
     "F_OK": 0,
-    "OPENSSL_VERSION_NUMBER": 810549328,
+    "OPENSSL_VERSION_NUMBER": 810549360,
     "O_APPEND": 8,
     "O_CREAT": 256,
     "O_EXCL": 1024,
@@ -548,6 +549,7 @@
     "RSA_PSS_SALTLEN_AUTO": -2,
     "RSA_PSS_SALTLEN_DIGEST": -1,
     "RSA_PSS_SALTLEN_MAX_SIGN": -2,
+    "RSA_SSLV23_PADDING": 2,
     "RSA_X931_PADDING": 5,
     "R_OK": 4,
     "SIGABRT": 22,
