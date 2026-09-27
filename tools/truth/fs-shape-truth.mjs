@@ -1,4 +1,4 @@
-// fs 形状细节的第二轮真值采集（WSL node v22.22.1）
+// fs 形状细节的第二轮真值采集（WSL node）
 //   用法：wsl -e node /mnt/d/git-repo/ServerPluginCore/tools/truth/fs-shape-truth.mjs
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, statSync, lstatSync, rmSync } from 'node:fs';
 import * as fs from 'node:fs';

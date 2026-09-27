@@ -1,5 +1,5 @@
 // 基线真值：os.cpus() 的形状、availableParallelism、以及 cpus 的 model/speed 到底给什么
-// （基线 = WSL Ubuntu / node v22.22.1；本机宿主 v24 也可以对比，但结论以基线为准）
+// （基线 = WSL Ubuntu / node v24.20.0；本机宿主 v24 也可以对比，但结论以基线为准）
 import * as os from 'node:os';
 
 const cpus = os.cpus();

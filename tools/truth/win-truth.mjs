@@ -1,10 +1,10 @@
-// Windows 真值采集（契约基线 node v22.22.1 / win32 / x64）
+// Windows 真值采集（契约基线 node v24.20.0 / win32 / x64）
 //
 // 为什么必须用真 Windows 的 Node：`os.constants` 是 `src/node_constants.cc` 在**编译期**由平台宏
 // （`#ifdef SIGINT` / `#ifdef WSAEINVAL` / `#ifdef E2BIG`）决定的 —— 本地 `node/` 源码（v27）
 // 只能告诉你有哪些键，**给不出 Windows 的数值**；Linux 那份更是另一套。
 //
-// 用法（判卷人 = 官方 node v22.22.1 解压出的 node.exe，仓库外；见 tools/paths.mjs 的 JUDGE_NODE）：
+// 用法（判卷人 = **本机 node**；见 tools/paths.mjs 的 JUDGE_NODE）：
 //   & $env:SPC_JUDGE_NODE  tools/truth/win-truth.mjs > tools/truth/data/win-truth.json
 import constants from 'node:constants';
 import * as os from 'node:os';

@@ -1,4 +1,4 @@
-// 基线真值：finished/pipeline 的回调参数到底是 null 还是 undefined（v22.22.1）
+// 基线真值：finished/pipeline 的回调参数到底是 null 还是 undefined（基线；2026-09-27 重采于 v24.20.0）
 import { Readable, Writable, Transform, finished, pipeline } from 'node:stream';
 
 console.log('version', process.version);

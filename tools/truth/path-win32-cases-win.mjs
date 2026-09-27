@@ -1,4 +1,4 @@
-// 在**真 Windows node v22.22.1** 上跑：把 path.win32 的逐条结果 dump 成 JSON（判卷人一侧）
+// 在**真 Windows 的本机 node** 上跑：把 path.win32 的逐条结果 dump 成 JSON（判卷人一侧）
 //
 // 用法：
 //   & $env:SPC_JUDGE_NODE  tools/truth/path-win32-cases-win.mjs

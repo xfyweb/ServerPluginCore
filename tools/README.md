@@ -154,7 +154,7 @@ node tools/batteries/events-battery.mjs
 ### `tools/truth/` —— 真值采集 / 生成 / 校验链
 
 **为什么有它**：`core/sandbox-modules/*.js` 里那些"勿手改"的表（常量、errno、crypto、zlib、fs 错误文案）
-**不是手抄的**，是"在基线 node v22.22.1 上跑出来、再生成进去"的。这条链就是它们的出处：
+**不是手抄的**，是"在基线 node（现为 v24.20.0）上跑出来、再生成进去"的。这条链就是它们的出处：
 
 ```
 采集（在基线环境里跑，输出到 data/）

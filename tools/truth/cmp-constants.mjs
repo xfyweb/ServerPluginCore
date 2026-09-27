@@ -1,6 +1,6 @@
 // 对比 Windows 与 Linux 的常量表（逐键）：哪些键只在一边有、哪些值不同
 //
-// 输入：`tools/truth/data/const-win.json`（Windows v22.22.1 真值）+ `tools/truth/data/const-linux.json`（Linux v22.22.1 真值）
+// 输入：`tools/truth/data/const-win.json`（Windows 侧真值，2026-09-27 重采于 v24.20.0）+ `tools/truth/data/const-linux.json`（Linux 侧真值，2026-09-27 重采于 v24.20.0）
 import { readFileSync } from 'node:fs';
 import { TRUTH_DATA } from '../paths.mjs';
 

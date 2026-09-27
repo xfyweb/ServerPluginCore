@@ -1,4 +1,4 @@
-// querystring 形状真值（基线：WSL Ubuntu / node v22.22.1）
+// querystring 形状真值（基线：WSL Ubuntu / node v24.20.0）
 // 只报"规格表看不出来"的东西：别名身份、原型、escape 边界、坏转义回退。
 import * as qs from 'node:querystring';
 import { createRequire } from 'node:module';

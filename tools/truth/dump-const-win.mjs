@@ -1,6 +1,6 @@
-// 在 **Windows 的 node v22.22.1** 里跑：把 constants / os.constants / 平台行为事实 dump 成 JSON。
+// 在 **Windows 的本机 node（判卷人）** 里跑：把 constants / os.constants / 平台行为事实 dump 成 JSON。
 //
-// 判卷人：官方 node v22.22.1 解压出的 `node.exe`（仓库外；路径见 tools/paths.mjs 的 JUDGE_NODE）。
+// 判卷人：**本机 node**（`tools/paths.mjs` 的 `JUDGE_NODE` 默认就是 `process.execPath`；旧下载件已退役）。
 // 用法：
 //   & $env:SPC_JUDGE_NODE  tools/truth/dump-const-win.mjs
 //

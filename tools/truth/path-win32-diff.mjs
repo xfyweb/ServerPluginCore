@@ -1,7 +1,7 @@
-// `path.win32` 差分：把沙箱 shim 的结果与**真 Windows node v22.22.1** 的真值逐条比。
+// `path.win32` 差分：把沙箱 shim 的结果与**真 Windows 的本机 node** 的真值逐条比。
 //
 // 用法：
-//   & "D:\git-repo\_tools\node-v22.22.1-win-x64\node.exe" D:\git-repo\ServerPluginCore\tools\truth\path-win32-cases-win.mjs   # 采真值
+//   node D:\git-repo\ServerPluginCore\tools\truth\path-win32-cases-win.mjs   # 采真值
 //   node D:\git-repo\ServerPluginCore\tools\truth\path-win32-diff.mjs                                                        # 差分
 //
 // ⚠️ **两条 harness 纪律**（都是本轮踩出来的）：

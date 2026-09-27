@@ -54,7 +54,7 @@ function shape(fn) {
 }
 function cmp(label, a, b) { eq(label, shape(a), shape(b)); }
 
-// 导出面：与 **v22.22.1 真值表**比（宿主 v24 多了一个 URLPattern，那是新加的，不在仿真基线里）
+// 导出面：与**真值表**比（基线迁 v24.20.0 后 `URLPattern` 进了基线 —— 我们**有意不仿真**，记账见 module-emulation-design §13.1 第 12 条）
 const TRUTH_KEYS = ["URL","URLSearchParams","Url","default","domainToASCII","domainToUnicode","fileURLToPath","fileURLToPathBuffer","format","parse","pathToFileURL","resolve","resolveObject","urlToHttpOptions"];
 eq('keys', Object.keys(U).sort(), TRUTH_KEYS);
 

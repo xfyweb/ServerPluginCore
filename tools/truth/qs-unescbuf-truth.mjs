@@ -1,4 +1,4 @@
-// 补测：unescapeBuffer 的返回长度在**基线 v22.22.1** 上到底是什么
+// 补测：unescapeBuffer 的返回长度在**基线 v24.20.0** 上到底是什么
 import * as qs from 'node:querystring';
 
 const out = {
