@@ -35,9 +35,15 @@ CLI 输出与 daemon 日志是**给运维/管理员看的**，`err.*` 是**给�
 2. **说清"发生了什么 + 该怎么办"**，**不解释设计理由**（理由归文档：例如"一次点击不该等于全授"属于设计论证，不该出现在管理员的报错里）；
 3. **不用口语**：陈述 + 建议，不用"别只开不关""绝不为一个插件卡住核心"这类；
 4. **占位符必须真被传**：模板里写了 `{x}` 就必须有人传（历史坑：`cli.plugin.line` 里的 `reserved={reserved}` 字段 v2 已删、参数从没传过，于是**界面上原样打出 `reserved={reserved}`**）；
-5. **两份 locale 必须同键同占位符**：`zh-CN.json` 与 `en-US.json` 的键集与 `{x}` 集合逐条一致（同样由那个工具守）。
+5. **每份 locale 必须同键同占位符**：`zh-CN.json`（正本）与其余各份（现为 `en-US.json`）的键集与 `{x}` 集合逐条一致。**逐份核**由 `core/__tests__/i18n-locale.test.ts` 做（它按目录列举，加一门语言就自动纳入）；`tools/check-locales.mjs` 目前只覆盖 zh-CN / en-US 两份 —— 加第三门语言时那道工具要一起泛化。
 
 > 这五条是**机械可查**的：`node tools/check-locales.mjs`（键集/占位符/内部坐标/陈旧字段），进 CI 也不会有噪声。
+>
+> **语言从哪来**：`SPC_LANG` → `LANGUAGE` → `LC_ALL` → `LC_MESSAGES` → `LANG` → 平台探测（仅 Windows/macOS）→ 默认 `zh-CN`；
+> **可用的集合 = `locales/` 里真实存在的文件**（加语言 = 放个 JSON 文件，不用改代码）；匹配只做拼写归一
+> （大小写 / `_`→`-` / 去掉 `.codeset` 与 `@modifier`）、**不猜前缀**；`C`/`POSIX` = 平台没有语言偏好 ⇒ 落默认；
+> 匹配不上就回退默认**并在 stderr 出声**（按来源分 `err.LOCALE_UNAVAILABLE` / `err.LOCALE_PLATFORM_UNAVAILABLE`）。
+> 契约见 `docs/cli-contract.md` §5。
 
 ## 3. 事件与钩子（宿主 ↔ 插件，反向通道）
 

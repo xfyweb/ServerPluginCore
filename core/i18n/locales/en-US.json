@@ -150,6 +150,11 @@
   "err.TIMEOUT": "Operation timed out",
   "err.INTERNAL": "Internal error",
   "err.UNEXPECTED": "Unexpected internal error",
+
+  "err.LOCALE_UNAVAILABLE": "The language requested by SPC_LANG is unavailable: {lang}; falling back to {fallback} (available: {available})",
+
+  "err.LOCALE_PLATFORM_UNAVAILABLE": "The language set by the system environment is unavailable: {lang}; falling back to {fallback} (available: {available}). Set SPC_LANG to pin a language",
+
   "err.PLUGIN_LOAD_FAILED": "Plugin load failed: {pluginId} ({cause})",
   "err.PLUGIN_LOAD_TIMEOUT": "Plugin load timed out: {pluginId} (top-level code exceeded the {hook} budget)",
 

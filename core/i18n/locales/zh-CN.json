@@ -150,6 +150,11 @@
   "err.TIMEOUT": "操作超时",
   "err.INTERNAL": "内部错误",
   "err.UNEXPECTED": "未预期的内部错误",
+
+  "err.LOCALE_UNAVAILABLE": "SPC_LANG 指定的语言不可用：{lang}，已回退到 {fallback}（可用：{available}）",
+
+  "err.LOCALE_PLATFORM_UNAVAILABLE": "系统环境指定的语言不可用：{lang}，已回退到 {fallback}（可用：{available}）；要固定语言请设 SPC_LANG",
+
   "err.PLUGIN_LOAD_FAILED": "插件加载失败：{pluginId}（{cause}）",
   "err.PLUGIN_LOAD_TIMEOUT": "插件加载超时：{pluginId}（顶层代码执行超过 {hook} 阶段的限额）",
 
