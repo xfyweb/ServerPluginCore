@@ -109,7 +109,7 @@ function diff(label: string, mine: () => unknown, theirs: () => unknown): void {
 describe('仿真 node:url —— 导出面', () => {
   it('导出键与真值表一致（不含有意不仿真的 URLPattern）', () => {
     // ⚠️ **`URLPattern` 有意不仿真**：它是 v24 才挂到 `url` 模块上的独立内置绑定（一整套 pattern matcher），
-    // 插件依赖面上罕见、实现成本高 ⇒ 不登记（插件里取到 `undefined`）。记账见 `module-emulation-design.md` §14。
+    // 插件依赖面上罕见、实现成本高 ⇒ 不登记（插件里取到 `undefined`）。记账见 `module-emulation-design.md` §13.1 第 12 条。
     // 真值 = 采集时 `Object.keys(require('node:url')).sort()` 的**可复现**产物（基线升 v24 后它才含 `URLPattern`）。
     const truth: string[] = JSON.parse(
       readFileSync(join(process.cwd(), 'tools', 'truth', 'data', 'fs-url-truth.json'), 'utf8'),

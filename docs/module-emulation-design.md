@@ -503,7 +503,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 1 | `process.env` 暴露策略 | **冻结的空对象**，不加权限点（宿主 env 可能含凭据，暴露面太大）；将来有真实需求再谈白名单 + `env.read` | `node-process.js` |
 | 2 | `tmpdir` / `cwd` 语义 | `tmpdir` = **`<dataDir>/tmp`**（不是宿主 tmp：那个在 fs 作用域外，插件一用就 `EACCES`——返回它等于挖坑）；`cwd` = 数据目录 | `core/emulated-env.ts` |
 | 3 | 同步长操作 | 沿用既有大小上限（单文件 64 MB / 读 8 MB），超限给 `EFBIG`；不做阈值警告（警告没人看得见，上限才是硬的） | `core/hostApi.ts`、`node-fs.js` |
-| 4 | 仿真 Node 版本 | **固定 `22.22.1`**（`process.version` = `v22.22.1`）；`process.versions` 只报 `node` + `spc`，**不编造** `v8`/`openssl` | `core/emulated-env.ts` |
+| 4 | 仿真 Node 版本 | **固定 `24.20.0`**（`process.version` = `v24.20.0`）—— **= 契约基线那一版**（2026-09-27 迁，与判卷人同版：这样"行为差异只来自平台、不来自版本"才真的成立）；`process.versions` 只报 `node` + `spc`，**不编造** `v8`/`openssl` | `core/emulated-env.ts` |
 | 5 | `node:module` / `createRequire` | **本批不做**：按"未登记模块"拒绝。有真实依赖卡住再评估（它不是能力，但会让 CJS→ESM 的路径变复杂） | `registry.ts` |
 | 6 | `os` 的取值三分法 | **行为性事实固定**（platform/EOL/devNull/endianness，与 posix 路径同一取向）、**容量类给宿主真值**（cpuCount/totalmem/freemem/uptime/loadavg）、**身份类明确抛错**（cpus/hostname/networkInterfaces/userInfo） | `core/emulated-env.ts`、`node-os.js` |
 | 7 | WHATWG `URL` 实现路径 | **宿主快照 + 变更回宿主**（解析一次、畸形输入保真）；沙箱内自实现的只有 `pathToFileURL`/`fileURLToPath`/legacy `parse`/`format`/`resolve` | `node-url.js` |
@@ -511,6 +511,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 9 | `stream` 是否入批 | 入第二批之后（单独一步）：按实测属性清单做**极小形状** shim，以"跑通那 5 个包"为界 | 见 ROADMAP |
 | 10 | `process.getuid` 一族的语义（第三批） | **返回固定仿真事实 `1000`**（四个 getter 一致），不是抛错也不是宿主真值。理由：Linux 基线上 `process.getuid` 是**函数**（`internal/bootstrap/node.js:214` 的 `implementsPosixCredentials` 门），于是 `!process.getuid \|\| process.getuid() !== 0` 这种"探测自己是不是 root"的写法（`write-file-atomic/lib/index.js:70`）会去**调用**它 —— 抛错等于让包在探测环境这一步就死；给宿主真值则泄露身份且随部署漂移。`getgroups` 与 `setuid`/`setgid` 仍抛错（组/权限变更不是事实） | `node-process.js`、`emulation-os-process.test.ts` |
 | 11 | `querystring` 与 `node-url.js` 里那份 legacy 子集 | **并存、有意不合并**：`node-url.js` 的那份只服务 `url.parse(..., true)`（默认分隔符、无 `unescapeBuffer`），新 shim 是面向 `node:querystring` 的完整面。合并不省多少行，却要动已验证的模块 ⇒ 等真有需要 | `node-querystring.js` 文件头 |
+| 12 | 基线迁 v24.20.0 后**宿主多出来的导出名** | **`URLPattern`（`node:url`）有意不仿真**：不登记 ⇒ 插件里取到 `undefined`。理由：一整套 pattern matcher，插件依赖面上罕见、实现成本高，真有人用再说。⚠️ **这不是"漏了"**：导出面真值（`tools/truth/data/fs-url-truth.json` 的 `urlExportKeys`，采集时就是 `Object.keys(require('node:url')).sort()`）**含它**，用例的断言 = 真值表**减去这份名单** —— 漏别的名字会红，漏这个名字是**有意**的 | `node-url.js`、`emulation-url.test.ts` |
 
 ### 13.2 仍未定
 
