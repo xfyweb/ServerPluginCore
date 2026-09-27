@@ -37,7 +37,7 @@
 //     与 Node 的差异见"fs 流"一节：open 在构造后的微任务里完成、`'open'` 顺序不变）。
 //     **仍未支持**：`fs.promises.watch`（异步迭代器需要"无界阶段"，见 `PROMISE_WATCH_WHY`）、
 //     `FileHandle` 上的流入口、`cp`/`glob`/`statfs`。
-//  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`tools/truth/fs-url-truth.mjs` 在 WSL node v22.22.1
+//  6. `fs.constants` 与 `err.errno`/文案都是 **Linux 真值**（`tools/truth/fs-url-truth.mjs` 在 WSL node
 //     上取的运行值，生成脚本 `tools/truth/gen-fs-tables.mjs`），与 `node-path.js` 固定 posix、
 //     `node-constants.js` 取 Linux 是同一个取向。
 //  7. **`URL` 路径参数只在 POSIX 语义下成立**：`fileURLToPath` 是 POSIX 基线（沙箱路径语义本来就是 posix），
@@ -517,7 +517,7 @@ function assertEncoding(enc) {
 
 /**
  * Node 的 `parseFileMode`（`internal/validators.js`）：`null`/`undefined` ⇒ 默认值；
- * 八进制字符串要全 `[0-7]`，数字要 uint32。判卷人实测（官方 node v22.22.1）：
+ * 八进制字符串要全 `[0-7]`，数字要 uint32。判卷人实测（判卷人实测）：
  * `openSync(p,'w','x')` ⇒ `ERR_INVALID_ARG_VALUE … must be a 32-bit unsigned integer or an octal string`、
  * `-1` ⇒ `ERR_OUT_OF_RANGE … >= 0 && <= 4294967295`、`1.5` ⇒ `… an integer`。
  *
@@ -552,7 +552,7 @@ function assertMode(mode, name) {
 // ──────────────────────────── Stats / Dirent ────────────────────────────
 
 /**
- * `fs.Stats` 的形状照宿主 Node（WSL v22.22.1 实测）：
+ * `fs.Stats` 的形状照宿主 Node（WSL node 实测）：
  *   · **自有数据属性**：dev mode nlink uid gid rdev blksize ino size blocks
  *     atimeMs mtimeMs ctimeMs birthtimeMs（顺序也照抄——`Object.keys` 会暴露顺序）
  *   · `atime`/`mtime`/`ctime`/`birthtime` 是**原型 getter**（每次访问现算 Date），不是自有属性
@@ -861,7 +861,7 @@ function lstatSync(path, options) {
  *
  * 为什么要有它：`readFileSync` 必须把整个文件搬进 32 MiB 的沙箱堆；fd 面让插件**按位置流式**读写。
  *
- * 契约（官方 node v22.22.1 与宿主 v24 逐条实测一致）：
+ * 契约（v22.22.1 与 v24 实测一致）：
  *   · `openSync` 返回 **number**；**旗标原样交宿主 Node 校验**（非法 ⇒ `ERR_INVALID_ARG_VALUE`，
  *     我们不复刻 Node 的旗标表）；
  *   · `closeSync` 二次 ⇒ `EBADF: bad file descriptor, close`；读写方向不符 ⇒ `EBADF …, read|write`；
@@ -886,7 +886,7 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 /**
  * Node 的 `validateInteger`（`internal/validators.js`）：三种错各有各的文案 ——
  * 类型错是 `ERR_INVALID_ARG_TYPE`，非整数与越界都是 `ERR_OUT_OF_RANGE`（`an integer` / `>= min && <= max`）。
- * 判卷人实测（官方 node v22.22.1；与宿主 v24 逐条一致）：
+ * 判卷人实测（v22.22.1 与 v24 实测一致）：
  * `fh.truncate('x')` ⇒ 类型错、`fh.truncate(1.5)` ⇒ `an integer`、`fh.read(buf, -1, …)` ⇒ `>= 0 && <= 9007199254740991`。
  */
 function validateInteger(value, name, min, max) {
@@ -1039,7 +1039,7 @@ function fdPositionArg(position) {
  *
  * ⚠️ **有意与 Node 不同（一处，fail-closed）**：Node 的 promises `read` **不校验 length 是不是整数**，
  * 浮点数会一路打进 C++ binding 的 `CHECK(args[3]->IsInt32())` ⇒ **abort 整个进程**
- * （判卷人 v22.22.1 与宿主 v24 实测都 abort：`Assertion failed: args[3]->IsInt32()`，栈顶 `node::fs::Read`）；
+ * （判卷人 v22.22.1 与 v24 实测都 abort：`Assertion failed: args[3]->IsInt32()`，栈顶 `node::fs::Read`）；
  * 而**同步** `fs.readSync(fd, buf, 0, 2.5, 0)` 反而**不报错**（读 2 字节）。同一件事两个面两种表现，
  * 我们统一给一条明确的 `ERR_OUT_OF_RANGE`（整数要求），既不 abort 也不静默截断。
  */
@@ -1284,7 +1284,7 @@ function writeCb(fd, data, offsetOrPosition, lengthOrEncoding, position, cb) {
  * 而身份只有在**对象出生的那一侧**才成立（宿主那侧只有一串编号，见 `core/plugin/handles.ts`）。
  * 所以分工是：**对象在沙箱、真资源在宿主**，两边用同一个数字句柄串起来。
  *
- * 契约全部来自判卷人实测（官方 node v22.22.1，与宿主 v24 **逐条一致**，
+ * 契约全部来自判卷人实测（v22.22.1 与 v24 **实测一致**，
  * 唯一差别是 v24 的 `constructor` 上多了个静态 `isFileHandle`，v22 没有 ⇒ 我们不加，跟基线走）：
  *   · `fd` 是**数字**、**只读 getter**（原型上的访问器、没有 setter：严格模式赋值抛 TypeError，与 Node 同形）、
  *     **关闭后是 `-1`**；
@@ -1363,7 +1363,7 @@ function fileHandleReadEncoding(options) {
 /**
  * `FileHandle.writeFile`/`appendFile` 的 options → 编码
  * （Node：`getOptions(options, { encoding:'utf8', mode:0o666, flag:'w', flush:false })` + `validateBoolean(flush)`）。
- * ⚠️ **`mode` 不校验**：判卷人实测（v22.22.1 与宿主 v24 一致）`fh.writeFile('x', { mode: 'x' })` 是 **OK** ——
+ * ⚠️ **`mode` 不校验**：判卷人实测（v22.22.1 与 v24 一致）`fh.writeFile('x', { mode: 'x' })` 是 **OK** ——
  * 句柄面的 options 不走 `parseFileMode`（**别照 v27 源码猜**，那版把 parse 提到了前面；
  * 我们照实测：只校验 `flush`）。`flag` 同理不生效（句柄早开好了）。
  */
@@ -1695,7 +1695,7 @@ function invalidReadVector() {
  * 宿主原语是"读进一块 buffer"。把**总长**一次读回来再按顺序切，语义与 Node 一致 —— 包括边界：
  * 判卷人实测 `[4,4]` 在只剩 2 字节时 ⇒ 读回 2 字节、**贪心地**填满第一个视图（"IJ\0\0"），第二个不动。
  *
- * 实测的边界（官方 node v22.22.1，与宿主 v24 逐条一致）：
+ * 实测的边界（v22.22.1 与 v24 实测一致）：
  *   · **空数组 ⇒ `EINVAL`**（uv 不接受 0 个 iovec）；全是零长视图（`[Buffer.alloc(0)]`）⇒ **0**，不报错；
  *   · 显式 position 不动文件偏移，缺省/`null`/`-1` 用当前偏移并推进；
  *   · 越界（EOF 之外）⇒ 0，调用方的视图一个字节都不改。
@@ -1854,7 +1854,7 @@ function assertNoSignal(opts) {
 
 /**
  * `fs.watch(filename[, options][, listener])` → `FSWatcher`（EventEmitter）。
- * 形状照判卷人实测（v22.22.1）：构造器名 `FSWatcher`、原型上有 `close`/`ref`/`unref`/`start`、
+ * 形状照判卷人实测（v22.22.1 与 v24 实测一致）：构造器名 `FSWatcher`、原型上有 `close`/`ref`/`unref`/`start`、
  * `close()` 返回 undefined 且**异步**发一次 `'close'`（二次 close 不再发、也不报错）。
  */
 class FSWatcher extends EventEmitter {
@@ -2023,7 +2023,7 @@ function dirClosedError() {
  * 与 Node 的差别只有一处：**条目在构造时就一次取回**（宿主 `fs.readdirEntries`），而不是分批惰性读。
  * 可观察行为一致：`readSync()` 逐条给到 `null`、`close()`/`closeSync()` 之后再读报 `ERR_DIR_CLOSED`、
  * **二次 `closeSync()` 也报 `ERR_DIR_CLOSED`**、异步迭代器跑到尽头（或提前 break）会**关掉**句柄
- * —— 这些都是判卷人实测（官方 node v22.22.1，与宿主 v24 逐条一致）。分批读对我们没有意义：
+ * —— 这些都是判卷人实测（v22.22.1 与 v24 实测一致）。分批读对我们没有意义：
  * 目录条目数本来就有 10000 的上限，一次读完反而少一条"读到一半句柄失效"的路径。
  */
 class Dir {
@@ -2131,7 +2131,7 @@ function opendir(path, options, cb) {
 /**
  * `fs.createReadStream` / `fs.createWriteStream`（对 Node 的 `internal/fs/streams.js`）。
  *
- * **契约**（判卷人实测：官方 node v22.22.1 与宿主 v24 **逐条一致**；探针在仓库外的开发工作区）：
+ * **契约**（判卷人实测：v22.22.1 与 v24 **实测一致**；探针在仓库外的开发工作区）：
  *   · 事件顺序：读侧 `open` → `ready` → `data`(×N) → `end` → `close`；写侧 `open` → `ready` → `finish` → `close`；
  *   · **坏路径不在构造期抛**：`createReadStream(不存在的路径)` 正常返回（`pending === true`），
  *     随后**异步**发 `error`(ENOENT) + `close`；而**选项**不合法是**构造期同步抛**
