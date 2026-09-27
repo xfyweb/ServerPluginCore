@@ -1442,7 +1442,7 @@ console.log('GLOBAL ' + (global === globalThis) + '/' + (typeof URL) + '/' + (ty
     assert.equal(lines[1], 'ENV object,undefined,function,object');
     // 仿真值：platform **跟随宿主**（P2-E / 模型 B：win32 宿主上就是 win32）、
     // env 是冻结空对象、版本是固定基线
-    assert.equal(lines[2], 'PROC ' + process.platform + '/0/v22.22.1');
+    assert.equal(lines[2], 'PROC ' + process.platform + '/0/v24.20.0');
     // 退出权不给插件（`process.exit` 明确抛错）
     assert.equal(lines[3], 'EXIT ERR_NOT_SUPPORTED_IN_SANDBOX');
     assert.equal(lines[4], 'BUF 2/yes');
@@ -1477,7 +1477,7 @@ console.log('CPUS ' + os.cpus().length + '/' + os.cpus()[0].model + '/' + os.cpu
     assert.equal(osMatch[1], process.platform);
     assert.equal(Number(osMatch[2]), nodeOs.EOL.length);
     assert.equal(procMatch[1], process.platform);
-    assert.equal(procMatch[2], 'v22.22.1'); // 版本是固定仿真值
+    assert.equal(procMatch[2], 'v24.20.0'); // 版本 = 固定仿真值（= 契约基线）
     const homeLen = Number(osMatch[3]);
     const cwdLen = Number(procMatch[3]);
     assert.ok(homeLen > 0 && cwdLen > 0, `homedir / cwd 长度应当为正（拿到 ${homeLen}/${cwdLen}）`);

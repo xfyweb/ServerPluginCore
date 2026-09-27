@@ -193,8 +193,8 @@ describe('仿真 node:process —— 只读事实与明确的边界', async () =
   });
 
   it('version/versions 是**固定仿真值**，且不编造没有的实现', () => {
-    assert.equal(processShim.version, 'v22.22.1');
-    assert.equal(processShim.versions.node, '22.22.1');
+    assert.equal(processShim.version, 'v24.20.0');
+    assert.equal(processShim.versions.node, '24.20.0');
     // `v8`/`openssl` 这些报了就等于承诺了不存在的实现——只报我们真有的
     assert.deepEqual(Object.keys(processShim.versions).sort(), ['node', 'spc']);
     assert.equal(Object.isFrozen(processShim.versions), true);

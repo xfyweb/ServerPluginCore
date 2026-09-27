@@ -21,13 +21,15 @@
 //      那是宿主隐私与环境探测面，`node:os` 里对应的调用**明确抛错**，等真需求来了再谈权限点。
 //
 // 版本号仍是**固定仿真值**：依赖常用 `process.versions.node` 做 semver 分支，跟着宿主的 Node 版本走
-// 会让同一份插件在不同机器上走不同分支。固定成一个真实存在过的 LTS 版本，行为可预期。
+// 会让同一份插件在不同机器上走不同分支。⇒ 固定成**契约基线的那一个版本**（2026-09-27 起 = `v24.20.0`），
+// 与判卷人同版：这样"行为差异只来自平台、不来自版本"才真的成立（此前基线 v22 / 宿主 v24 是**双轨**，
+// 差分用例会给出"看着像平台差异、其实是版本差异"的红，吃过一次）。
 import { readFileSync } from 'node:fs';
 import * as nodeOs from 'node:os';
 import { join } from 'node:path';
 
-/** 仿真 Node 版本（写进 `process.version` / `process.versions.node`）——固定值，不跟宿主 */
-export const EMULATED_NODE_VERSION = '22.22.1';
+/** 仿真 Node 版本（写进 `process.version` / `process.versions.node`）——固定值 = **契约基线**，不跟宿主 */
+export const EMULATED_NODE_VERSION = '24.20.0';
 
 /** 两种仿真平台（模型 B 下由宿主决定；也可用 `SPC_EMULATED_PLATFORM` 覆盖） */
 export type EmulatedPlatform = 'linux' | 'win32';
