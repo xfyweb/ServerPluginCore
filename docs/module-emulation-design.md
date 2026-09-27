@@ -439,7 +439,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 项 | 取值 |
 |---|---|
 | `platform` / `os.platform()` / `process.platform` | 跟随宿主（`SPC_EMULATED_PLATFORM=linux\|win32` 可覆盖，**只给测试与排障**——配置项会造出"配了 Linux、实际跑 Windows"的新坑） |
-| Node 版本基线 | **仍固定 v22.22.1**（Windows 侧也取 v22.22.1 的真值，不是宿主 v24）⇒ 差异只来自平台、不来自版本 |
+| Node 版本基线 | **固定 v24.20.0，且判卷人同版**（2026-09-27 迁）⇒ 差异只来自平台、不来自版本。旧口径是「仿真 v22.22.1 / 宿主 v24」的**双轨**，那会产出"看着像平台差异、其实是版本差异"的红（实测踩过一次） |
 | `EOL` / `devNull` | linux `\n`+`/dev/null`；win32 `\r\n`+`\\.\nul` |
 | `constants` / `os.constants` | **两张真值表**，按 `__spcEnv.platform` 选。三处**结构性**差异（所以必须整表分，不是"几个值不同"）：① 键集：Windows 多 59 个（`WSA*` 54 + `SIGBREAK` 等）、Linux 多 51 个（`SIGUSR1/2`、`O_*`、`RTLD_*`、`S_IRGRP` 一族）；② 同名不同值 49 个（`EADDRINUSE` win=100/linux=98）；③ **形状**：Windows **没有** `os.constants.dlopen` 那一组 |
 | `path` | 跟随平台（`path/posix` 例外——见下）。`path.win32` 是**真实现**（照 `node/lib/path.js` 重写：UNC、`\\?\`、保留设备名、盘符相对、`.\` 反冒名补偿） |
@@ -457,7 +457,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
    `path` → `node-path.js`（跟随平台）。
 3. **`os.type()` 也要跟**：P2-E 之前它写死 `'Linux'`，模型 B 下会出现"`platform()` 说 win32、`type()` 说 Linux"。
 
-**判卷人（Windows 侧真值）**：官方 `node-v22.22.1-win-x64`（解在 `_tools/`，不进仓库）——
+**判卷人（Windows 侧真值）**：**本机装的 node v24.20.0**（= 契约基线同版；旧的官方 `node-v22.22.1-win-x64` 已退役、留档不删）——
 常量/信号/errno 是 `src/node_constants.cc` 在**编译期**由平台宏定的，**本地 `node/` 源码（v27）只能告诉你有哪些键，
 给不出 Windows 的数值**。采真值的脚本：`tools/truth/dump-const-win.mjs` → `const-win.json`；
 `path.win32` 的差分：`tools/truth/path-win32-cases-win.mjs`（采）+ `tools/truth/path-win32-diff.mjs`（比）。
@@ -556,7 +556,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 | 14 | `mkdirSync('b/c/d', {recursive:true})` 返回**第一个被创建的目录**、`mkdtempSync('t-')` 返回 `'t-ABC123'`——都是**调用方写的那种形式**（相对进、相对出） | 宿主必须用收敛后的绝对路径，所以 shim 负责还原（`callerDepthForm` / "前缀 + 宿主给的 suffix"）；`fs.mkdtemp` 因此多回一个 `suffix` |
 | 15 | `mkdir -r` 要建**整条链**：`firstMissingAncestor` 只用于返回值，只建它会让中间层缺失、紧随其后的 `validatePath` 在 F6 上炸 | `hostApi.ts` 的 `fs.mkdir` |
 | 16 | `lstatSync` **认不出软链**：路径收敛（F2/F5）在它之前就把软链解析成了目标 | 记进 §9 已知边界；补偿能力是 `readdirSync(withFileTypes)` 的 `Dirent`（不经过收敛） |
-| 17 | 判卷人有两个陷阱：(a) **Windows 宿主不是 Linux 真值的判卷人**（errno -4058、`unlinkSync(目录)` 给 EPERM、`mkdir` 回 `\\?\` 长路径前缀）；(b) **本机宿主版本 ≠ 仿真版本**（宿主 v24 有 `mkdtempDisposable`/`Utf8Stream`，v22.22.1 没有） | 断言 **Linux 真值**（WSL 取，`tools/truth/data/fs-url-truth.json`），只在 `platform === 'linux'` 时与宿主对照；导出面拿 **v22.22.1 的真值表**比，不拿宿主比 |
+| 17 | 判卷人有两个陷阱：(a) **Windows 宿主不是 Linux 真值的判卷人**（errno -4058、`unlinkSync(目录)` 给 EPERM、`mkdir` 回 `\\?\` 长路径前缀）；(b) **导出面/新 API 以真值表为准，不拿宿主当判据**（2026-09-27 起仿真版本 = 宿主版本 = `v24.20.0`，但**仍然**不拿宿主比：换台机器就又漂了；v24 才有的 `mkdtempDisposable`/`Utf8Stream` 这类**有意不仿真**的，记账见 §13.1 第 12 条） | 断言 **Linux 真值**（WSL 取，`tools/truth/data/fs-url-truth.json`），只在 `platform === 'linux'` 时与宿主对照；导出面拿**真值表**比，不拿宿主比 |
 | 18 | 权限耦合：`bytes.*` 是**独立能力组**，`Buffer.from(str)`/`buf.toString()` 要走它 | `node:fs` 的文本读写**刻意不经** `bytes`（`fs.readText`/`fs.writeText` 在宿主侧连编解码一起做），所以 `node:fs` 只需要 `fs.read.data`/`fs.write.data`；用 `node:buffer` 的编解码、或 fs 的 Buffer 路径 / `{encoding:'buffer'}` 才要声明 `bytes.encode`/`bytes.decode` |
 
 ### 14.4 真实依赖冒烟（本批的验收证据）
