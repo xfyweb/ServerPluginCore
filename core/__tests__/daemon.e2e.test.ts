@@ -46,7 +46,11 @@ async function startDaemon(env: Record<string, string> = {}): Promise<Daemon> {
   const state = mkdtempSync(join(tmpdir(), 'spc-daemon-'));
   const child = spawn(process.execPath, ['--import', 'tsx', 'core/server.ts'], {
     cwd: root,
-    env: { ...process.env, SPC_PORT: String(port), SPC_STATE_DIR: state, ...env },
+    // ⚠️ `SPC_AUDIT_DIR` **显式钉到自己的 state 目录**：不然 `...process.env` 会把跑测环境里的
+    // `SPC_AUDIT_DIR`（AGENTS.md 要求测试指向临时目录，很多人导出在环境里）继承给 daemon，
+    // 审计就写到别处，而本文件读的是 `<state>/audit/` ⇒ 断言"0 条 core.shutdown"（踩过：只在我设了
+    // 那个变量的 Linux 跑法上红，裸 `pnpm test` 是绿的 —— 一个只在特定环境复现的假 bug）。
+    env: { ...process.env, SPC_PORT: String(port), SPC_STATE_DIR: state, SPC_AUDIT_DIR: join(state, 'audit'), ...env },
   });
   const d: Daemon = {
     child,
@@ -197,9 +201,11 @@ test('停机契约：插件 stop 卡住 ⇒ 仍在**总预算**内收尾（不�
     const installed = await runCli(['core/cli.ts', 'plugin', 'install', dir], d.state, d.port);
     assert.equal(installed.code, 0, installed.stderr);
 
-    const started = Date.now();
     const r = await runCli(['core/cli.ts', 'daemon', 'stop'], d.state, d.port);
     assert.equal(r.code, 0, r.stderr); // API 一侧仍成功应答（停机是异步进行的）
+    // ⚠️ 计时从**这一步之后**开始：上面 `runCli` 的开销是 `node --import tsx` 的**启动**（0.6–1.5s，
+    // 随平台与负载变），跟"停机总预算"无关 —— 原来把起点放在它之前，Linux 上必然顶到 2s 上限而误报。
+    const started = Date.now();
 
     const exit = await Promise.race([
       d.exited,
