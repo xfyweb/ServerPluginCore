@@ -6,6 +6,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { PLUGIN_ID_CORE } from '../../sdk/ids';
 import { SpcError } from '../errors';
 
 export type ParamType = 'enum' | 'pattern' | 'whitelist' | 'path';
@@ -38,7 +39,8 @@ export interface TemplateDef {
   privileged?: boolean;
 }
 
-const ID_PATTERN = /^(core|@[a-z0-9][a-z0-9_-]{0,62}\/[a-z0-9][a-z0-9_-]{0,62}):[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/;
+// 模板 ID：`<owner>:<action>.<op>`，owner = `core` 或**插件 id**（后者取自 `sdk/ids.ts` —— 形状只有那一处）
+const ID_PATTERN = new RegExp(`^(core|${PLUGIN_ID_CORE}):[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*$`);
 const PLACEHOLDER = /^\{([a-z][a-z0-9_]*)\}$/;
 const PARTIAL_PLACEHOLDER = /[{}]/;
 

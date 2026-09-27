@@ -9,15 +9,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { SpcError } from '../core/errors';
+// 作者 ID 与插件名共用一套字符 ⇒ 形状取自**唯一出处** `sdk/ids.ts`（这里不再自己写一份）
+import { ID_SEGMENT_RE } from '../sdk/ids';
 
 /** 固定目录名（`docs/build-layer-design.md` §10.2 定死；改它等于换一套工作区约定） */
 export const WORKSPACE_DIRNAME = '.spcdev';
-
-/**
- * 插件 id 的**一段**（作者 ID 与插件名共用一套字符）：
- * 与 `sdk/schema/manifest.schema.json` 的 `^@[a-z0-9][a-z0-9_-]{0,62}/…` 同源。
- */
-export const ID_SEGMENT_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
 export interface WorkspaceConfig {
   /** 产物目录（相对插件目录）；⑦b 的 `spcdev build` 用 */

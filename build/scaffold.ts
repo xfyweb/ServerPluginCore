@@ -9,13 +9,8 @@
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SpcError } from '../core/errors';
-import { checkAuthorId, ID_SEGMENT_RE, type Workspace } from './workspace';
-
-/** 目录名 / id 尾段：与 `sdk/schema/manifest.schema.json` 的 `^@[a-z0-9][a-z0-9_-]{0,62}/…` 同一套字符 */
-const NAME_RE = ID_SEGMENT_RE;
-
-/** 拼出来的完整 id 的形状（两段各自校验过，这里照着 schema 再核一遍） */
-const ID_RE = /^@[a-z0-9][a-z0-9_-]{0,62}\/[a-z0-9][a-z0-9_-]{0,62}$/;
+import { ID_SEGMENT_RE, PLUGIN_ID_RE } from '../sdk/ids';
+import { checkAuthorId, type Workspace } from './workspace';
 
 export interface ScaffoldOptions {
   /** 目录名（同时是 id 的尾段），如 `demo` */
@@ -177,12 +172,13 @@ function gitignoreTemplate(): string {
 
 /** 写一支新插件；返回实际落盘的文件清单（供 CLI 打印） */
 export function scaffoldPlugin(ws: Workspace, opts: ScaffoldOptions): ScaffoldResult {
-  if (!NAME_RE.test(opts.name)) throw new SpcError('PLUGIN_NAME_INVALID', { name: opts.name });
+  if (!ID_SEGMENT_RE.test(opts.name)) throw new SpcError('PLUGIN_NAME_INVALID', { name: opts.name });
   const author = checkAuthorId(opts.author);
   if (author === null) throw new SpcError('AUTHOR_ID_INVALID', { id: opts.author });
   const id = `@${author}/${opts.name}`;
-  // 理论上到不了（两段各自校验过）；留着是因为 id 的形状是**外部契约**（schema），两处规则哪天漂了得有人喊
-  if (!ID_RE.test(id)) throw new SpcError('PLUGIN_ID_INVALID', { id });
+  // 理论上到不了（两段各自校验过，且拼法与 `PLUGIN_ID_CORE` 同构）；留着是因为 id 的形状是**外部契约**，
+  // 哪天 `<作者>/<名字>` 不再是两段，这里得有人喊 —— 而不是悄悄生成一个装不进去的 id。
+  if (!PLUGIN_ID_RE.test(id)) throw new SpcError('PLUGIN_ID_INVALID', { id });
 
   const dir = opts.dir ?? join(ws.root, 'plugin', opts.name);
   if (existsSync(dir) && readdirSync(dir).length > 0 && opts.force !== true) {

@@ -11,6 +11,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import type { Manifest } from '../../sdk/types';
+import { PLUGIN_ID_RE } from '../../sdk/ids';
 import { DEFAULT_LOCAL_SOURCE, ensureDir, isValidSource, pluginConfigPath, pluginsFile, sanitizeOrigin, sanitizePluginId } from '../config';
 import { SpcError } from '../errors';
 
@@ -95,7 +96,7 @@ export function validateRecord(raw: unknown): string[] {
   const errors: string[] = [];
   if (typeof raw !== 'object' || raw === null) return ['record: not an object'];
   const r = raw as Record<string, unknown>;
-  if (typeof r.id !== 'string' || !/^@[a-z0-9][a-z0-9_-]{0,62}\/[a-z0-9][a-z0-9_-]{0,62}$/.test(r.id)) {
+  if (typeof r.id !== 'string' || !PLUGIN_ID_RE.test(r.id)) {
     errors.push('id: must match @<publisher>/<name>');
   }
   if (typeof r.dir !== 'string' || !isAbsolute(r.dir)) errors.push('dir: must be absolute');

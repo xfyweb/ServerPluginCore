@@ -7,6 +7,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
+import { PLUGIN_ID_RE } from '../../sdk/ids';
 import { canonicalize, parseStrictJson } from './canonical';
 import { decodePub, ed25519Verify } from './keys';
 import type { SourceEntry } from './keyring';
@@ -78,8 +79,6 @@ export type VerifyResult =
 /** 校验失败（含本地信封）的统一形状 */
 export type EnvelopeError = { code: VerifyCode; params?: Record<string, string> };
 
-const ID_PATTERN = /^@[a-z0-9][a-z0-9_-]{0,62}\/[a-z0-9][a-z0-9_-]{0,62}$/;
-
 export function sha256Hex(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
 }
@@ -132,7 +131,7 @@ function parseMeta(metaText: string): { ok: true; meta: MetaDoc } | ({ ok: false
   if (!meta || typeof meta !== 'object' || meta.metaSchema !== META_SCHEMA || !Array.isArray(meta.files)) {
     return { ok: false, code: 'PACKAGE_META_MALFORMED', params: { reason: 'metaSchema' } };
   }
-  if (typeof meta.id !== 'string' || !ID_PATTERN.test(meta.id)) {
+  if (typeof meta.id !== 'string' || !PLUGIN_ID_RE.test(meta.id)) {
     return { ok: false, code: 'PLUGIN_ID_INVALID', params: { id: String(meta.id) } };
   }
   // v4：`authorPub` 必填 —— 没有它就没有"身份"可言（构建层强制签名 ⇒ 正常包不会缺）

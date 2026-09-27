@@ -18,6 +18,7 @@
 // ⛔ **不做反向解析**（§3.4）：展示层用"源别名 + 插件短名"，存储与判定用全称。
 //    源别名可以改，一旦别名进了点名，改一次别名就会让一条已授出的授权凭空消失。
 //    撤销也不靠解析 —— 点自己记着 `owner`（见 core/permissions/registry.ts 的 `unregisterOwnedBy`）。
+import { PLUGIN_ID_RE } from '../../sdk/ids';
 import { isValidSource } from '../config';
 import { SpcError } from '../errors';
 
@@ -25,9 +26,6 @@ import { SpcError } from '../errors';
 export const CALL_POINT_PREFIX = 'plugins.call';
 /** 订阅他人事件的动态点前缀 */
 export const SUBSCRIBE_POINT_PREFIX = 'events.subscribe';
-
-/** 插件 id 的形状：与 manifest schema / `records.validateRecord` 同一条规则（改一处必须三处一起改） */
-const PLUGIN_ID_RE = /^@[a-z0-9][a-z0-9_-]{0,62}\/[a-z0-9][a-z0-9_-]{0,62}$/;
 
 /**
  * 尾段（端点 path / 事件 topic）的合法形状：**非空、无空白、不含 `*`**。
