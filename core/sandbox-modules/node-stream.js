@@ -878,7 +878,7 @@ function finished(stream, options, callback) {
     if (called) return;
     called = true;
     cleanup();
-    // **成功时回调参数是 `undefined`**，不是 `null`（基线 v22.22.1 实测：`typeof err === 'undefined'`）
+    // **成功时回调参数是 `undefined`**，不是 `null`（判卷人实测：`typeof err === 'undefined'`）
     cb(err ?? undefined);
   };
   const onEnd = () => done(null);

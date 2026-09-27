@@ -152,7 +152,7 @@ export const SANDBOX_MODULES: readonly SandboxModule[] = [
     canonical: 'crypto',
     stage: 'P2-C',
     needsHost: true,
-    note: '最小集：摘要/HMAC（`createHash`/`createHmac`/一次性 `hash`）、随机源（`randomBytes`/`randomUUID`/`getRandomValues`/`randomFillSync`/`randomInt`）、`timingSafeEqual`、**对称解密** `createDecipheriv`、静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`，**固定 22.22.1 基线**）。`sign`/`verify`/`KeyObject`/`createPublicKey`/`diffieHellman`/`generateKeyPair` 等**一律明确抛错**（密钥对象要求对象身份，见设计 §3.2.1 阻断 1）',
+    note: '最小集：摘要/HMAC（`createHash`/`createHmac`/一次性 `hash`）、随机源（`randomBytes`/`randomUUID`/`getRandomValues`/`randomFillSync`/`randomInt`）、`timingSafeEqual`、**对称解密** `createDecipheriv`、静态清单（`getHashes`/`getCiphers`/`getCurves`/`constants`，**固定基线**）。`sign`/`verify`/`KeyObject`/`createPublicKey`/`diffieHellman`/`generateKeyPair` 等**一律明确抛错**（密钥对象要求对象身份，见设计 §3.2.1 阻断 1）',
   },
   {
     canonical: 'zlib',

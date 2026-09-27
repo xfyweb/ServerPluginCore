@@ -37,7 +37,7 @@ export type EmulatedPlatform = 'linux' | 'win32';
 /** 平台三元组：`platform` / `EOL` / `devNull`——**必须一起选**，不许半跟 */
 const PLATFORM_TRAITS: Record<EmulatedPlatform, { eol: string; devNull: string }> = {
   linux: { eol: '\n', devNull: '/dev/null' },
-  // 真值来源：Windows v22.22.1 实跑（`tools/truth/data/const-win.json` 的 `facts`）
+  // 真值来源：Windows 实跑（`tools/truth/data/const-win.json` 的 `facts`；2026-09-27 重采于 v24.20.0）
   win32: { eol: '\r\n', devNull: '\\\\.\\nul' },
 };
 
@@ -92,7 +92,7 @@ export interface EnvFacts {
 const FALLBACK_RELEASE = '6.12.0';
 const FALLBACK_VERSION = '#1 SMP PREEMPT_DYNAMIC';
 
-/** 仿真成 win32 时的内核串形态（真值取自 Windows v22.22.1 实跑：`10.0.26100` / Windows 版本名） */
+/** 仿真成 win32 时的内核串形态（真值取自 Windows 实跑、2026-09-27 重采于 v24.20.0：`10.0.26100` / Windows 版本名） */
 const WIN_FALLBACK_RELEASE = '10.0.26100';
 const WIN_FALLBACK_VERSION = 'Windows Server 2025 Datacenter';
 

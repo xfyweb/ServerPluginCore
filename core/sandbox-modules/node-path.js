@@ -397,7 +397,7 @@ export const delimiter = ':';
  * 来历：P2-E 之前这里是一排"明确抛错"的占位（模型 A：沙箱永远假装 Linux）。
  * 现在走**模型 B（仿真平台跟随宿主）**，所以 win32 必须有真语义——见 `node-path-win32.js`，
  * 照 `node/lib/path.js` 的 win32 那半重写，由 `tools/truth/path-win32-diff.mjs` 与真 Windows 上的
- * node v22.22.1 逐条差分。
+ * node 逐条差分（真值表；2026-09-27 重采于 v24.20.0）。
  *
  * ⚠️ **必须惰性**：`node-path.js` ⇄ `node-path-win32.js` 是循环 import，本模块的顶层代码
  * 在 win32 模块**求值完之前**就会跑（win32 那边要 `import { __cwd }`）。此刻直接读 `win32Fns.sep`
