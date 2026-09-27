@@ -1,5 +1,5 @@
 {
- "at": "2026-09-22T09:28:41.857Z",
+ "at": "2026-09-27T02:35:33.740Z",
  "baselines": {
   "vendor": {
    "forkCommit": "4f5ad7c",
@@ -13,7 +13,7 @@
    "version": "6.12.110"
   },
   "pkgs": {
-   "lockSha": "fd363c23f7f4"
+   "lockSha": "8272bc3919dc"
   }
  },
  "note": "行号引用快照：正确性靠人核一次，此后由 check-line-refs.mjs 守住\"别再悄悄变\"。baselines 记的是**这份快照是对着哪个修订建的**——换修订后必须重新核一遍再 --update。",
@@ -47,6 +47,17 @@
      "ref": "mkdirp/dist/mjs/path-arg.js:11",
      "num": 11,
      "sha": "55fac4cd3743",
+     "gone": false
+    }
+   ]
+  },
+  "core\\guest\\bootstrap.js|@nodelib/fs.walk/out/readers/async.js": {
+   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/readers/async.js",
+   "refs": [
+    {
+     "ref": "@nodelib/fs.walk/out/readers/async.js:26",
+     "num": 26,
+     "sha": "6d20e72a9aa6",
      "gone": false
     }
    ]
@@ -1147,17 +1158,6 @@
      "ref": "vendor/quickjs/libregexp.c:63",
      "num": 63,
      "sha": "24f3f5fd046e",
-     "gone": false
-    }
-   ]
-  },
-  "core\\guest\\bootstrap.js|@nodelib/fs.walk/out/readers/async.js": {
-   "file": "_deps-survey/node_modules/@nodelib/fs.walk/out/readers/async.js",
-   "refs": [
-    {
-     "ref": "@nodelib/fs.walk/out/readers/async.js:26",
-     "num": 26,
-     "sha": "6d20e72a9aa6",
      "gone": false
     }
    ]
