@@ -1,5 +1,5 @@
 // fs / url 真值采集（在 WSL 的 node 上跑（2026-09-27 重采于 v24.20.0），环境即"仿真基线"）
-//   用法：wsl -e node /mnt/d/git-repo/ServerPluginCore/tools/truth/fs-url-truth.mjs > tools/truth/data/fs-url-truth.json
+//   用法（在 WSL 里跑）：wsl -e node <仓库>/tools/truth/fs-url-truth.mjs > tools/truth/data/fs-url-truth.json
 // 采四类东西：
 //   ① fs.constants 的键值（仿真层要照抄这一份，不是照抄 `constants` 模块）
 //   ② errno → strerror 文案表（写 err.message 用；本地可核，不联网）

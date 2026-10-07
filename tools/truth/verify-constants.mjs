@@ -1,7 +1,7 @@
 // 校验生成的 node-constants.js：逐键等于 Linux 真值 dump，且 default 与具名导出一致、已冻结。
 import { readFileSync } from 'node:fs';
-import { TRUTH_DATA } from '../paths.mjs';
-const shimPath = 'D:\\git-repo\\ServerPluginCore\\core\\sandbox-modules\\node-constants.js';
+import { SANDBOX_MODULES, TRUTH_DATA } from '../paths.mjs';
+const shimPath = SANDBOX_MODULES + '/node-constants.js';
 const src = readFileSync(shimPath, 'utf8');
 const shim = await import('data:text/javascript;base64,' + Buffer.from(src, 'utf8').toString('base64'));
 const d = JSON.parse(readFileSync(TRUTH_DATA + '/const-linux.json', 'utf8'));

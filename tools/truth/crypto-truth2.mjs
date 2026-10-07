@@ -1,5 +1,5 @@
 // crypto 真值补充采集：getCurves / getFips / hash 一次性 / randomInt / webcrypto / **decipher 错误文案**
-// 用法：wsl -e node /mnt/d/git-repo/ServerPluginCore/tools/truth/crypto-truth2.mjs > tools/truth/data/crypto-truth2.json
+// 用法（在 WSL 里跑）：wsl -e node <仓库>/tools/truth/crypto-truth2.mjs > tools/truth/data/crypto-truth2.json
 import * as crypto from 'node:crypto';
 
 const out = {};

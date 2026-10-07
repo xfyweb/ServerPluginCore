@@ -1,5 +1,5 @@
 // zlib 真值采集（WSL node = 仿真基线；2026-09-27 重采于 v24.20.0）
-//   用法：wsl -e node /mnt/d/git-repo/ServerPluginCore/tools/truth/zlib-truth.mjs > tools/truth/data/zlib-truth.json
+//   用法（在 WSL 里跑）：wsl -e node <仓库>/tools/truth/zlib-truth.mjs > tools/truth/data/zlib-truth.json
 // 只采**同步面**（本批范围）：adm-zip 用的是 deflateRawSync / inflateRawSync（带 maxOutputLength）。
 import * as zlib from 'node:zlib';
 

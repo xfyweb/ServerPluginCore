@@ -409,7 +409,7 @@ function formatListOr(items) {
  * ⚠️ **已知未覆盖**：Node 还有第三种前缀 `must be one of type …`
  * （实测 `readFileSync(p, 42)` ⇒ `The "options" argument must be one of type string or object`）。
  * 那种要等把 Node 的 `lib/internal/errors.js` 读透再一起做；**现在那几处按原样保留** —— 没有任何用例断言它们，
- * 凭猜改反而说不清。本条记在 `_audit/docs/plans/linux-suite-gaps.md`。
+ * 凭猜改反而说不清（这条缺口本身就是记录，别再往下猜）。
  */
 function invalidArgType(name, expected, value) {
   const groups = expected.map((x) => (Array.isArray(x) ? 'an instance of ' + formatListOr(x) : x));

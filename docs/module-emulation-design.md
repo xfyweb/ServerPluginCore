@@ -615,7 +615,7 @@ const value = ret && typeof (ret as Promise<unknown>).then === 'function' ? awai
 
 ### 14.7 真实依赖冒烟（第三批全跑，11 个靶子）
 
-`node node_modules/tsx/dist/cli.mjs D:\git-repo\tools/smoke/dep-smoke.mts all`：
+`node node_modules/tsx/dist/cli.mjs tools/smoke/dep-smoke.mts all`（从仓库根跑）：
 
 **绿（9）**：`mkdirp` `properties` `debug` `uuid` `tmp` `dotenv` `adm-zip` `ejs` `write-file-atomic`（部分）。
 **红（2，都不是 stream 的问题，是各自的边界）**：

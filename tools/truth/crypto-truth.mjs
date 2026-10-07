@@ -1,5 +1,5 @@
 // node:crypto 的真值采集（在 WSL 的 node 上跑 = 仿真基线（2026-09-27 重采于 v24.20.0））
-//   用法：wsl -e node /mnt/d/git-repo/ServerPluginCore/tools/truth/crypto-truth.mjs > tools/truth/data/crypto-truth.json
+//   用法（在 WSL 里跑）：wsl -e node <仓库>/tools/truth/crypto-truth.mjs > tools/truth/data/crypto-truth.json
 // 采四类：① 导出面 ② constants/getHashes/getCiphers 基线 ③ 摘要/HMAC 的输出真值 ④ 错误形状
 import * as crypto from 'node:crypto';
 

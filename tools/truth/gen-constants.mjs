@@ -1,10 +1,10 @@
 // 一次性生成器：把 WSL(Linux) 宿主 Node dump 出来的 constants 真值 → core/sandbox-modules/node-constants.js
 // 用法（从仓库根）：node tools/truth/gen-constants.mjs
 import { readFileSync, writeFileSync } from 'node:fs';
-import { TRUTH_DATA } from '../paths.mjs';
+import { SANDBOX_MODULES, TRUTH_DATA } from '../paths.mjs';
 
 const SRC = TRUTH_DATA + '/const-linux.json';
-const OUT = 'D:\\git-repo\\ServerPluginCore\\core\\sandbox-modules\\node-constants.js';
+const OUT = SANDBOX_MODULES + '/node-constants.js';
 const d = JSON.parse(readFileSync(SRC, 'utf8'));
 
 /** Node 的 lib/constants.js 就是这个合并顺序（对象键序是可观测的，照抄） */

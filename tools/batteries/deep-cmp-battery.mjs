@@ -3,8 +3,9 @@
 // 判卷人是 Node 自己（本机 v24），所以结论不需要我判——只列分歧。
 import { readFileSync } from 'node:fs';
 import * as nodeAssert from 'node:assert';
+import { SANDBOX_MODULES } from '../paths.mjs';
 
-const src = readFileSync('D:\\git-repo\\ServerPluginCore\\core\\sandbox-modules\\node-assert.js', 'utf8');
+const src = readFileSync(SANDBOX_MODULES + '/node-assert.js', 'utf8');
 const shim = await import('data:text/javascript;base64,' + Buffer.from(src, 'utf8').toString('base64'));
 
 const errCode = (fn) => {

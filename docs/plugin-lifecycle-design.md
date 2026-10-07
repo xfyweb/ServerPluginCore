@@ -179,7 +179,7 @@ export async function stop(ctx: PluginContext) {
 > 另外 `effectiveTimeoutMs` 把 0/负数余额夹到 1ms —— `spawnSync` 的 `timeout: 0` 是"**不超时**"，
 > 顺势传下去就是 fail-open。
 
-### 4.2 QuickJS 语义（本地源码实测，`D:\git-repo\quickjs`）
+### 4.2 QuickJS 语义（实测自 `vendor/quickjs` 源码）
 
 - **中断轮询**：`js_poll_interrupts()` 递减计数器，初值 `JS_INTERRUPT_COUNTER_INIT = 10000`（`vendor/quickjs/quickjs.c:445`、`:7461-7468`）；轮询点覆盖解释器主循环每个 opcode/跳转（`:18430-18523`）、函数调用入口（`:17393`）、`for-in` 枚举循环（`:15976`/`:16046`）。
 - **正则回溯也会被打断**：`vendor/quickjs/libregexp.c:63` 有独立的 `INTERRUPT_COUNTER_INIT`（回溯循环里轮询）→ `(a+)+$` 这类灾难性回溯拦得住。

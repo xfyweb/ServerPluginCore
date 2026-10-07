@@ -6,13 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import * as nodeEvents from 'node:events';
+import { SANDBOX_MODULES } from '../paths.mjs';
 
 // 旧实现会把 async 监听器的 rejection 漏成未处理拒绝：别让它打断整轮电池（A16 的失败本身就是证据）
 process.on('unhandledRejection', () => {});
 
 const dir = mkdtempSync(join(tmpdir(), 'spc-ev-'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
-copyFileSync('D:\\git-repo\\ServerPluginCore\\core\\sandbox-modules\\node-events.js', join(dir, 'node-events.js'));
+copyFileSync(SANDBOX_MODULES + '/node-events.js', join(dir, 'node-events.js'));
 const shimMod = await import(pathToFileURL(join(dir, 'node-events.js')).href);
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
