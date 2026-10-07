@@ -23,36 +23,30 @@
 
 </div>
 
-> **项目状态**：**P1.5 已落地**，**构建层（`spcdev build`）已落地** —— 插件装载器、生命周期、权限判定、审计、CLI 管理面与插件打包均可运行（`pnpm test` 全绿）；**尚无 Web 界面**（P3 设计中），事件面、`.spc` 打包与驱动插件线（P2）待开工。详见 [开发路线](docs/ROADMAP.md)。
+> **项目状态**：核心、管理命令行（`spc`）与作者工具链（`spcdev`）已可用，可以装插件、跑插件；**Web 界面在设计中**。未落地的部分见[当前进度](#当前进度)与[路线图](docs/ROADMAP.md)。
 
 ## 这是什么
 
-ServerPluginCore 是一个**插件化的服务器管理平台核心**。核心只做四件事——**认证、权限、审计、插件生命周期**；其余能力（文件管理、终端、Docker、数据库、监控……）全部由插件提供，按需安装、按需加载。
+ServerPluginCore 是一个**插件化的服务器管理平台核心**。本体只提供四件事——**认证、权限、审计、插件生命周期**；文件管理、终端、Docker、数据库、监控等能力全部由插件提供，按需安装、按需加载。
 
-它的目标场景是"要长期自己维护服务器"的人：核心不预置你可能永远用不到的功能，也不会为了它们占用界面和资源。不需要 Web 界面时，核心可以完全 **headless** 运行，一切管理回到命令行。
+它面向需要长期自己维护服务器的人：本体不预置用不到的功能，也不为它们占用界面和资源；不需要 Web 界面时，核心可以完全 **headless** 运行，管理回到命令行。
 
-设计上把**能力插件**当作**不可信代码**：它运行在 QuickJS 沙箱内，拿不到 `process`、`require`、网络，**唯一出口是宿主审核过的 `@host/api`**。因此安全边界落在"接口审查"上，而不是"事后隔离"。
+插件默认按**不可信代码**对待：运行在 QuickJS（WASM）沙箱里，拿不到 `process`、`require` 和网络，只能调用宿主审核过的 [`@host/api`](docs/api-contract.md)。安全边界因此落在**接口审查**上，而不是事后隔离。
 
-**驱动插件是另一条线**，别混：它天生需要真能力（原生模块、网络、子进程），沙箱给不了它——所以它走"**双档同接口**"。**进程位置只看技术属性，不看来源**（"官方 = 可信"在本项目早就撤销了）：**带不可控二进制的必须独立进程**，**装进来的驱动一律独立进程**（理由是可用性：一次崩溃或 OOM 不该带走核心与所有别的插件），只有随核心同一发布单元的内置功能才在核心进程内。安全靠**准入 + 限权 + 归因**，而不是"能力归零"。**两条线服务两种信任前提**：沙箱那一格买的是"**随便装不心疼**"，驱动那一格买的是"**敢装我信得过的**"。
+## 特性
 
-## 能做什么（现状）
-
-| 能力 | 状态 | 说明 |
-|---|---|---|
-| 插件装载与生命周期 | ✅ | `init`/`start`/`stop` 契约、唯一状态机、能力登记（可精确撤销）、安装记录、**失败隔离**（单插件失败不影响核心与其它插件） |
-| 插件依赖图 | ✅ | 依赖必须已装载；装载按**拓扑序**；**环检测**；**反向保护**（被依赖时不许卸载/禁用） |
-| 四层限额 | ✅ | CPU 中断（不可被 `try/catch` 吞掉）/ 内存 / 栈 / 宿主 API 自带超时 |
-| 权限判定与审计 | ✅ | 权限注册表 + 三态判定；每次调用落审计，只记机器可读的码与参数摘要 |
-| 宿主 API | ✅ | `exec`（**模板制，无自由命令**）/ `fs` / `kv` / `timers` / `events` / `lifecycle` |
-| CLI 管理面 | ✅ | `plugin install / enable / disable / reload / uninstall / status / list / grant / revoke` |
-| 构建与打包 | ✅ 构建 / ⏳ 打包 | `spcdev build` 已落地（依赖闭包 + 内建两道闸 + 产物事实写清单 + 作者签名信封）；`.spc` 容器打包（`spcdev pack`）仍在 P2 |
-| 事件面 + 驱动插件线 | ⏳ P2 | 事件面：插件自己发布事实、声明过关系的插件收到、核心只搬运（见 `docs/events-and-hooks-design.md` §1）；**驱动插件**：允许第三方，**双档同接口**（官方跑核心进程内 / 第三方跑独立进程），注册权限节点与 API 端点 |
-| Web 界面与主题系统 | ⏳ P3 | Web Shell + 意图捕获 UI + 声明式 / iframe 插件容器 |
-| 市场与签名 | ⏳ P4 | 核心库已落地（规范化签名 / keyring / 链式轮换），安装流与市场服务待做 |
+- **插件沙箱** —— 纯 JS 插件跑在 QuickJS（WASM）里，受四层限额约束（CPU 中断、内存、栈、宿主 API 超时）；单个插件崩溃或超时不影响本体与其它插件。
+- **最小权限** —— 权限注册表 + 三态判定，权限点要在清单里逐条写明理由；`exec` 只接受注册过的命令模板，**没有自由命令**。
+- **调用可审计** —— 每次宿主 API 调用都落审计，只记录机器可读的码与参数摘要。
+- **插件生命周期** —— `init` / `start` / `stop` 契约、唯一状态机、依赖按拓扑序装载、环检测、被依赖时不许卸载。
+- **无头可用** —— 关掉 Web 服务，插件管理、授权、审计全部回到 `spc` 命令行。
+- **作者工具链** —— `spcdev new` / `check` / `build` 全程本地运行，不连守护进程。
+- **构建期把关** —— 未登记的 Node 内建模块与原生模块在**构建期**报错，不等到运行期才发现。
+- **Node 习惯可用** —— 25 个常用 Node 模块可在沙箱内按原生写法使用（`fs` / `path` / `stream` / `crypto` / `zlib` / `url` 等），行为对齐 Node，对齐不了的明确报错。
 
 ## 快速开始
 
-需要 **Node.js 24.20.0** 与 **pnpm**（本项目按这台基线对齐——**契约基线与判卷人同版**，更低版本未验证；项目用 `patchedDependencies` 给 quickjs-emscripten 打了补丁，pnpm 是硬要求）。
+需要 **Node.js 24.20.0** 与 **pnpm**（本体按这条基线开发与测试，更低版本未验证；quickjs-emscripten 通过 `patchedDependencies` 打了补丁，pnpm 是硬要求）。
 
 ```bash
 pnpm install
@@ -77,10 +71,10 @@ pnpm verify:sandbox     # 验证 QuickJS 补丁有效（8/8）
 [spc] done.
 ```
 
-首次运行会把内置样板插件装进状态目录（`SPC_STATE_DIR`，默认 `<仓库>/.spc`）。它刻意演示了两条**不同的授权路径**：
+首次运行会把内置样板插件装进状态目录（`SPC_STATE_DIR`，默认 `<仓库>/.spc`）。它演示了两条不同的授权路径：
 
 - `fs` / `kv` / `timers` / `events` / `lifecycle` → `scope=self`，**声明即可用**；
-- `exec.template.git.version` → `scope=host`，**必须管理员逐点授予**。
+- `exec.template.git.version` → `scope=host`，**需要管理员逐点授予**。
 
 管理面需要一个守护进程：
 
@@ -91,18 +85,40 @@ pnpm spc plugin status @xfy2412/hello
 pnpm spc daemon stop           # 停止核心
 ```
 
-> **停机**：优先用 `pnpm spc daemon stop`（走 HTTP，跨平台一致 —— Windows 上 Ctrl+C 只对前台控制台有效，这是更可靠的方式）。
-> 前台运行时 `Ctrl+C` 也走同一条路径；**连按两次** = 强制退出（退出码 130），
-> 停机超时（默认 10s，`SPC_SHUTDOWN_TIMEOUT_MS` 可覆盖）兜底退出 124。
+> 停机优先用 `pnpm spc daemon stop`（走 HTTP，跨平台一致）。前台运行时 `Ctrl+C` 走同一条路径，连按两次为强制退出（退出码 130）；停机超时默认 10s，可用 `SPC_SHUTDOWN_TIMEOUT_MS` 覆盖。
 
 ## 插件类型
 
-| 类型 | 运行位置 | 职责 | 前端 | 落地 |
-|---|---|---|---|---|
-| **能力插件** `ability` | QuickJS **沙箱** | 挂载管理页面并提供管理能力；只调 `@host/api` | `declarative`（核心渲染组件树）或 `iframe`（沙箱隔离） | ✅ 完整 |
-| **驱动插件** `driver` | **双档同接口**：**装进来的驱动一律独立进程**（带不可控二进制的必须独立；纯 JS 的也是——一次崩溃/OOM 不该带走核心）；只有**随核心同一发布单元**的内置功能才在核心进程内 | 实现 Docker / 数据库 / SSH 等协议能力，注册权限节点 + API 端点给沙箱，并自行鉴权 | 独立安装界面 + 最高强度提示（**提示的核心是"它不是沙箱"**） | ❌ 未实现（注册协议见 `api-contract.md` §10；进程模型与平台配方见 `ROADMAP.md` P2 第 10 项） |
-| **协作插件** `hook` | **被核心回调**（沙箱内即可） | 在核心流程的决策点上出意见、影响决策（如 SSO 登录裁决）——**中间件**，与能力插件的差别是**调用方向相反** | 无（不挂页面） | ❌ P2 不做（设计与结论见 `docs/events-and-hooks-design.md` §2） |
-| **主题包** `theme` | 核心前端 | 声明式设计令牌 + 资源 + 受限样式（换肤／密度／图标），**无 JS、无沙箱** | 核心渲染 | ✅ 完整（无沙箱、豁免 `init`） |
+本体只做四件事，扩展点按**插件需要什么样的运行环境**分成四类：
+
+| 类型 | 运行位置 | 用途 | 状态 |
+|---|---|---|---|
+| **能力插件** `ability` | QuickJS 沙箱 | 挂管理页面、提供管理能力（文件管理、终端、监控……） | ✅ 可用 |
+| **驱动插件** `driver` | 独立进程 | 实现 Docker / 数据库 / SSH 等协议能力，向沙箱插件注册 API | ❌ 未开工 |
+| **协作插件** `hook` | 沙箱内（由本体回调） | 在本体的决策点上出意见，如 SSO 登录裁决 | ❌ P2 不做 |
+| **主题包** `theme` | 本体前端 | 声明式主题令牌与资源（换肤／密度／图标），无 JS | ✅ 可装载（前端渲染属 P3） |
+
+**能力插件**是主要形态：纯 JS，跑在沙箱里，只通过 `@host/api` 做事，因此可以放心安装。它提供的前端有两种形态——`declarative`（清单里声明组件树，本体渲染，插件代码不执行）或 `iframe`（隔离 iframe + CSP 零出网，经 `MessageChannel` 代理）。
+
+**驱动插件**需要真实系统能力（原生模块、网络、子进程），沙箱给不了，因此一律跑在**独立进程**里（唯一例外是随本体一起发布的内置功能）。它能做的事多得多，所以适合安装你信得过的来源；每个驱动带一份按平台分列的运行配方——Linux 用专用 uid、mount namespace 白名单、Landlock 与资源限额，Windows 用受限令牌 / Job Object。
+
+想自己写一个？仓库里有两个样例可以从头读：`plugin/counter/`（40 行，只用 `fs` 读写自己的数据目录）与 `plugin/hello/`（综合示例，把宿主 API 走一遍）。
+
+## 当前进度
+
+上面「[特性](#特性)」一节是已经能用的部分。还没做的主要有：
+
+| 事项 | 阶段 |
+|---|---|
+| 事件面：插件发布事实、声明过关系的插件收到、本体只搬运 | P2 |
+| 驱动插件线（注册协议、独立进程宿主与平台配方） | P2 |
+| `exec.spawn` 命令任务模型 + 进程管理器 | P2 |
+| `.spc` 容器打包（`spcdev pack`）+ 托管副本安装 + `spcdev dev` | P2 |
+| Web 界面（Web Shell + 意图捕获 UI + 插件前端容器）与主题渲染 | P3 |
+| 市场服务与有源安装流（签名核心库已提前落地） | P4 |
+| 日常管理能力的薄适配器（monitor / files / nginx / backup） | P5 |
+
+完整的阶段划分、风险清单与实现偏差记录见 [`docs/ROADMAP.md`](docs/ROADMAP.md) 与 [`docs/plugin-lifecycle-design.md`](docs/plugin-lifecycle-design.md)。
 
 ## 架构
 
@@ -111,28 +127,32 @@ flowchart LR
   UI["核心前端（可信）<br/>Web Shell · 意图捕获 UI"]
   K["核心（Node · 非 root · 可 headless）<br/>生命周期 · 权限 · 审计 · 宿主 API · 能力登记"]
   A["能力插件<br/>QuickJS 沙箱"]
-  D["驱动插件（P2）<br/>装进来的一律独立进程 · 随核心发布的内置功能才在核心内"]
+  H["协作插件（P2 不做）<br/>沙箱内 · 被核心回调"]
+  D["驱动插件（P2）<br/>独立进程（内置功能除外）"]
+  T["主题包<br/>核心前端 · 无 JS"]
 
   UI -->|核心 REST| K
   K -->|"@host/api"| A
+  K -.->|回调| H
   D -.->|扩展注册点| K
+  T -.->|设计令牌| UI
 ```
 
-三条边界值得记住：
-
-- **插件与 OS 之间**：只有 `@host/api` 一条通道，`exec` 只接受注册过的模板（没有自由命令）；
-- **插件与用户资源之间**：用户选中的资源由核心前端捕获意图后签发**短期凭证**（`grantId`），插件只能凭它调用，不能自己"解释"意图；
-- **核心与插件之间**：核心自己做得到的操作（删文件、开会话、重启服务）**不经过插件**，由核心前端确认后直接执行；
-- **驱动插件与 OS 之间**：**装进来的驱动**（一律独立进程）各带一份**平台配方**（Linux：专用 uid + mount namespace 白名单 + Landlock + 资源限额；Windows：受限令牌 / Job Object）—— 这是"**限权 + 崩溃隔离**"，**不是沙箱**：它的定位是"跑你信得过的第三方能力"，而**不是"随便装不心疼"**（后者是沙箱内能力插件那一格）。
+- 插件只通过 `@host/api` 与本体通信，`exec` 只接受注册过的模板；
+- 访问用户资源由本体前端捕获意图并签发**短期凭证**（`grantId`），插件不能自行解释意图；
+- 本体自己就能做的操作（删文件、开会话、重启服务）不经过插件；
+- 驱动插件在独立进程里以平台配方限权——这是**限权与崩溃隔离**，不是沙箱。
 
 ## 文档
 
-**契约与设计**（先看这两份就够动手）：
+**契约与设计**（动手前先看这几份）：
 
 | 文档 | 内容 |
 |---|---|
 | [宿主 API 契约](docs/api-contract.md) | 方法组与权限点、判定链、审计字段、manifest schema 2 |
-| [插件生命周期与装载器](docs/plugin-lifecycle-design.md) | 装载契约、状态机、四层限额、能力登记、安装记录、CLI 面<br/>**P1.5 已落地**，§14 是落地记录与 13 条实现偏差 |
+| [插件生命周期与装载器](docs/plugin-lifecycle-design.md) | 装载契约、状态机、四层限额、能力登记、安装记录、CLI 面（§14 是落地记录与实现偏差） |
+| [构建层设计](docs/build-layer-design.md) + [实测证据](docs/build-layer-evidence.md) | 打包流水线：依赖闭包、内建校验两道闸、产物事实写清单、作者签名信封 |
+| [命令行契约](docs/cli-contract.md) | `spc` / `spcdev` 两个命令的受众、退出码、TTY 与输出通道 |
 
 **架构决策（ADR）**：
 
@@ -142,22 +162,23 @@ flowchart LR
 | [ADR-002](docs/ADR-002-core-and-runtime.md) | 核心与运行时选型：Node 核心 + QuickJS 沙箱 |
 | [ADR-003](docs/ADR-003-market-openness.md) | 市场开源：代码全开、密钥全闭 |
 | [ADR-004](docs/ADR-004-os-boundary.md) | OS 底线：非 root + 资源限制 |
-| [ADR-005](docs/ADR-005-plugin-sandbox-and-plugin-types.md) | 沙箱机制与四类插件 |
+| [ADR-005](docs/ADR-005-plugin-sandbox-and-plugin-types.md) | 沙箱机制与四类插件（含驱动插件的运行位置） |
 
 **专题**：
 
 | 文档 | 内容 |
 |---|---|
-| [意图捕获与双通道权限](docs/intent-capture.md) | 用户意图的信任根、grantId、声明式/iframe 前端、CSP 零出网、**默认安全边界** |
+| [意图捕获与双通道权限](docs/intent-capture.md) | 用户意图的信任根、grantId、声明式/iframe 前端、CSP 零出网 |
 | [exec 沙箱与模板注册制](docs/exec-sandbox-design.md) | 模板来源与命名空间、双层安全模型、E1–E10 静态校验 |
-| [构建层设计](docs/build-layer-design.md) | 打包流水线：esbuild 配置决策（**实测依据**）、依赖闭包、**内建校验两道闸**、产物事实写清单、**作者签名信封**（✅ 已落地；`.spc` 打包待做） |
-| [接口审计：exec + fs](docs/interface-audit-exec-fs.md) | 危险接口的威胁建模清单 |
+| [事件面与协作插件](docs/events-and-hooks-design.md) | 事件授权模型、本体只搬运、钩子链为何 P2 不做 |
+| [官方模块仿真](docs/module-emulation-design.md) | 让插件按 Node 原生写法编写（含 §14 实测坑清单） |
 | [签名与源设计](docs/plugin-signature-design.md) | 元数据规范化签名、keyring、链式密钥轮换 |
-| [manifest 设计](docs/manifest-design.md) | 清单字段与权限声明（Android 权限系统参考） |
-| [官方模块仿真](docs/module-emulation-design.md) | 让插件按 Node 原生写法编写（P2） |
-| [市场授权设计](docs/market-license-design.md) | 永久授权 + 维护窗口（P4） |
+| [manifest 设计](docs/manifest-design.md) | 清单字段与权限声明（参考 Android 权限系统） |
 | [管理通道](docs/management-channel.md) | CLI ↔ daemon 的握手与鉴权 |
-| [开发路线](docs/ROADMAP.md) | P0–P5 阶段规划与风险清单 |
+| [特权执行器](docs/privilege-gate.md) | 非 root 之下需要 root 动作时怎么办（P5） |
+| [接口审计：exec + fs](docs/interface-audit-exec-fs.md) | 危险接口的威胁建模清单 |
+| [市场授权设计](docs/market-license-design.md) | 永久授权 + 维护窗口（P4） |
+| [开发路线](docs/ROADMAP.md) | P0–P5 阶段规划、风险清单、明确不做的事 |
 
 **记录**：[Spike：QuickJS 沙箱可行性验证](docs/spike-01-quickjs-sandbox.md)（含上游 bug quickjs-emscripten#261 的排查与 pnpm 补丁）
 
@@ -173,37 +194,68 @@ pnpm spike         # 端到端跑一遍装载链路
 
 | 路径 | 内容 |
 |---|---|
-| `core/` | 核心：沙箱宿主、宿主 API、权限、审计、生命周期、CLI/HTTP |
+| `core/` | 本体：沙箱宿主、宿主 API、权限、审计、生命周期、CLI/HTTP |
 | `core/plugin/` | 装载器与状态机（`loader` / `manager` / `records` / `capabilities` / `limits` / `config`） |
+| `core/sandbox-modules/` | 被仿真的 Node 模块（常量与错误文案是生成物，改表要走 `tools/truth/` 的生成链） |
+| `build/` | 构建层，即 `spcdev` 的实现：工作区发现、作者密钥、脚手架、权限点对账、打包与签名 |
 | `sdk/` | manifest JSON Schema、类型声明（`@host/api`、`@spc/sdk`）、校验器 |
-| `plugin/hello/` | **综合示例插件**：ctx、配置、数据目录、kv、定时器、事件与 exec 模板——想一次看全宿主 API 从这里开始 |
-| `plugin/counter/` | **最小示例插件**：只用 `fs` 一组，读写自己的数据目录（读计数 → +1 → 写回） |
-| `tools/` | 取证工具（esbuild 行为矩阵、两道闸探针、依赖面实测）——**不参与 `pnpm test`**，见 `tools/README.md` |
+| `plugin/` | 插件开发工作区，一个插件一个目录；`hello/` 与 `counter/` 是随本体分发的示例 |
+| `tools/` | 取证工具（esbuild 行为矩阵、构建闸探针、依赖面实测），**不参与 `pnpm test`**，见 `tools/README.md` |
 | `docs/` | 契约、ADR 与设计文档 |
 
-**两条硬规矩**：
+两条约定：
 
-1. **错误码、权限点、契约字段只增不改**——它们是契约，改名等于破坏已发布的插件（[api-contract §2](docs/api-contract.md)）；
-2. **文档必须标注落地状态**——设计稿与已实现的东西要能一眼分清，避免"照着文档写却发现没实现"。
+1. **错误码、权限点、契约字段只增不改**——它们是契约，改名等于破坏已发布的插件；
+2. **文档必须标注落地状态**——设计稿与已实现的东西要能一眼分清。
 
-## 开发路线
+## 鸣谢
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| P0 | 宿主 API 契约定稿（exec/fs/kv/timers + 权限注册表 + manifest schema） | 已完成 |
-| P1 | 纵向切片：Node 核心 + QuickJS 沙箱 + exec/fs 接口审计 | 已完成 |
-| **P1.5** | **插件生命周期与装载器**：装载契约 / 状态机 / 四层限额 / 能力登记 / 安装记录 / CLI 全命令面 | **已落地** |
-| P2 | 命令任务模型（`exec.spawn` + 进程管理器）+ **构建层**（✅ 已落地）+ 事件面 + 模板注册制 + **驱动插件线** + 权限档位（✅ 已落地） | 部分落地，其余待开工 |
-| P3 | 核心 Web Shell + 主题系统 + 插件前端容器 | 设计中（接口已定） |
-| P4 | 市场签名与源管理 + 插件市场 | 核心库已提前落地 |
-| P5 | 核心插件集 + 加固 + v1.0 发布 | 待定 |
+> **注**：本部分仅表示本项目参考了以下项目**按各自协议开放的源代码**，**不代表取得任何一方的背书、合作或授权**；部分素材按其来源要求进行声明，明细见 [`assets/ack/SOURCES.md`](assets/ack/SOURCES.md)。如有不妥，欢迎提 issue 或 PR，我们会立即调整。
+
+**起步之源** —— 本项目的起步直接源于它
+
+<p align="center">
+  <a href="https://github.com/deepseek-ai/deepseek-harness" title="DeepSeek Harness"><img src="assets/ack/dsh.svg" height="46" alt="DeepSeek Harness"></a>
+</p>
+
+**基础设施**
+
+<p align="center">
+  <a href="https://nodejs.org/" title="Node.js"><img src="assets/ack/node-hexagon.png" height="42" alt="Node.js"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://pnpm.io/" title="pnpm"><img src="assets/ack/pnpm.svg" height="42" alt="pnpm"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://esbuild.github.io/" title="esbuild"><img src="assets/ack/esbuild.svg" height="42" alt="esbuild"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://bellard.org/quickjs/" title="QuickJS"><b>QuickJS</b></a>
+</p>
+
+**核心安全与模块参考**
+
+<p align="center">
+  <a href="https://www.kernel.org/" title="Linux"><img src="assets/ack/tux.svg" height="44" alt="Linux"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.chromium.org/" title="Chromium"><img src="assets/ack/chromium.svg" height="42" alt="Chromium"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://github.com/MCSManager/MCSManager" title="MCSManager"><img src="assets/ack/mcsmanager.png" height="24" alt="MCSManager"></a>
+</p>
+
+**泛式插件系统参考**
+
+<p align="center">
+  <a href="https://velocitypowered.com/" title="Velocity"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/ack/velocity-white.png"><img src="assets/ack/velocity.png" height="40" alt="Velocity"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://papermc.io/" title="Paper"><img src="assets/ack/paper.png" height="40" alt="Paper"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://github.com/AstrBotDevs/AstrBot" title="AstrBot"><img src="assets/ack/astrbot.svg" height="40" alt="AstrBot"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://github.com/ClassIsland/ClassIsland" title="ClassIsland"><img src="assets/ack/classisland.svg" height="52" alt="ClassIsland"></a>
+</p>
 
 ## 许可证
 
 [MIT](LICENSE)
 
 ---
-
-*受 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件化哲学启发；安全模型参考了 Velocity / Paper / AstrBot 等开源项目的权限设计经验，命令执行模块参考了 MCSManager 的设计经验——在此对全体开源项目贡献者致谢。*
 
 *Author: [xfy2412](https://github.com/xfy2412) · 本项目由 AI 协助开发*
