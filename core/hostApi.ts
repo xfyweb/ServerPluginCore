@@ -471,7 +471,7 @@ const WATCH_DELIVER_MAX_ROUNDS = 64;
 
 /**
  * Windows 上的**长路径归一化**（不是洁癖，是真的会崩）：
- * 宿主是 v24 / libuv 1.52.1 时，用**短路径**（8.3 形式，如 `C:\Users\ADMINI~1\…`）`fs.watch` 一个目录，
+ * 宿主是 v24 / libuv 1.52.1 时，用**短路径**（8.3 形式，如 `C:\Users\<用户名>~1\…`）`fs.watch` 一个目录，
  * **第一个事件到达时**会命中 libuv 的原生断言
  * `Assertion failed: !_wcsnicmp(filename, dir, dirlen), file src\win\fs-event.c, line 72`
  * ⇒ 整个核心进程 abort（实测退出码 0xC0000409；判卷人 v22 / libuv 1.51 不复现 —— 见

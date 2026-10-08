@@ -221,7 +221,7 @@ pnpm spike         # 端到端跑一遍装载链路
 **基础设施**
 
 <p align="center">
-  <a href="https://nodejs.org/" title="Node.js"><img src="assets/ack/node-hexagon.png" height="42" alt="Node.js"></a>
+  <a href="https://nodejs.org/" title="Node.js"><img src="assets/ack/node.svg" height="38" alt="Node.js"></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
   <a href="https://pnpm.io/" title="pnpm"><img src="assets/ack/pnpm.svg" height="42" alt="pnpm"></a>
   &nbsp;&nbsp;&nbsp;&nbsp;

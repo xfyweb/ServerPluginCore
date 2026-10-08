@@ -7,7 +7,7 @@
 | 文件 | 出处 | 格式 / 尺寸 | 用途 |
 |---|---|---|---|
 | `dsh.svg` | npm全局包 `@deepseek-ai/dsh` 内置 Web 前端 `dist/favicon.svg` | SVG 50×50 | 置顶栏。**自带明暗自适应**（内部用 `prefers-color-scheme` 改填充色）。⚠️ 见下方「DSH」 |
-| `node-hexagon.png` | `https://nodejs.org/static/images/logo-hexagon-card.png` | PNG 224×256 | 六边形标记，明暗背景都可用 |
+| `node.svg` | nodejs.org 首页左上角的站标（内联 SVG；与 `https://nodejs.org/static/images/logo.svg` 同款） | SVG 267×80 | 自带明暗两套配色。⚠️ **站点靠 Tailwind 类上色，单独成文件时类不生效**（字标会继承根上的 `fill="none"` 而看不见）⇒ 这里补了一段等价 CSS（浅色 `#333333` / 深色 `#fff`，暗色绿取其 `--dm-inline-fill`） |
 | `pnpm.svg` | `https://pnpm.io/img/pnpm-no-name-with-frame.svg` | SVG | 官方站点缺省版 |
 | `esbuild.svg` | `https://esbuild.github.io/favicon.svg` | SVG 200×200 | 官方站点图标 |
 | `tux.svg` | `https://upload.wikimedia.org/wikipedia/commons/3/35/Tux.svg` | SVG | **署名要求**：作者 Larry Ewing、Simon Budig、Garrett LeSage |
@@ -32,5 +32,5 @@
 
 | 素材 | 出处 | 为什么没用 |
 |---|---|---|
-| Node.js 字标 | `https://nodejs.org/static/images/logo.svg` | 是**深色背景版**（字标白色，浅底只剩六边形）；想用字标可配 `<picture>` 切换 |
 | Tux PNG | `https://www.kernel.org/theme/images/logos/tux.png` | 104×120 位图，比 `tux.svg` 糊；想要"kernel.org 直出"可换回 |
+| Node.js 六边形单标 | `https://nodejs.org/static/images/logo-hexagon-card.png` | 只有标记没有字标；字标版（`node.svg`）两种主题下都成立，取了后者 |
