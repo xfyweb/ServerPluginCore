@@ -100,7 +100,7 @@ test('CLI plugin install：写记录 → 立即装载 → init/start 跑通', as
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /已安装：local:default\/@xfy2412\/hello/);
   assert.match(r.stdout, /@xfy2412\/hello@0\.0\.1 \[running\]/);
-  assert.match(r.stdout, /enabled=是/);
+  assert.match(r.stdout, /已启用=是/);
   assert.match(r.stdout, /已授予：exec\.template\.git\.version/);
   // 能力登记结果回落到记录
   assert.match(r.stdout, /能力：.*route:\/hello/);
@@ -118,12 +118,12 @@ test('CLI plugin disable / enable：状态机往返，禁用后不再装载', as
   assert.equal(off.code, 0, off.stderr);
   assert.match(off.stdout, /已禁用：@xfy2412\/hello/);
   assert.match(off.stdout, /\[disabled\]/);
-  assert.match(off.stdout, /enabled=否/);
+  assert.match(off.stdout, /已启用=否/);
 
   const on = await run(['core/cli.ts', 'plugin', 'enable', '@xfy2412/hello'], env());
   assert.equal(on.code, 0, on.stderr);
   assert.match(on.stdout, /\[running\]/);
-  assert.match(on.stdout, /enabled=是/);
+  assert.match(on.stdout, /已启用=是/);
 });
 
 test('CLI plugin status：详情含目录 / 数据目录 / 配置文件', async () => {
@@ -143,12 +143,12 @@ test('CLI plugin grant/revoke：只接受具体权限点（通配被拒），并
     env(),
   );
   assert.equal(revoked.code, 0, revoked.stderr);
-  assert.match(revoked.stdout, /授权或配置已变更：需 reload 后生效/);
+  assert.match(revoked.stdout, /授权或配置已变更：执行 spc plugin reload/);
 
   const reloaded = await run(['core/cli.ts', 'plugin', 'reload', '@xfy2412/hello'], env());
   assert.equal(reloaded.code, 0, reloaded.stderr);
   assert.match(reloaded.stdout, /\[running\]/);
-  assert.doesNotMatch(reloaded.stdout, /需要 reload 才生效/);
+  assert.doesNotMatch(reloaded.stdout, /需执行 reload 后生效/);
 });
 
 test('CLI plugin uninstall：内置插件同样可卸载（v2 取消 reserved），记录随之消失', async () => {
@@ -167,12 +167,12 @@ test('CLI source list：内置条目（官方市场 + 杂桶）在 daemon 启动
   const r = await run(['core/cli.ts', 'source', 'list'], env());
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /market\.spc\.xfyweb\.cn · 市场源 · 官方市场/);
-  assert.match(r.stdout, /local:default · 本地桶 · 杂桶/);
+  assert.match(r.stdout, /local:default · 本地源 · 杂桶/);
   // 杂桶不绑锚：绑了就等于宣称这台机器上只有一个作者（docs/plugin-signature-design.md §3bis）
   assert.match(r.stdout, /作者锚：未绑定/);
   // 而**锚只属于本地桶**：市场源印"作者锚：未绑定"是范畴错误（市场是多作者命名空间），
   // 它该回答的是"源公钥取到没有" ⇒ 用数量关系钉死，不依赖条目的排列顺序
-  const locals = (r.stdout.match(/· 本地桶 ·/g) ?? []).length;
+  const locals = (r.stdout.match(/· 本地源 ·/g) ?? []).length;
   const anchors = (r.stdout.match(/作者锚/g) ?? []).length;
   assert.equal(anchors, locals, '每个本地桶恰好一行作者锚；市场源不该有这一行');
   assert.match(r.stdout, /源公钥：未取到/, '市场源还没拉过公钥时要说明白');
@@ -187,7 +187,7 @@ test('CLI source add / anchor / remove：本地桶全链路（锚改完能解绑
   );
   assert.equal(add.code, 0, add.stderr);
   assert.match(add.stdout, /已添加来源：local:std-a/);
-  assert.match(add.stdout, /本地桶 · std（小A）/);
+  assert.match(add.stdout, /本地源 · std（小A）/);
   assert.match(add.stdout, /作者锚：sha256:/);
 
   const clear = await run(['core/cli.ts', 'source', 'anchor', 'local:std-a'], env());
@@ -250,13 +250,13 @@ test('CLI plugin reanchor：先预检、非交互必须 --yes、搬完旧引用�
   // 非交互（spawn 的 stdio 不是 TTY）且没给 --yes ⇒ 打计划，但**拒绝执行**
   const refused = await run(['core/cli.ts', 'plugin', 'reanchor', from, '--origin', 'local:tui-a'], env());
   assert.notEqual(refused.code, 0);
-  assert.match(refused.stdout, /将搬迁 1 个插件/);
-  assert.match(refused.stdout, /停机、搬完再重启/, '计划要说明它会停机重启');
+  assert.match(refused.stdout, /将换源 1 个插件/);
+  assert.match(refused.stdout, /停机、换源后重启/, '计划要说明它会停机重启');
   assert.match(refused.stderr, /不是交互终端/);
 
   const done = await run(['core/cli.ts', 'plugin', 'reanchor', from, '--origin', 'local:tui-a', '--yes'], env());
   assert.equal(done.code, 0, done.stderr);
-  assert.match(done.stdout, /已搬迁：local:default\/@xfy2412\/hello → local:tui-a\/@xfy2412\/hello/);
+  assert.match(done.stdout, /已换源：local:default\/@xfy2412\/hello → local:tui-a\/@xfy2412\/hello/);
   assert.match(done.stdout, /local:tui-a\/@xfy2412\/hello@0\.0\.1 \[running\]/);
 
   const list = await run(['core/cli.ts', 'plugin', 'list'], env());

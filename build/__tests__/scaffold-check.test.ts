@@ -109,7 +109,7 @@ test('permission list：列出冻结表，且与注册表的点数一致', () =>
   assert.equal(fsRead.grant, 'auto', 'self 档缺省推成 auto');
 });
 
-test('spcdev 分发：未落地的动词报"还没做"（不是"未知命令"），未知动词给用法', async (t) => {
+test('spcdev 分发：未落地的动词报"尚未实现"（不是"未知命令"），未知动词给用法', async (t) => {
   const logs: string[] = [];
   t.mock.method(console, 'log', (...a: unknown[]) => void logs.push(a.map(String).join(' ')));
   // ⑦c 的动词现在还明确挡掉：作者不该等一个静默失败的动词
@@ -117,18 +117,18 @@ test('spcdev 分发：未落地的动词报"还没做"（不是"未知命令"）
   assert.equal(await runDevCli('watch', []), 1);
   assert.equal(await runDevCli('nope', []), 1);
   assert.ok(
-    logs.filter((l) => l.includes('还没做')).length >= 2,
-    `pack / watch 要报"还没做"：${logs.join(' | ')}`,
+    logs.filter((l) => l.includes('尚未实现')).length >= 2,
+    `pack / watch 要报"尚未实现"：${logs.join(' | ')}`,
   );
   // 已落地的五个动词能被分发到（keygen 要作者 ID，非交互就得显式给）
   assert.equal(await runDevCli('keygen', ['--dir', join(TMP, 'devcli-keygen'), '--author', 'std']), 0);
 
-  // `build` 自 ⑦b 起是**真动词**：这里只钉"它不再走'还没做'那条路"（真构建的验收在 build.test.ts）
+  // `build` 自 ⑦b 起是**真动词**：这里只钉"它不再走'尚未实现'那条路"（真构建的验收在 build.test.ts）
   const before = logs.length;
   await runDevCli('build', [join(TMP, 'devcli-no-such-plugin')]);
   assert.ok(
-    !logs.slice(before).some((l) => l.includes('还没做')),
-    `build 不该再报"还没做"：${logs.slice(before).join(' | ')}`,
+    !logs.slice(before).some((l) => l.includes('尚未实现')),
+    `build 不该再报"尚未实现"：${logs.slice(before).join(' | ')}`,
   );
 });
 
@@ -188,7 +188,7 @@ test('keygen：非交互又没给 --author ⇒ 拒，且**一个字节都不写*
   const ws = workspace('author-nontty');
   const r = await runDev('keygen', ['--dir', ws.root], { interactive: false });
   assert.equal(r.code, 1);
-  assert.match(r.err, /还不知道作者 ID/, `该报 AUTHOR_ID_REQUIRED：${r.err}`);
+  assert.match(r.err, /尚未确定作者 ID/, `该报 AUTHOR_ID_REQUIRED：${r.err}`);
   assert.equal(configOf(ws).author ?? '', '', '配置里不该冒出作者 ID');
   assert.equal(existsSync(join(ws.dir, 'keys', 'author.key')), false, '也不该产钥');
 });
@@ -248,7 +248,7 @@ test('new：作者 ID 取自配置；--author 可临时覆盖；两者都没有 
   const bare = workspace('author-new-bare');
   const r3 = await runDev('new', ['demo', '--dir', bare.root]);
   assert.equal(r3.code, 1);
-  assert.match(r3.err, /还不知道作者 ID/, r3.err);
+  assert.match(r3.err, /尚未确定作者 ID/, r3.err);
   assert.equal(existsSync(join(bare.root, 'plugin', 'demo')), false);
 });
 
