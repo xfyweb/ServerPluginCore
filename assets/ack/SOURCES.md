@@ -7,12 +7,12 @@
 | 文件 | 出处 | 格式 / 尺寸 | 用途 |
 |---|---|---|---|
 | `dsh.svg` | npm全局包 `@deepseek-ai/dsh` 内置 Web 前端 `dist/favicon.svg` | SVG 50×50 | 置顶栏。**自带明暗自适应**（内部用 `prefers-color-scheme` 改填充色）。⚠️ 见下方「DSH」 |
-| `node.svg` | nodejs.org 首页左上角的站标（内联 SVG；与 `https://nodejs.org/static/images/logo.svg` 同款） | SVG 267×80 | 自带明暗两套配色。⚠️ **站点靠 Tailwind 类上色，单独成文件时类不生效**（字标会继承根上的 `fill="none"` 而看不见）⇒ 这里补了一段等价 CSS（浅色 `#333333` / 深色 `#fff`，暗色绿取其 `--dm-inline-fill`） |
+| `node.svg` | nodejs.org 首页左上角站标里的**六边形徽标**（带 `JS` 字样那枚，即同一份内联 SVG 中的两个 path：六边形轮廓 + `J`/`S` 字母） | SVG 44.46×50.41 | 抠掉了 `node` 字标、"node" 里当 `o` 的实心六边形，以及挂在该 path 末尾的 **® 子路径**（它画到画布最右，会把版心撑宽）；viewBox 按六边形轮廓的包围盒贴边。深色取站点自己的亮绿（`--dm-inline-fill: #7cbe6b`） |
 | `pnpm.svg` | `https://pnpm.io/img/pnpm-no-name-with-frame.svg` | SVG | 官方站点缺省版 |
 | `esbuild.svg` | `https://esbuild.github.io/favicon.svg` | SVG 200×200 | 官方站点图标 |
 | `tux.svg` | `https://upload.wikimedia.org/wikipedia/commons/3/35/Tux.svg` | SVG | **署名要求**：作者 Larry Ewing、Simon Budig、Garrett LeSage |
 | `chromium.svg` | `https://upload.wikimedia.org/wikipedia/commons/2/28/Chromium_Logo.svg` | SVG | Wikimedia 标注为 Public domain（Chromium Authors 的开源开发协议） |
-| `mcsmanager.png` | 项目源码 `MCSManager/frontend/src/assets/logo.png` | PNG 350×45 | 仓库内资产（字标，按 26px 高排版） |
+| `mcsmanager.png` | 项目源码 `MCSManager/frontend/public/favicon.ico`（**面板网页图标**；ICO 里只有一帧 32bpp BMP，取了那一帧转成 PNG，图本身未改） | PNG 128×128 | 方形图标。原先是站内的 `src/assets/logo.png`（350×45 字标），在鸣谢栏里太长，换成网页图标 |
 | `velocity.png` | `PaperMC/velocitypowered.com` 仓库 `src/assets/img/velocity-blue.png` | PNG 400×400 | 浅色背景版 |
 | `velocity-white.png` | 同上 `velocity-white.png` | PNG 400×400 | 深色背景版（README 里用 `<picture>` 切换） |
 | `paper.png` | 项目源码 `Paper/paper-server/src/main/resources/logo.png` | PNG 200×200 | 仓库内资产 |
