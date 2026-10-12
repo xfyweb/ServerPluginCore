@@ -163,12 +163,12 @@ test('CLI plugin uninstall：内置插件同样可卸载（v2 取消 reserved）
   assert.match(st.stderr, /插件不存在/);
 });
 
-test('CLI source list：内置条目（官方市场 + 杂桶）在 daemon 启动时就已播种', async () => {
+test('CLI source list：内置条目（官方市场 + 混合来源）在 daemon 启动时就已播种', async () => {
   const r = await run(['core/cli.ts', 'source', 'list'], env());
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /market\.spc\.xfyweb\.cn · 市场源 · 官方市场/);
-  assert.match(r.stdout, /local:default · 本地源 · 杂桶/);
-  // 杂桶不绑锚：绑了就等于宣称这台机器上只有一个作者（docs/plugin-signature-design.md §3bis）
+  assert.match(r.stdout, /local:default · 本地源 · 本地混合来源/);
+  // 混合来源不绑锚：绑了就等于宣称这台机器上只有一个作者（docs/plugin-signature-design.md §3bis）
   assert.match(r.stdout, /作者锚：未绑定/);
   // 而**锚只属于本地桶**：市场源印"作者锚：未绑定"是范畴错误（市场是多作者命名空间），
   // 它该回答的是"源公钥取到没有" ⇒ 用数量关系钉死，不依赖条目的排列顺序

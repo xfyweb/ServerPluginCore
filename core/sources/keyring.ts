@@ -26,6 +26,21 @@ import { assertFingerprint, fingerprintOf } from './keys';
 /** 官方市场（内置默认条目；其余源一律由管理员显式添加） */
 export const DEFAULT_ORIGIN = 'market.spc.xfyweb.cn';
 
+/**
+ * 内置 `local:default` 的**默认别名**（2026-10-12 用户定）。
+ *
+ * 为什么叫"混合来源"：它装的是**多个作者的插件**（每个作者只出现过一次的那些），
+ * 与"本地源 = 一个作者的桶"形成对照 —— 名字要说出这件事，别用开发期的内部叫法。
+ */
+export const DEFAULT_LOCAL_ALIAS = '本地混合来源';
+
+/**
+ * `local:default` 在**早期开发文档**里的叫法（"杂桶"）。**只用来把旧种改成新默认别名**：
+ * 别名是标签不是契约，但这个标签是核心播的种（不是管理员起的名字）⇒ 跟着改名走一次；
+ * 管理员自己改过的标签**不动**（只认这一个字符串）。
+ */
+const LEGACY_LOCAL_ALIAS = '杂桶';
+
 export interface SuspendedState {
   at: string;
   /** §7.3 的判定码（如 KEY_CHAIN_INVALID / KEY_ROTATION_UNVERIFIABLE / KEY_STATUS_ROLLBACK / KEY_STATUS_MALFORMED） */
@@ -327,19 +342,22 @@ export class Keyring {
   }
 
   /**
-   * 内置杂桶 `local:default`：装着"作者只出现过一次"的插件（§3bis）。
+   * 内置混合来源 `local:default`：装着"作者只出现过一次"的插件（§3bis）。
    * 它**不绑锚**（绑了就等于宣称机器上只有一个作者），靠作者名册逐 `(origin, id)` 首见（TOFU）。
    */
-  ensureLocalDefault(alias = '杂桶'): SourceEntry {
+  ensureLocalDefault(alias = DEFAULT_LOCAL_ALIAS): SourceEntry {
     const cur = this.sources.get(DEFAULT_LOCAL_SOURCE);
-    if (cur) return cur;
+    if (cur) {
+      // 旧种改名：只认 `LEGACY_LOCAL_ALIAS` 这一个字符串（管理员自己起的标签一律不动）
+      return cur.alias === LEGACY_LOCAL_ALIAS ? this.setAlias(DEFAULT_LOCAL_SOURCE, alias) : cur;
+    }
     const entry = newLocalSource(DEFAULT_LOCAL_SOURCE, alias);
     this.sources.set(DEFAULT_LOCAL_SOURCE, entry);
     this.save();
     return entry;
   }
 
-  /** 启动期播种：两个内置条目（官方市场 + 杂桶） */
+  /** 启动期播种：两个内置条目（官方市场 + 混合来源） */
   ensureBuiltins(): { market: SourceEntry; localDefault: SourceEntry } {
     return { market: this.ensureDefaultOrigin(), localDefault: this.ensureLocalDefault() };
   }

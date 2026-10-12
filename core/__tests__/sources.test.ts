@@ -342,6 +342,23 @@ test('内置条目：官方市场 + 杂桶 local:default，播种幂等', () => 
   assert.equal(bucket?.authorAnchor, null, '杂桶不绑锚：绑了就等于宣称这台机器上只有一个作者');
 });
 
+test('内置混合来源的别名：旧默认值跟着改名，管理员自己起的标签一个字不动', () => {
+  freshSources();
+  seedBuiltinSources();
+  assert.equal(getSource(DEFAULT_LOCAL_SOURCE)?.alias, '本地混合来源', '新种的别名就是新默认值');
+
+  // ⚠️ 摆状态走 keyring **低层** API：`setSourceAlias` 会往审计里写字，
+  // 而本文件后面有用例在**数** `source.alias` 的条数（"改的是条目，落的是审计"那条）。
+  const kr = keyring();
+  kr.setAlias(DEFAULT_LOCAL_SOURCE, '杂桶'); // 旧种（早期默认别名）
+  seedBuiltinSources();
+  assert.equal(getSource(DEFAULT_LOCAL_SOURCE)?.alias, '本地混合来源', '旧默认别名要被改掉');
+
+  kr.setAlias(DEFAULT_LOCAL_SOURCE, '我们机房'); // 管理员自己起的名字
+  seedBuiltinSources();
+  assert.equal(getSource(DEFAULT_LOCAL_SOURCE)?.alias, '我们机房', '自定义标签不许被播种覆盖');
+});
+
 test('删源：内置拒 / 有插件归属拒 / 干净可删', async () => {
   freshSources();
   seedBuiltinSources();
