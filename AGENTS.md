@@ -17,6 +17,11 @@ ServerPluginCore 是一个**宿主最小、能力全插件化**的服务端核�
 - **Node 是契约宗主**：被仿真的模块（`core/sandbox-modules/*.js`）语义以 **Node 源码为准**，
   改法也是"向 Node 靠"，而不是"向方便靠"。有分歧时，Node 的行为就是答案。
 - **本体最小**：能在插件或构建层解决的，不要塞进核心。新增核心代码要有非加不可的理由。
+- **可以引依赖**（2026-10-12 定）：npm 生态再乱也不该靠自造轮子躲它 —— **自研解析器、自研字节格式才是真坑**
+  （原话："自定义二进制唯一的收益是省几十字节，代价是一辈子的解析器和兼容坑"）。
+  **10–20 个依赖都在可接受范围**（参照：DSH 自己引了近 500 个），别为"零依赖"这个数字加复杂度。
+  两条边界：① **不可信输入上的解析**（归档 / 序列化 / 格式解析）**优先用成熟库**；
+  ② 每次引仍要能说出为什么（一行理由写在用它的那个文件里，不写长篇）。
 
 ## 3. 改代码的规矩
 
@@ -140,7 +145,7 @@ node tools/batteries/events-battery.mjs      # events 语义：34 组剧本
 
 ## 6. 环境与已知的雷
 
-- 依赖很少（2 个运行时依赖 + 4 个开发依赖）。`node_modules` 被清空也能
+- 依赖不多（政策见 §2）。`node_modules` 被清空也能
   `pnpm install --prefer-offline` 秒装回来。
 - **`quickjs-emscripten` 有本地 pnpm patch**（`patches/`）：`pnpm install` 会自动重打，
   `scripts/verify-quickjs-patch.mjs`（`pnpm verify:sandbox`）会校验它还在。**别手改 `node_modules`**。

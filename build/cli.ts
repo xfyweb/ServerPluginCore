@@ -13,6 +13,7 @@ import type { Manifest } from '../sdk/types';
 import { bundlePlugin } from './bundle';
 import { checkPlugin, type CheckResult, type Finding } from './check';
 import { closureOf, reconcile, type BuildFacts, type DeclaredDep } from './facts';
+import { readLockfile } from './lockfile';
 import { generateAuthorKey, loadAuthorKey, saveAuthorKey } from './keys';
 import { DYNAMIC_POINT_HINT, listPermissions } from './permissions';
 import { checkAuthor, metaOf, payloadFiles, writeEnvelope } from './sign';
@@ -314,16 +315,27 @@ export async function runBuild(args: string[], io: CliIo = {}): Promise<number> 
   const entry = manifest.entry ?? 'main.ts';
   const bundled = await bundlePlugin({ dir, entry });
 
-  // ④ 产物事实 + 与声明对账
+  // ④ 产物事实 + 与声明对账（区间声明靠**锁文件**核：§9-3，2026-10-12 定）
   const closure = closureOf(bundled.metafile, dir);
   const declared: DeclaredDep[] = (manifest.dependencies?.npm ?? []).map((d) => ({ ...d }));
-  const check = reconcile(declared, closure);
+  const lock = readLockfile(dir);
+  const check = reconcile(declared, closure, lock);
   if (check.unused.length > 0) {
     throw new SpcError('BUILD_DEP_UNUSED', { name: check.unused.join(', ') });
   }
   if (check.versionMismatch.length > 0) {
     const m = check.versionMismatch[0];
     throw new SpcError('BUILD_DEP_MISMATCH', { name: m.name, declared: m.declared, resolved: m.resolved });
+  }
+  // 区间声明而真实版本不满足它（semver 判）⇒ 声明在说谎，构建失败（2026-10-12 起）
+  if (check.rangeUnsatisfied.length > 0) {
+    const u = check.rangeUnsatisfied[0];
+    throw new SpcError('BUILD_DEP_RANGE_UNSATISFIED', { name: u.name, declared: u.declared, bundled: u.bundled });
+  }
+  // 装了与锁不符 ⇒ 这次构建**不可复现**：宁可拦住，也别让 CI 里"装的"和"锁的"悄悄分叉
+  if (check.lockfileDrift.length > 0) {
+    const d = check.lockfileDrift[0];
+    throw new SpcError('BUILD_LOCKFILE_DRIFT', { name: d.name, pinned: d.pinned, bundled: d.bundled });
   }
 
   const facts: BuildFacts = { closure, builtins: bundled.builtins, bytes: bundled.bytes };
@@ -385,10 +397,21 @@ export async function runBuild(args: string[], io: CliIo = {}): Promise<number> 
   if (bundled.stubbed.length > 0) {
     console.log(t('cli.dev.build.stubbed', { list: bundled.stubbed.join(', ') }));
   }
-  if (check.uncheckedRange.length > 0) {
+  // 锁文件：只说明"这次构建依据哪份锁"（可复现性）；区间判定是 semver 的事（§9-3）
+  if (lock.file !== null && lock.pinned.size > 0) {
+    console.log(t('cli.dev.build.lockfile', { file: lock.file, count: lock.pinned.size }));
+  } else if (lock.file !== null) {
+    console.log(t('cli.dev.build.lockfile.unparsed', { file: lock.file, note: lock.note ?? '' }));
+  } else {
+    console.log(t('cli.dev.build.lockfile.none'));
+  }
+  if (check.unlocked.length > 0) {
+    console.log(t('cli.dev.build.unlocked', { list: check.unlocked.join(', ') }));
+  }
+  if (check.rangesChecked.length > 0) {
     console.log(
-      t('cli.dev.build.unchecked', {
-        list: check.uncheckedRange.map((u) => `${u.name} ${u.declared} → ${u.resolved}`).join(', '),
+      t('cli.dev.build.rangesChecked', {
+        list: check.rangesChecked.map((v) => `${v.name} ${v.declared} → ${v.bundled}`).join(', '),
       }),
     );
   }

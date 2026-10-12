@@ -1,5 +1,5 @@
 {
- "at": "2026-09-27T02:35:33.740Z",
+ "at": "2026-10-12T05:23:46.625Z",
  "baselines": {
   "vendor": {
    "forkCommit": "4f5ad7c",
@@ -13,7 +13,7 @@
    "version": "6.12.110"
   },
   "pkgs": {
-   "lockSha": "8272bc3919dc"
+   "lockSha": "92b90a070334"
   }
  },
  "note": "行号引用快照：正确性靠人核一次，此后由 check-line-refs.mjs 守住\"别再悄悄变\"。baselines 记的是**这份快照是对着哪个修订建的**——换修订后必须重新核一遍再 --update。",

@@ -545,7 +545,7 @@
                 "maxLength": 64
               },
               "resolved": {
-                "description": "**构建器写入**的真实解析版本（不是上面那个区间）。与声明对账用：声明是精确版本时不一致 ⇒ 构建失败；是区间时只记录（见 build-layer-design §2/§9-3）",
+                "description": "**构建器写入**的真实解析版本（不是上面那个区间）。对账分两路：①**声明是否成立**——精确版本判等（不等 ⇒ BUILD_DEP_MISMATCH），区间用 semver 判（不满足 ⇒ BUILD_DEP_RANGE_UNSATISFIED）；②**这次构建能否复现**——有锁文件时锁里的 pin 必须等于它（不等 ⇒ BUILD_LOCKFILE_DRIFT）。见 build-layer-design §2/§9-3",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64

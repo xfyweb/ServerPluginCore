@@ -245,13 +245,22 @@ node tools/gate-probe.mjs        # 两道闸的可行性（§3）
 2. ~~**裸名内建的报错文案**~~ **✅ 已实现（2026-09-27，⑦b）**：第一道闸用 `node:module` 的 `builtinModules`
    先识别内建 ⇒ 未登记的报 `BUILD_BUILTIN_UNSUPPORTED`，文案是"**沙箱尚未支持 X**"，作者不会以为要装个叫
    `http` 的包。`onResolve` 给的位置信息会一并带上（依赖包内的行号）；
-3. **版本解析是否上 lockfile** —— ⚠️ **只落实了一半（2026-09-27，⑦b）**，口径写在这里免得下次重新想：
-   构建器把**真实解析到的版本**写进产物清单的 `dependencies.npm[].resolved`，对账规则是
-   ① **声明的包必须真的进了闭包**（否则 `BUILD_DEP_UNUSED`）；
-   ② 声明写**精确版本**（`1.2.3`）时必须与实解一致（否则 `BUILD_DEP_MISMATCH`）；
-   ③ 声明是**区间**（`^1.2.3` / `3.x` / `>=1`）时**只记录不判**（判区间要 semver 解析器，本项目不引依赖），
-   但构建输出里会点明"未核"——**绝不静默通过**。
-   **仍未定**：要不要按 lockfile 做确定性版本解析（那才是"静态解析依赖图"的完整形态）；
+3. ~~**版本解析是否上 lockfile**~~ **✅ 已定并实现（2026-10-12 用户拍板：上）** —— 理由原话「**lockfile 有利于插件本身 CI**」。
+   **两件事分工，别混**（这是本条的核心口径）：
+   - **声明成不成立** —— 精确版本（`1.2.3`）判等 ⇒ `BUILD_DEP_MISMATCH`；
+     **区间**（`^1.2.3` / `3.x` / `>=1`）用 **`semver.satisfies`** 判（**口径同 npm**：普通区间不默认接受 pre-release），
+     不满足 ⇒ **`BUILD_DEP_RANGE_UNSATISFIED`（构建失败）**。这一路**与有没有锁文件无关**。
+   - **这次构建能不能被别人复现** —— 有锁文件时，`锁里的 pin == 真正打进产物的版本`；不等 ⇒
+     **`BUILD_LOCKFILE_DRIFT`（构建失败）**；没有锁文件 / 该包没被锁住 ⇒ 出声"**可复现性未核**"（不失败）。
+   ⚠️ **别拿锁文件去"核区间"**：只比等式会把"清单写 `^2.0.0`、锁与产物都是 `1.5.0`"判成"已核过" —— 这是**实测出来的洞**
+   （2026-10-12；回归用例见 `build/__tests__/build.test.ts` 里 `BUILD_DEP_RANGE_UNSATISFIED` 那条），补法就是上面那一路 semver 判定。
+   产物清单照旧写**真实解析到的版本**（`dependencies.npm[].resolved`）。
+   认得的锁文件：**npm**（`package-lock.json` / `npm-shrinkwrap.json`：v2/v3 的 `packages` 段 + v1 的嵌套 `dependencies` 树）、
+   **pnpm**（`pnpm-lock.yaml`：`packages:` 与 `snapshots:` **两段都收**，v5 `/name/1.2.3`、v6 `/name@1.2.3`（`_` peer 后缀）、
+   v9 `'name@1.2.3'`（`(...)` peer 后缀）三种键形，且**一个文件里可能有多个 YAML 文档**）；
+   `yarn.lock` **认出来但不解析**（v1 与 v2+ 格式差异大）⇒ 出声说明，可复现性按"未核"处理。
+   实测靶子：拿本仓库那份真实 `pnpm-lock.yaml` 验过（解析出的 pin 与 `node_modules` 里实际版本逐条一致）；
+   **依赖**：2026-10-12 起政策放宽（`AGENTS.md` §2），本条为此引了 **`semver@7`**（零依赖）。
 4. **依赖托管**（平台提供依赖源码、不打进产物）：**未排期**，属开源后社区讨论项。
    分析见 ADR-005 §7 v3 补记 与 `.github/ISSUE_DRAFT-hosted-dependencies.md`；
 5. **`neutral` + 自定义 resolve 条件**是否比 `node` 更可控：留待真实包踩坑后再评估，当前不引入额外复杂度；

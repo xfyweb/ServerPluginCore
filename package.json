@@ -2,7 +2,10 @@
   "name": "serverplugin-core",
   "version": "0.0.0",
   "private": true,
-  "bin": { "spc": "bin/spc.mjs", "spcdev": "bin/spcdev.mjs" },
+  "bin": {
+    "spc": "bin/spc.mjs",
+    "spcdev": "bin/spcdev.mjs"
+  },
   "type": "module",
   "description": "Plugin-driven server management core (spike)",
   "packageManager": "pnpm@12.4.2",
@@ -18,10 +21,12 @@
   "license": "MIT",
   "dependencies": {
     "ajv": "^8.20.0",
-    "quickjs-emscripten": "^0.32.0"
+    "quickjs-emscripten": "^0.32.0",
+    "semver": "^7.8.5"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
+    "@types/semver": "^7.8.0",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.12",
     "typescript": "6.0.3"

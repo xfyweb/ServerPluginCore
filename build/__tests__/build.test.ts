@@ -391,7 +391,7 @@ test('对账：声明了却没打进闭包 ⇒ BUILD_DEP_UNUSED；精确版本�
   );
 });
 
-test('对账：区间不判（但要出声），真实闭包 + resolved 写进产物清单', async (t) => {
+test('对账：区间按 semver 判定（满足 ⇒ 过），真实闭包 + resolved 写进产物清单', async (t) => {
   const f = fixture('dep-range', {
     manifest: { dependencies: { npm: [{ name: 'probe-r', version: '^1.0.0' }] } },
     code: "import r from 'probe-r';\nexport { r };\n",
@@ -399,7 +399,8 @@ test('对账：区间不判（但要出声），真实闭包 + resolved 写进�
   npmPackage(f.dir, 'probe-r', '1.4.2', 'module.exports = 1;\n');
   const res = await build(t, [f.dir]);
   assert.equal(res.code, 0, res.err);
-  assert.match(res.out, /1\.4\.2/, '区间要打出来（"已解析到 1.4.2"，由人核）');
+  assert.match(res.out, /1\.4\.2/, '区间要打出来（判过也一样打，作者能看见这次用的是哪个版本）');
+  assert.match(res.out, /区间已按声明判定：probe-r \^1\.0\.0 → 1\.4\.2/);
 
   const dist = distManifestOf(f) as { dependencies: { npm: { name: string; version: string; resolved?: string }[] }; build: { closure: { name: string; version: string; bytes: number }[] } };
   assert.equal(dist.dependencies.npm[0].resolved, '1.4.2', 'resolved 要写进产物清单');
@@ -411,7 +412,7 @@ test('对账：区间不判（但要出声），真实闭包 + resolved 写进�
   assert.ok(dist.build.closure[0].bytes > 0, '体积要算出来（产物里占的字节）');
 });
 
-test('reconcile 单元：传递依赖不算不一致；版本判定只在声明是精确版本时生效', () => {
+test('reconcile 单元：传递依赖不算不一致；精确判等、区间按 semver 判（口径同 npm）', () => {
   const closure = [
     { name: 'debug', version: '4.4.3', bytes: 10 },
     { name: 'ms', version: '2.1.3', bytes: 5 },
@@ -424,10 +425,187 @@ test('reconcile 单元：传递依赖不算不一致；版本判定只在声明�
   assert.deepEqual(r.unknownVersion, ['weird']);
   assert.equal(r.resolved.get('debug'), '4.4.3');
 
+  // 区间：满足的进 rangesChecked，不满足的进 rangeUnsatisfied（构建期据此失败）
+  const ranges = reconcile(
+    [
+      { name: 'ok', version: '^1.0.0' },
+      { name: 'bad', version: '^2.0.0' },
+      { name: 'pre', version: '^1.0.0' },
+    ],
+    [
+      { name: 'ok', version: '1.4.2', bytes: 1 },
+      { name: 'bad', version: '1.5.0', bytes: 1 },
+      { name: 'pre', version: '1.5.0-beta.1', bytes: 1 },
+    ],
+  );
+  assert.deepEqual(ranges.rangesChecked, [{ name: 'ok', declared: '^1.0.0', bundled: '1.4.2' }]);
+  assert.deepEqual(
+    ranges.rangeUnsatisfied.map((u) => u.name),
+    ['bad', 'pre'],
+    'pre-release 不满足普通区间 —— 与 npm 同口径（`npm i foo@^1.0.0` 也不会挑到 beta）',
+  );
+
   for (const v of ['1.2.3', '1.2.3-beta.1']) assert.equal(isExactVersion(v), true, v);
   for (const v of ['^1.2.3', '~1.2.3', '>=1.2.3', '1.x', '1.2', '*', 'latest']) {
     assert.equal(isExactVersion(v), false, v);
   }
+});
+
+test('区间声明而真实版本不满足 ⇒ BUILD_DEP_RANGE_UNSATISFIED（清单在说谎就不该出货）', async () => {
+  // 这条是**实测出来的洞**的回归：原先只比"锁 pin == 产物"，于是清单写 ^2.0.0、锁与产物都是 1.5.0 时
+  // 还会打印"区间已核过"（假保证）。现在区间判定交给 semver ⇒ 直接失败。
+  const f = fixture('range-unsatisfied', {
+    manifest: { dependencies: { npm: [{ name: 'probe-bad', version: '^2.0.0' }] } },
+    code: "import v from 'probe-bad';\nexport { v };\n",
+  });
+  npmPackage(f.dir, 'probe-bad', '1.5.0', 'module.exports = 1;\n');
+  npmLock(f.dir, { 'probe-bad': '1.5.0' }); // 锁与产物一致（可复现），但都不满足声明
+  await rejects(
+    () => runBuild([f.dir]),
+    'BUILD_DEP_RANGE_UNSATISFIED',
+    (e) => {
+      assert.equal(e.params.name, 'probe-bad');
+      assert.equal(e.params.declared, '^2.0.0');
+      assert.equal(e.params.bundled, '1.5.0');
+    },
+  );
+});
+
+// ---------------- 追加：锁文件（§9-3，2026-10-12 用户定：上 lockfile，"有利于插件本身 CI"）----------------
+
+/** 造一份 npm 的 `package-lock.json` v3（构建层只读 `packages` 段的 `node_modules/<名字>`） */
+function npmLock(dir: string, pins: Record<string, string>): void {
+  const packages: Record<string, { version: string }> = { '': { version: '0.0.0' } };
+  for (const [name, version] of Object.entries(pins)) packages[`node_modules/${name}`] = { version };
+  writeFileSync(
+    join(dir, 'package-lock.json'),
+    JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages }, null, 2),
+    'utf8',
+  );
+}
+
+test('锁文件：pin == 产物 ⇒ 这次构建可复现；区间另由声明判定', async (t) => {
+  const f = fixture('lock-ok', {
+    manifest: { dependencies: { npm: [{ name: 'probe-lock', version: '^1.0.0' }] } },
+    code: "import v from 'probe-lock';\nexport { v };\n",
+  });
+  npmPackage(f.dir, 'probe-lock', '1.2.3', 'module.exports = 1;\n');
+  npmLock(f.dir, { 'probe-lock': '1.2.3' });
+
+  const res = await build(t, [f.dir]);
+  assert.equal(res.code, 0, res.err);
+  assert.match(res.out, /锁文件：package-lock\.json（1 个包的版本按它核对可复现性）/);
+  assert.match(res.out, /区间已按声明判定：probe-lock \^1\.0\.0 → 1\.2\.3/);
+  assert.doesNotMatch(res.out, /可复现性未核/, '锁住了且一致 ⇒ 不该说可复现性未核');
+
+  const dist = distManifestOf(f) as { dependencies: { npm: { resolved?: string; version: string }[] } };
+  assert.equal(dist.dependencies.npm[0].resolved, '1.2.3');
+  assert.equal(dist.dependencies.npm[0].version, '^1.0.0', '作者声明的原样保留');
+});
+
+test('锁文件：装了与锁不符 ⇒ BUILD_LOCKFILE_DRIFT（这次构建不可复现）', async () => {
+  const f = fixture('lock-drift', {
+    manifest: { dependencies: { npm: [{ name: 'probe-drift', version: '^1.0.0' }] } },
+    code: "import v from 'probe-drift';\nexport { v };\n",
+  });
+  npmPackage(f.dir, 'probe-drift', '1.2.3', 'module.exports = 1;\n');
+  npmLock(f.dir, { 'probe-drift': '1.0.0' }); // 锁还停在旧版本
+  await rejects(
+    () => runBuild([f.dir]),
+    'BUILD_LOCKFILE_DRIFT',
+    (e) => {
+      assert.equal(e.params.name, 'probe-drift');
+      assert.equal(e.params.pinned, '1.0.0');
+      assert.equal(e.params.bundled, '1.2.3');
+    },
+  );
+});
+
+test('锁文件：pnpm 的 packages / snapshots 两段都认（v9 形状，且只扫了该扫的段）', async (t) => {
+  const f = fixture('lock-pnpm', {
+    manifest: { dependencies: { npm: [{ name: 'probe-pnpm', version: '^2.0.0' }] } },
+    code: "import v from 'probe-pnpm';\nexport { v };\n",
+  });
+  npmPackage(f.dir, 'probe-pnpm', '2.1.0', 'module.exports = 1;\n');
+  writeFileSync(
+    join(f.dir, 'pnpm-lock.yaml'),
+    [
+      "lockfileVersion: '9.0'",
+      '',
+      'packages:',
+      '',
+      "  'probe-pnpm@2.1.0':",
+      '    resolution: {integrity: sha512-xxx}',
+      '',
+      'snapshots:',
+      '',
+      "  'probe-pnpm@2.1.0':",
+      '    resolution: {}',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const res = await build(t, [f.dir]);
+  assert.equal(res.code, 0, res.err);
+  assert.match(res.out, /锁文件：pnpm-lock\.yaml（1 个包的版本按它核对可复现性）/);
+  assert.match(res.out, /区间已按声明判定：probe-pnpm/);
+});
+
+test('锁文件：声明了但锁里没有 ⇒ 出声"可复现性未核"（区间照旧按声明判定）', async (t) => {
+  const f = fixture('lock-unlocked', {
+    manifest: { dependencies: { npm: [{ name: 'probe-unlocked', version: '^1.0.0' }] } },
+    code: "import v from 'probe-unlocked';\nexport { v };\n",
+  });
+  npmPackage(f.dir, 'probe-unlocked', '1.0.0', 'module.exports = 1;\n');
+  npmLock(f.dir, { 'some-other-pkg': '1.0.0' }); // 锁是认得的，只是没锁住这个包
+
+  const res = await build(t, [f.dir]);
+  assert.equal(res.code, 0, res.err);
+  assert.match(res.out, /可复现性未核）：probe-unlocked/);
+  assert.match(res.out, /区间已按声明判定：probe-unlocked \^1\.0\.0 → 1\.0\.0/, '没锁住不影响声明判定');
+});
+
+test('锁文件：没有锁文件 ⇒ 可复现性未核（区间已按声明判定）', async (t) => {
+  const f = fixture('lock-none', {
+    manifest: { dependencies: { npm: [{ name: 'probe-nolock', version: '^1.0.0' }] } },
+    code: "import v from 'probe-nolock';\nexport { v };\n",
+  });
+  npmPackage(f.dir, 'probe-nolock', '1.0.0', 'module.exports = 1;\n');
+
+  const res = await build(t, [f.dir]);
+  assert.equal(res.code, 0, res.err);
+  assert.match(res.out, /锁文件：无（区间已按声明判定；这次构建的可复现性未核）/);
+  assert.match(res.out, /区间已按声明判定：probe-nolock/);
+});
+
+test('reconcile 单元：声明判定与可复现性判定是**两条独立的路**', () => {
+  const closure = [
+    { name: 'ok', version: '1.2.3', bytes: 1 },
+    { name: 'drift', version: '1.2.3', bytes: 1 },
+    { name: 'unlocked', version: '1.2.3', bytes: 1 },
+    { name: 'bad', version: '1.2.3', bytes: 1 },
+  ];
+  const declared = [
+    { name: 'ok', version: '^1.0.0' },
+    { name: 'drift', version: '^1.0.0' },
+    { name: 'unlocked', version: '^1.0.0' },
+    { name: 'bad', version: '^2.0.0' },
+  ];
+  const pinned = new Map([
+    ['ok', '1.2.3'],
+    ['drift', '1.0.0'], // 锁旧了
+    ['bad', '1.2.3'],
+  ]);
+  const r = reconcile(declared, closure, { kind: 'npm', file: 'package-lock.json', pinned });
+  assert.deepEqual(
+    r.rangesChecked.map((x) => x.name),
+    ['ok', 'drift', 'unlocked'],
+    '区间判定与锁无关：锁旧了、没锁住，都不影响"这个版本满不满足声明"',
+  );
+  assert.deepEqual(r.rangeUnsatisfied.map((x) => x.name), ['bad']);
+  assert.deepEqual(r.lockfileDrift, [{ name: 'drift', pinned: '1.0.0', bundled: '1.2.3' }]);
+  assert.deepEqual(r.unlocked, ['unlocked']);
 });
 
 test('构建时清掉上一次的陈旧产物：本次没变的文件也重写，载荷哈希与信封一致', async (t) => {

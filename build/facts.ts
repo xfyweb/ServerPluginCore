@@ -8,12 +8,17 @@
 // ⚠️ **对账的边界**（写清楚，免得它看起来比实际更强）：
 //   · **传递依赖不算不一致**：声明 `debug` 而闭包里还有 `ms`，那是正常的 —— 闭包清单本身就是透明面，
 //     不是"只能有声明过的东西"的白名单；
-//   · **版本只在声明是"精确版本"时判**（`1.2.3` 这种）。区间（`^1.2.3` / `3.x` / `>=1`）要 semver 解析器，
-//     而 `build-layer-design.md` §9-3 那条（版本解析要不要上 lockfile）**还没定**，本项目也不引依赖
-//     ⇒ 区间**记录但不判**，并在构建输出里点明"未核"，绝不让它静默通过。
+//   · **声明本身一律判**（2026-10-12 起）：精确版本判等；**区间用 `semver.satisfies` 判**
+//     （口径与 npm 一致：普通区间**不**默认接受 pre-release）。不满足 ⇒ `rangeUnsatisfied` ⇒ 构建失败。
+//   · **锁文件管的是"可复现性"**（§9-3）：`锁里的 pin == 真正打进产物的版本` 才算这次构建可由那份锁复现；
+//     两者不等 ⇒ `lockfileDrift` ⇒ 构建失败。⚠️ 注意两件事**分工不同**：semver 判"声明成不成立"，
+//     锁文件判"这次构建能不能被别人按同一份锁复现"—— 拿锁文件去"核区间"是不够的
+//     （实测：清单写 `^2.0.0`、锁与产物都是 `1.5.0` 时，只比等式会给出"已核过"的假保证）。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Metafile } from 'esbuild';
+import { satisfies } from 'semver';
+import type { LockInfo } from './lockfile';
 
 /** 闭包里的一个第三方包（`bytes` = 它在**产物里**占的字节，不是磁盘上的大小） */
 export interface ClosureEntry {
@@ -103,22 +108,43 @@ export interface Reconcile {
   unused: string[];
   /** 声明是精确版本、与真实版本不符 ⇒ 构建失败 */
   versionMismatch: { name: string; declared: string; resolved: string }[];
-  /** 声明是区间 ⇒ 记录但**不判**（见文件头） */
-  uncheckedRange: { name: string; declared: string; resolved: string }[];
+  /** 声明是**区间**、而真实版本**不满足**它 ⇒ 构建失败（semver 判，2026-10-12 起） */
+  rangeUnsatisfied: { name: string; declared: string; bundled: string }[];
+  /** 区间声明**判过且成立**（记下来给作者看：这次构建用的版本确实落在声明的区间里） */
+  rangesChecked: { name: string; declared: string; bundled: string }[];
+  /** 装了的东西与锁文件不符 ⇒ 构建失败（这次构建不可复现） */
+  lockfileDrift: { name: string; pinned: string; bundled: string }[];
+  /** 声明了、闭包里有，但**锁文件里没有**（没被锁住 ⇒ 可复现性未核）⇒ 出声，不失败 */
+  unlocked: string[];
   /** 闭包里有、声明里没有的（传递依赖）—— 不算失败，进清单供审查 */
   transitive: string[];
   /** 闭包里版本取不到的包 */
   unknownVersion: string[];
 }
 
-/** 作者声明 ⟷ 真实闭包 对账（规则见文件头；只返回结果，判不判失败由调用方决定） */
-export function reconcile(declared: readonly DeclaredDep[], closure: readonly ClosureEntry[]): Reconcile {
+/**
+ * 作者声明 ⟷ 真实闭包 对账（规则见文件头；只返回结果，判不判失败由调用方决定）。
+ *
+ * 两件事分工（2026-10-12 定）：
+ *   · **声明成不成立** —— 精确版本判等；区间用 `semver.satisfies`（与 npm 同口径）。
+ *   · **这次构建能不能被复现** —— 有锁文件时必须 `pin == bundled`。
+ * ⚠️ 别用后者代替前者：只比等式会把"清单写 `^2.0.0`、锁与产物都是 `1.5.0`"判成"已核过"（实测过）。
+ */
+export function reconcile(
+  declared: readonly DeclaredDep[],
+  closure: readonly ClosureEntry[],
+  lock?: LockInfo,
+): Reconcile {
   const byName = new Map(closure.map((c) => [c.name, c]));
+  const pinnedOf = lock?.pinned;
   const out: Reconcile = {
     resolved: new Map(),
     unused: [],
     versionMismatch: [],
-    uncheckedRange: [],
+    rangeUnsatisfied: [],
+    rangesChecked: [],
+    lockfileDrift: [],
+    unlocked: [],
     transitive: [],
     unknownVersion: closure.filter((c) => c.version === UNKNOWN_VERSION).map((c) => c.name),
   };
@@ -132,12 +158,23 @@ export function reconcile(declared: readonly DeclaredDep[], closure: readonly Cl
     }
     out.resolved.set(dep.name, hit.version);
     if (hit.version === UNKNOWN_VERSION) continue; // 取不到真实版本 ⇒ 无从判定，按"未核"处理
+    const pinned = pinnedOf?.get(dep.name);
+    // 可复现性：装了的东西与锁不符 ⇒ 这次构建不可复现（精确与区间**一视同仁**）
+    if (pinned !== undefined && pinned !== hit.version) {
+      out.lockfileDrift.push({ name: dep.name, pinned, bundled: hit.version });
+    }
+    if (pinnedOf !== undefined && pinnedOf.size > 0 && pinned === undefined) out.unlocked.push(dep.name);
+    // 声明本身：精确判等，区间判满足
     if (isExactVersion(dep.version)) {
       if (dep.version.trim() !== hit.version) {
         out.versionMismatch.push({ name: dep.name, declared: dep.version.trim(), resolved: hit.version });
       }
+      continue;
+    }
+    if (satisfies(hit.version, dep.version)) {
+      out.rangesChecked.push({ name: dep.name, declared: dep.version, bundled: hit.version });
     } else {
-      out.uncheckedRange.push({ name: dep.name, declared: dep.version, resolved: hit.version });
+      out.rangeUnsatisfied.push({ name: dep.name, declared: dep.version, bundled: hit.version });
     }
   }
   out.transitive = closure.filter((c) => !declaredNames.has(c.name)).map((c) => c.name);
