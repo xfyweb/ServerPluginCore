@@ -1,7 +1,7 @@
-// 构建层的 CLI 面（`spcdev keygen` / `new` / `check` / `permission list` / `build`）
+// 构建层的 CLI 面（`spcdev keygen` / `new` / `check` / `permission list` / `build` / `pack`）
 //
 // 分层照本项目一贯的做法：**这里只产出/渲染**，判定在 `keys.ts` / `scaffold.ts` / `check.ts` / `bundle.ts` /
-// `facts.ts` / `sign.ts` 里，文案走 `t()` / `tError()`（核心与工具只给码 + 参数）。这些子命令**都是本地的**：
+// `facts.ts` / `sign.ts` / `pack.ts` 里，文案走 `t()` / `tError()`（核心与工具只给码 + 参数）。这些子命令**都是本地的**：
 // 不握手、不连 daemon（`build` 也不联网：它只读源码与 node_modules）。
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -15,6 +15,7 @@ import { checkPlugin, type CheckResult, type Finding } from './check';
 import { closureOf, reconcile, type BuildFacts, type DeclaredDep } from './facts';
 import { readLockfile } from './lockfile';
 import { generateAuthorKey, loadAuthorKey, saveAuthorKey } from './keys';
+import { defaultPackFile, packPlugin } from './pack';
 import { DYNAMIC_POINT_HINT, listPermissions } from './permissions';
 import { checkAuthor, metaOf, payloadFiles, writeEnvelope } from './sign';
 import { scaffoldPlugin } from './scaffold';
@@ -424,6 +425,29 @@ export async function runBuild(args: string[], io: CliIo = {}): Promise<number> 
   return 0;
 }
 
+/**
+ * `spcdev pack`：把 `spcdev build` 的**产物目录**打成 `.spc`（标准 zip，见 §10.6）。
+ *
+ * - 产物目录：缺省取工作区配置的 `outDir`（与 `build` 同源），`--dist <目录>` 可覆盖；
+ * - 输出文件：缺省 `<插件目录>/<插件名>-<版本>.spc`，`--file <文件>` 可覆盖；
+ * - 三道检查（产物在不在 / 信封齐不齐 / 信封与载荷是否一致）在 `pack.ts` 里，失败都是 `PACK_*`（退出码 3）。
+ */
+export async function runPack(args: string[], io: CliIo = {}): Promise<number> {
+  const { positional, flags } = parseArgs(args);
+  const dir = resolvePluginTarget(positional[0]);
+  const ws = loadWorkspace(dir, {});
+  const outDir = flags.get('--dist') ?? ws.config.outDir;
+  const distDir = resolve(dir, outDir === '' ? ws.config.outDir : outDir);
+  // 输出名要用产物清单里的 id / 版本（清单不在就交给 packPlugin 报 PACK_DIST_MISSING，别在这里造第二套判定）
+  const manifestFile = join(distDir, 'manifest.json');
+  const manifest = existsSync(manifestFile) ? (JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest) : undefined;
+  const file = flags.get('--file') ?? defaultPackFile(dir, manifest?.id ?? '', manifest?.version.name ?? '');
+  const res = await packPlugin({ distDir, file });
+  console.log(t('cli.dev.pack.header', { dir, dist: distDir }));
+  console.log(t('cli.dev.pack.done', { file: res.file, bytes: res.bytes, entries: res.entries }));
+  return 0;
+}
+
 /** `spcdev permission list [--json]`：列本机已注册的权限点（冻结表；动态族另附形状） */
 export function runPermission(args: string[]): number {
   const sub = args[0];
@@ -479,9 +503,9 @@ function renderFinding(f: Finding): string {
 
 /**
  * `spcdev` 的分发：作者工具全集（**本地**命令，不握手、不连 daemon）。
- * ⑦c 的 `pack` / `watch` 还没落地，先明确报"还没做"，别让作者空等一个不存在的动词。
+ * ⑦c 的尾巴 `watch`（= `spcdev dev`）还没落地，先明确报"还没做"，别让作者空等一个不存在的动词。
  *
- * `async` 是因为 `keygen` 要**问一句**（作者 ID）、`build` 要 await esbuild；`io` 只为用例留缝。
+ * `async` 是因为 `keygen` 要**问一句**（作者 ID）、`build` 要 await esbuild、`pack` 要 await zip 写入流；`io` 只为用例留缝。
  */
 export const DEV_VERBS = ['keygen', 'new', 'check', 'permission', 'build', 'pack', 'watch'] as const;
 
@@ -499,8 +523,9 @@ export async function runDevCli(cmd: string, args: string[], io: CliIo = {}): Pr
       case 'build':
         return await runBuild(args, io);
       case 'pack':
+        return await runPack(args, io);
       case 'watch':
-        // ⑦c 尚未落地：明确说清楚，而不是给一句"未知命令"
+        // ⑦c 的尾巴（`spcdev dev`）还没落地：明确说清楚，而不是给一句"未知命令"
         console.log(t('cli.dev.notYet', { verb: cmd }));
         return 1;
       default:
@@ -512,9 +537,10 @@ export async function runDevCli(cmd: string, args: string[], io: CliIo = {}): Pr
     // 少了这一层，Node 会把整段堆栈打出来（内部路径、scaffold.ts:199…）—— 对作者毫无用处，
     // 而那本该是一条"哪个值非法、该改成什么样"的提示。
     console.error(`[spcdev] ${renderThrown(e)}`);
-    // 退出码：`BUILD_*` 一族是**门禁失败**（作者写错了/环境缺东西），与一般失败分开 —— 好让 CI 能区分
+    // 退出码：`BUILD_*` / `PACK_*` 一族是**门禁失败**（作者写错了/环境缺东西），与一般失败分开 —— 好让 CI 能区分
     // （docs/cli-contract.md 的退出码表：0 成功 / 1 一般失败 / 2 用法 / 3 门禁 / 4 需要交互但非 TTY）
-    return e instanceof SpcError && e.code.startsWith('BUILD_') ? 3 : 1;
+    if (!(e instanceof SpcError)) return 1;
+    return e.code.startsWith('BUILD_') || e.code.startsWith('PACK_') ? 3 : 1;
   }
 }
 

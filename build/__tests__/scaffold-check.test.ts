@@ -112,24 +112,25 @@ test('permission list：列出冻结表，且与注册表的点数一致', () =>
 test('spcdev 分发：未落地的动词报"尚未实现"（不是"未知命令"），未知动词给用法', async (t) => {
   const logs: string[] = [];
   t.mock.method(console, 'log', (...a: unknown[]) => void logs.push(a.map(String).join(' ')));
-  // ⑦c 的动词现在还明确挡掉：作者不该等一个静默失败的动词
-  assert.equal(await runDevCli('pack', []), 1);
+  // ⑦c 就剩 `watch`（= `spcdev dev`）没落地：作者不该等一个静默失败的动词
   assert.equal(await runDevCli('watch', []), 1);
   assert.equal(await runDevCli('nope', []), 1);
   assert.ok(
-    logs.filter((l) => l.includes('尚未实现')).length >= 2,
-    `pack / watch 要报"尚未实现"：${logs.join(' | ')}`,
+    logs.filter((l) => l.includes('尚未实现')).length >= 1,
+    `watch 要报"尚未实现"：${logs.join(' | ')}`,
   );
-  // 已落地的五个动词能被分发到（keygen 要作者 ID，非交互就得显式给）
+  // 已落地的六个动词能被分发到（keygen 要作者 ID，非交互就得显式给）
   assert.equal(await runDevCli('keygen', ['--dir', join(TMP, 'devcli-keygen'), '--author', 'std']), 0);
 
-  // `build` 自 ⑦b 起是**真动词**：这里只钉"它不再走'尚未实现'那条路"（真构建的验收在 build.test.ts）
-  const before = logs.length;
-  await runDevCli('build', [join(TMP, 'devcli-no-such-plugin')]);
-  assert.ok(
-    !logs.slice(before).some((l) => l.includes('尚未实现')),
-    `build 不该再报"尚未实现"：${logs.slice(before).join(' | ')}`,
-  );
+  // `build`（⑦b）/ `pack`（⑦c）自落地起是**真动词**：这里只钉"它们不再走'尚未实现'那条路"（真验收在 build.test.ts / pack.test.ts）
+  for (const verb of ['build', 'pack']) {
+    const before = logs.length;
+    await runDevCli(verb, [join(TMP, `devcli-no-such-plugin-${verb}`)]);
+    assert.ok(
+      !logs.slice(before).some((l) => l.includes('尚未实现')),
+      `${verb} 不该再报"尚未实现"：${logs.slice(before).join(' | ')}`,
+    );
+  }
 });
 
 test('spcdev 顶层兜底：抛出来的 SpcError 渲染成"码 + 参数"，不是整段堆栈', async (t) => {
