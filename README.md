@@ -87,6 +87,26 @@ pnpm spc daemon stop           # 停止核心
 
 > 停机优先用 `pnpm spc daemon stop`（走 HTTP，跨平台一致）。前台运行时 `Ctrl+C` 走同一条路径，连按两次为强制退出（退出码 130）；停机超时默认 10s，可用 `SPC_SHUTDOWN_TIMEOUT_MS` 覆盖。
 
+**长期运行 / 进程管理器**：用仓库根的 `server.js` —— 它自己加载 TypeScript，而且与守护进程**同进程**（`pm2` / `systemd` 记录到、发信号到的就是守护进程本身，中间不多一层）：
+
+```bash
+node server.js                            # 直接跑（最干净：链上只有 node）
+pm2 start                                 # pm2：仓库根的 ecosystem.config.js 已经写好（SIGINT 停机）
+SPC_PORT=18777 SPC_STATE_DIR=/var/lib/spc node server.js
+
+./run.sh                                  # POSIX（exec ⇒ 不留中间层）
+./run.ps1                                 # Windows / PowerShell
+run.bat                                   # Windows / cmd
+```
+
+> `ecosystem.config.js` 里的两条不是默认值、是**必须**：`script: 'server.js'`（同进程，pm2 记录到/发信号到的
+> 就是守护进程本身）与 `kill_timeout: 15s`（守护进程自己的停机超时是 10s，而 pm2 默认只等 1.6s
+> ⇒ 不改就会被 SIGKILL 在优雅停机做完之前）。细节写在那个文件的注释里。
+
+> Windows 上 `run.bat` 与 `pnpm daemon` 都会经过 `cmd.exe`：前台按 `Ctrl+C` 时 cmd 会追问「终止批处理操作吗(Y/N)?」
+> —— 那是 cmd 对**批处理作业**的反应，与守护进程无关（它自己会打「正在停机（SIGINT）」→「已停机」）。
+> 要干净的前台体验就用 `run.ps1` 或 `node server.js`（链上没有 cmd），长期运行则交给 pm2 / systemd。
+
 ## 插件类型
 
 本体只做四件事，扩展点按**插件需要什么样的运行环境**分成四类：

@@ -164,7 +164,7 @@
   **命名现状（npm registry 实查，2026-09-25）**：`spc` **已被占用**（0.0.3）· `spc-cli` **已被占用**（1.0.1）· `serverplugin-core` 空着（= 本仓库现用 name）· `@spc/cli`、`@spc/core` 包名空着但要先在 npm 占 org。
   **开发期替代**：仓库根 `npm link`（⇒ 任何目录直接用 `spc`，且跟着这份仓库走）；插件模板的 `package.json` 里也带了 `spc` 脚本。
   **命令分层（2026-09-25 定）**：spc = 管理面（随核心运行时一起分发）· spcdev = 作者工具（随仓库走、全程本地）—— 受众/前提/发布节奏都不同，**不合并成一个入口**。
-- 加固：systemd 单元模板（资源配额）、安装脚本、非 root 部署文档、运行时自动更新链路；**驱动插件的 OS 边界按平台分栏**（Linux：专用 uid + mount namespace 白名单 + Landlock + `no_new_privs`；Windows：受限令牌 / Job Object）——**只承诺平台给得起的**（同一份架构、平台决定强度，先例见 Chromium 的 `docs/servicification.md`：iOS 上它自己就是严格单进程）；
+- 加固：systemd 单元模板（资源配额）、安装脚本、非 root 部署文档、运行时自动更新链路 —— ⚠️ **前身已就位**：仓库根的 `server.js`（进程管理器入口，与守护进程同进程）+ `run.sh` / `run.ps1` / `run.bat`，单元模板/安装脚本应当复用它，不要再造第三个入口；**驱动插件的 OS 边界按平台分栏**（Linux：专用 uid + mount namespace 白名单 + Landlock + `no_new_privs`；Windows：受限令牌 / Job Object）——**只承诺平台给得起的**（同一份架构、平台决定强度，先例见 Chromium 的 `docs/servicification.md`：iOS 上它自己就是严格单进程）；
 - 安全评审轮：全方法威胁建模复核 + @host/api 注入面 fuzz；
 - 验收：面板可日常管理服务器；全新服务器按文档 10 分钟部署；v1.0 发布。
 
