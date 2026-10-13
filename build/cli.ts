@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
 import { SpcError } from '../core/errors';
 import { renderThrown, t, tError } from '../core/i18n';
+import { shortFingerprint } from '../core/sources/keys';
 import { validateManifest } from '../sdk/validate';
 import type { Manifest } from '../sdk/types';
 import { bundlePlugin } from './bundle';
@@ -419,7 +420,8 @@ export async function runBuild(args: string[], io: CliIo = {}): Promise<number> 
   if (check.unknownVersion.length > 0) {
     console.log(t('cli.dev.build.unknownVersion', { list: check.unknownVersion.join(', ') }));
   }
-  console.log(t('cli.dev.build.author', { author: author.namespace, fingerprint: key.fingerprint }));
+  // 作者自己的指纹只给缩略：这里不是身份决策点（完整值在 `.spcdev/keys/author.pub` 与 keygen 输出里）
+  console.log(t('cli.dev.build.author', { author: author.namespace, fingerprint: shortFingerprint(key.fingerprint) }));
   console.log(t('cli.dev.build.releasedAt', { at: releasedAt }));
   console.log(t('cli.dev.build.dist', { dir: distDir, meta: written.metaBytes, sig: written.sigBytes }));
   return 0;

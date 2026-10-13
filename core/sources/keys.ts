@@ -25,6 +25,20 @@ export function fingerprintOf(pubB64: string): string {
   return `sha256:${createHash('sha256').update(decodePub(pubB64)).digest('hex')}`;
 }
 
+/**
+ * 指纹的**缩略形式**（`sha256:ff23be1a`）——给人看的那种。
+ *
+ * 为什么要有它：完整指纹是 64 位十六进制，**运维基本不看**（撞名时他们多半是"换一个人的同款"，
+ * 或者只用官方市场、根本没有重名）。所以默认输出里不摆它，需要时给前 8 位够核对，
+ * **完整值只在真做身份决策的地方**（换钥 / 来源锚 / keygen）或 `--json` 里给。
+ */
+export function shortFingerprint(fp: string, len = 8): string {
+  const sep = fp.indexOf(':');
+  const alg = sep === -1 ? '' : fp.slice(0, sep + 1);
+  const hex = sep === -1 ? fp : fp.slice(sep + 1);
+  return `${alg}${hex.slice(0, len)}`;
+}
+
 /** 校验 pub 与 fingerprint 自洽（§4 硬性要求） */
 export function assertFingerprint(pubB64: string, fingerprint: string): void {
   if (fingerprintOf(pubB64) !== fingerprint) {

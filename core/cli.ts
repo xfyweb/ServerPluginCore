@@ -9,6 +9,7 @@ import { createInterface } from 'node:readline';
 import { printAbout } from './about';
 import { renderThrown, t, tError, type RenderableError } from './i18n';
 import { verifyDaemon } from './handshake';
+import { shortFingerprint } from './sources/keys';
 import { BRAND } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
@@ -106,7 +107,15 @@ async function acquireToken(): Promise<string> {
 /** 插件 id 进 URL：`@xfy2412/hello` → `%40xfy2412%2Fhello` */
 const idPath = (id: string): string => encodeURIComponent(id);
 
-function printPlugin(p: PluginView): void {
+/**
+ * 打印一个插件的状态块。
+ *
+ * ⚠️ **指纹默认不打**（2026-10-13 维护者定）：完整指纹是 64 位十六进制，运维基本不看
+ * （撞名时他们多半"换一个人的同款"，或只用官方市场、根本没重名）。
+ * 分级：**默认不打** / `status` 打**缩略**（前 8 位，够核对）/ 真做身份决策的地方（换钥、来源锚、keygen）打**全量**；
+ * 机器要真值一律走 `--json`（`--json` 路径不经过这里）。
+ */
+function printPlugin(p: PluginView, fingerprint: 'none' | 'short' | 'full' = 'none'): void {
   console.log(
     t('cli.plugin.line', {
       // 打**完整引用**（身份是 `(origin, id)`）：同 id 不同来源是两个插件，只打裸 id 分不清是谁，
@@ -119,7 +128,13 @@ function printPlugin(p: PluginView): void {
     }),
   );
   if (p.grants.length > 0) console.log(t('cli.plugin.grants', { grants: p.grants.join(', ') }));
-  if (p.authorFingerprint) console.log(t('cli.plugin.author', { fingerprint: p.authorFingerprint }));
+  if (p.authorFingerprint && fingerprint !== 'none') {
+    console.log(
+      t(fingerprint === 'full' ? 'cli.plugin.author' : 'cli.plugin.author.short', {
+        fingerprint: fingerprint === 'full' ? p.authorFingerprint : shortFingerprint(p.authorFingerprint),
+      }),
+    );
+  }
   if (p.capabilities.length > 0) console.log(t('cli.plugin.caps', { caps: p.capabilities.join(', ') }));
   if (p.lastError) console.log(t('cli.plugin.lastError', { code: p.lastError.code }));
   if (p.reloadRequired) console.log(t('cli.plugin.reloadRequired'));
@@ -344,7 +359,8 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.status.fail');
     const p = r.body.plugin;
-    printPlugin(p);
+    // 详情页给**缩略**指纹：这里够核对（完整值走 --json），不再默认甩 64 位十六进制
+    printPlugin(p, 'short');
     console.log(t('cli.plugin.detail', { dir: p.dir, dataDir: p.dataDir, config: p.configPath }));
     return;
   }
