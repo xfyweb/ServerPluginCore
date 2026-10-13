@@ -35,6 +35,8 @@
   "cli.plugin.usage": "用法：spc plugin list | install <目录> | enable|disable|reload|uninstall <ID> | status <ID> | grant|revoke <ID> <权限点>... | reanchor <引用...> --origin <新来源>",
   "cli.reanchor.usage": "用法：spc plugin reanchor <完整引用...> --origin <新来源> [--yes]（先打印预检计划，确认后才执行）",
   "cli.reanchor.target": "目标来源：{origin} · {kind} · {alias} · 已启用={enabled}",
+  "cli.reanchor.target.unknown": "目标来源：{origin} · 未知来源（没这个来源；本机的来源见下一行）",
+  "cli.reanchor.knownOrigins": "  本机来源：{origins}",
   "cli.reanchor.kind.local": "本地源",
   "cli.reanchor.kind.market": "市场源",
   "cli.reanchor.kind.none": "未知来源",

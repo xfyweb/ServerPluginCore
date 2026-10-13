@@ -209,6 +209,10 @@ const REANCHOR_GRANT_SAMPLE = 5;
 
 function printReanchorPlan(plan: ReanchorPlanView): void {
   const tgt = plan.target;
+  // 目标来源**不存在**时不要摆"别名 / 已启用=否"这两个空档（会打成 `·  · 已启用=否`，看着像输出坏了）
+  if (tgt.kind === null) {
+    console.log(t('cli.reanchor.target.unknown', { origin: tgt.origin }));
+  } else {
   console.log(
     t('cli.reanchor.target', {
       origin: tgt.origin,
@@ -223,6 +227,7 @@ function printReanchorPlan(plan: ReanchorPlanView): void {
       enabled: tgt.enabled ? t('cli.yes') : t('cli.no'),
     }),
   );
+  }
   if (tgt.anchorFingerprint) console.log(t('cli.reanchor.anchor', { fingerprint: tgt.anchorFingerprint }));
 
   if (plan.moves.length > 0) {
@@ -407,6 +412,22 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
 
     printReanchorPlan(plan);
     if (plan.errors.length > 0) {
+      // 来源名打错时，最有用的信息是"**现在有哪些来源**"：维护者 2026-10-13 手工验收时打成
+      // `loacl:xfy2412`，提示只说"应为 local:<小写名字> 或市场域名"，还得自己再去 source list 查一遍。
+      const originTrouble = plan.errors.some(
+        (e) => e.code === 'SOURCE_ORIGIN_INVALID' || e.code === 'SOURCE_NOT_CONFIGURED',
+      );
+      if (originTrouble) {
+        const src = (await httpJson('GET', '/api/sources', token)) as {
+          status: number;
+          body: { sources: SourceView[] };
+        };
+        if (src.status === 200 && src.body.sources.length > 0) {
+          console.log(
+            t('cli.reanchor.knownOrigins', { origins: src.body.sources.map((s) => s.origin).join(' · ') }),
+          );
+        }
+      }
       // 计划里已经逐条说了"为什么搬不了、该怎么办"，这里不再另说一句
       process.exitCode = 1;
       return;

@@ -35,6 +35,8 @@
   "cli.plugin.usage": "Usage: spc plugin list | install <dir> | enable|disable|reload|uninstall <ID> | status <ID> | grant|revoke <ID> <point>... | reanchor <ref...> --origin <new source>",
   "cli.reanchor.usage": "Usage: spc plugin reanchor <full ref...> --origin <new source> [--yes] (prints a plan first, executes after confirmation)",
   "cli.reanchor.target": "Target source: {origin} · {kind} · {alias} · enabled={enabled}",
+  "cli.reanchor.target.unknown": "Target source: {origin} · unknown source (no such source; see the list below)",
+  "cli.reanchor.knownOrigins": "  Sources on this host: {origins}",
   "cli.reanchor.kind.local": "local origin",
   "cli.reanchor.kind.market": "market",
   "cli.reanchor.kind.none": "unknown source",
