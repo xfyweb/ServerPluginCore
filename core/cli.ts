@@ -15,6 +15,13 @@ import { BRAND } from './version';
 const PORT = Number(process.env.SPC_PORT ?? 18777);
 
 /**
+ * **用法错误**（参数形状不对 / 缺参数）：退出码 **2**（`docs/cli-contract.md` §2 的退出码表）。
+ * 与"一般失败"（1）分开，CI 才分得清"我参数写错了"和"操作失败了"。
+ * ⚠️ 只有"参数本身不对"才用它；连不上核心、插件不存在这类是运行期失败 ⇒ 保持 1。
+ */
+class UsageError extends Error {}
+
+/**
  * 插件视图（CLI 侧的**结构副本**：CLI 走 HTTP、不 import 核心类型）——
  * ⚠️ 改这里要同步 `core/plugin/manager.ts` 的 `PluginView`。
  * `ref` = **完整引用** `<origin>/<id>`（身份是 `(origin, id)`，同 id 不同来源是两个插件）。
@@ -307,7 +314,7 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
 
   if (sub === 'install') {
     const target = args.find((a) => !a.startsWith('--'));
-    if (!target) throw new Error(t('cli.plugin.install.usage'));
+    if (!target) throw new UsageError(t('cli.plugin.install.usage'));
     const grants: string[] = [];
     let source: string | undefined;
     let acceptKeyChange = false;
@@ -352,7 +359,7 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
 
   if (sub === 'status') {
     const id = args[0];
-    if (!id) throw new Error(t('cli.plugin.id.required'));
+    if (!id) throw new UsageError(t('cli.plugin.id.required'));
     const r = (await httpJson('GET', `/api/plugins/${idPath(id)}`, token)) as {
       status: number;
       body: { plugin: PluginView };
@@ -367,7 +374,7 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
 
   if (sub === 'grant' || sub === 'revoke') {
     const [id, ...points] = args;
-    if (!id || points.length === 0) throw new Error(t('cli.plugin.grant.usage'));
+    if (!id || points.length === 0) throw new UsageError(t('cli.plugin.grant.usage'));
     const r = (await httpJson('POST', `/api/plugins/${idPath(id)}/grants`, token, {
       add: sub === 'grant' ? points : [],
       remove: sub === 'revoke' ? points : [],
@@ -382,7 +389,7 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     const { positional, flags } = parseArgs(args);
     // `--source` 当别名收下：install 用的就是它，同一个概念不该因为命令不同而换名字
     const origin = flags.get('--origin') ?? flags.get('--source');
-    if (positional.length === 0 || origin === undefined) throw new Error(t('cli.reanchor.usage'));
+    if (positional.length === 0 || origin === undefined) throw new UsageError(t('cli.reanchor.usage'));
 
     const planRes = (await httpJson('POST', '/api/plugins/reanchor/plan', token, {
       refs: positional,
@@ -435,7 +442,7 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
 
   if (sub === 'enable' || sub === 'disable' || sub === 'reload' || sub === 'uninstall') {
     const id = args[0];
-    if (!id) throw new Error(t('cli.plugin.id.required'));
+    if (!id) throw new UsageError(t('cli.plugin.id.required'));
     const r = (await httpJson('POST', `/api/plugins/${idPath(id)}/${sub}`, token)) as {
       status: number;
       body: { plugin?: PluginView };
@@ -542,9 +549,16 @@ async function sourceCommand(sub: string | undefined, args: string[]): Promise<v
   }
 
   const origin = positional[0];
-  if (!origin) throw new Error(t('cli.source.origin.required'));
+  if (!origin) throw new UsageError(t('cli.source.origin.required'));
 
   if (sub === 'add') {
+    // **本地源要写全**：不写成 `local:<名字>` 的话，服务端会把它当**市场域名**去远程取公钥
+    // （`isValidSource` 的市场正则同样接受裸名字），失败后甩回来的是远端错误码 —— 运维看不懂、
+    // 也不知道该改什么（2026-10-13 维护者手工验收指出）。所以形状不对就在这里拒，并给出两条出路。
+    // ⚠️ 判据要留出 `localhost:8080` 这类**不带点但带端口**的写法：既没有 `.` 也没有 `:` 才像"裸桶名"。
+    if (!origin.startsWith('local:') && !origin.includes('.') && !origin.includes(':')) {
+      throw new UsageError(t('cli.source.add.hint', { origin }));
+    }
     const pub = flags.get('--pub');
     const alias = flags.get('--alias');
     const anchor = flags.get('--anchor');
@@ -583,7 +597,7 @@ async function sourceCommand(sub: string | undefined, args: string[]): Promise<v
 
   if (sub === 'alias') {
     const alias = positional[1];
-    if (alias === undefined) throw new Error(t('cli.source.usage'));
+    if (alias === undefined) throw new UsageError(t('cli.source.usage'));
     const r = (await httpJson('POST', '/api/sources/alias', token, { origin, alias })) as {
       status: number;
       body: { source: SourceView };
@@ -689,5 +703,6 @@ async function main() {
 main().catch((e) => {
   // 顶层兜底：SpcError 渲染成"码 + 参数"的本地化文案（`e.message` 只有英文码，参数会丢）
   console.error(`[spc] ${renderThrown(e)}`);
-  process.exit(1);
+  // 用法错（参数形状不对）⇒ 2；其余运行期失败 ⇒ 1（docs/cli-contract.md §2 的退出码表）
+  process.exit(e instanceof UsageError ? 2 : 1);
 });
