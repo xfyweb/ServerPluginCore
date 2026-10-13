@@ -55,12 +55,20 @@ export interface Workspace {
   pubPath: string;
 }
 
-/** 从 `start` 往上找最近的 `.spcdev/`；找不到返回 `undefined`（走到文件系统根为止） */
+/**
+ * 从 `start` 往上找最近的工作区；找不到返回 `undefined`（走到文件系统根为止）。
+ *
+ * ⚠️ **判据是"这个 `.spcdev/` 里有 `config.json`"，不是"有个 `.spcdev/` 目录"**（2026-10-13 实测踩到）：
+ * 只认目录的话，任何往 `.spcdev/` 里放东西的工具都会**把所在目录变成工作区根** —— 于是"作者 ID 在哪"
+ * 的答案就从上层工作区悄悄变成"这里没有"。踩的正是我们自己的开发标记：
+ * `spcdev watch` 把 `.spcdev/dev-install.json` 写进插件目录后，**同一个插件的下一次构建**
+ * 就报"尚未确定作者 ID"（作者明明声明在上层工作区）。
+ */
 export function findWorkspaceDir(start: string): string | undefined {
   let cur = resolve(start);
   for (;;) {
     const candidate = join(cur, WORKSPACE_DIRNAME);
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(join(candidate, 'config.json'))) return candidate;
     const parent = dirname(cur);
     if (parent === cur) return undefined;
     cur = parent;
@@ -147,6 +155,12 @@ export function loadWorkspace(start: string, opts: { create?: boolean } = {}): W
     }
     dir = join(resolve(start), WORKSPACE_DIRNAME);
     mkdirSync(join(dir, 'keys'), { recursive: true });
+    // 顺手把默认 `config.json` 写上：**它才是"这里是工作区"的判据**（只认目录的话，任何往 `.spcdev/`
+    // 里放东西的工具都会把所在目录变成工作区根 —— 踩过，见 `findWorkspaceDir` 的注释）。
+    // 少了这行，"新建的工作区"在下一次 `findWorkspaceDir` 里就认不出来了。
+    if (!existsSync(join(dir, 'config.json'))) {
+      writeFileSync(join(dir, 'config.json'), `${JSON.stringify(DEFAULT_WORKSPACE_CONFIG, null, 2)}\n`, 'utf8');
+    }
   }
   const config = readConfig(join(dir, 'config.json'));
   const keyPath = resolve(dir, config.key);

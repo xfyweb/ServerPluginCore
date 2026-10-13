@@ -1,11 +1,15 @@
-// 构建层的 CLI 面（`spcdev keygen` / `new` / `check` / `permission list` / `build` / `pack`）
+// 构建层的 CLI 面（`spcdev keygen` / `new` / `check` / `permission list` / `build` / `pack` / `watch`）
 //
 // 分层照本项目一贯的做法：**这里只产出/渲染**，判定在 `keys.ts` / `scaffold.ts` / `check.ts` / `bundle.ts` /
-// `facts.ts` / `sign.ts` / `pack.ts` 里，文案走 `t()` / `tError()`（核心与工具只给码 + 参数）。这些子命令**都是本地的**：
-// 不握手、不连 daemon（`build` 也不联网：它只读源码与 node_modules）。
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+// `facts.ts` / `sign.ts` / `pack.ts` / `dev.ts` 里，文案走 `t()` / `tError()`（核心与工具只给码 + 参数）。
+// 这些子命令**基本都是本地的**（不握手、不连 daemon）：唯一的例外是 `watch` —— 它替你敲
+// `spc plugin reload`（走**已有管理通道**，不自己发明第二条，见 `dev.ts` 文件头）。
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { watch as chokidarWatch } from 'chokidar';
 import { SpcError } from '../core/errors';
 import { renderThrown, t, tError } from '../core/i18n';
 import { shortFingerprint } from '../core/sources/keys';
@@ -13,6 +17,7 @@ import { validateManifest } from '../sdk/validate';
 import type { Manifest } from '../sdk/types';
 import { bundlePlugin } from './bundle';
 import { checkPlugin, type CheckResult, type Finding } from './check';
+import { clearDevMarker, createDevSession, decideSandbox, isProcessAlive, isWatchedPath, readDevMarker, writeDevMarker } from './dev';
 import { closureOf, reconcile, type BuildFacts, type DeclaredDep } from './facts';
 import { readLockfile } from './lockfile';
 import { generateAuthorKey, loadAuthorKey, saveAuthorKey } from './keys';
@@ -504,12 +509,312 @@ function renderFinding(f: Finding): string {
 }
 
 /**
- * `spcdev` 的分发：作者工具全集（**本地**命令，不握手、不连 daemon）。
- * ⑦c 的尾巴 `watch`（= `spcdev dev`）还没落地，先明确报"还没做"，别让作者空等一个不存在的动词。
+ * `spcdev watch`（别名 `dev`）：盯源码 → 改动即重建 → 自动 `spc plugin reload`。
  *
- * `async` 是因为 `keygen` 要**问一句**（作者 ID）、`build` 要 await esbuild、`pack` 要 await zip 写入流；`io` 只为用例留缝。
+ * 口径写在 `build/dev.ts` 的文件头：**不做 HMR**（reload = 整插件停→起）、
+ * **重载走已有管理通道**（就是作者会手敲的那条 `spc plugin reload <id>`，作者工具自己不去跟 daemon 握手）、
+ * **只对目录就地安装的那个插件有意义**（托管副本是另一份不动的载荷）。
+ *
+ * 这里只干三件事：把构建/重载接到**真实命令**上、把输出收成一行（不然每改一行刷一屏）、收 `Ctrl+C`。
  */
-export const DEV_VERBS = ['keygen', 'new', 'check', 'permission', 'build', 'pack', 'watch'] as const;
+export async function runWatch(args: string[]): Promise<number> {
+  const { positional, flags } = parseArgs(args);
+  const dir = resolvePluginTarget(positional[0]);
+  const ws = loadWorkspace(dir, {});
+  const outDir = flags.get('--dist') ?? ws.config.outDir;
+  const distDir = resolve(dir, outDir === '' ? ws.config.outDir : outDir);
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Manifest;
+  const autoReload = !flags.has('--no-reload');
+  // `--source <来源>`：把开发安装**钉在**某个桶上（多桶作者用）。不给 ⇒ 由 `decideSandbox` 看
+  // "同名插件实际装在哪"来决定（只装在一个源就沿用那个源，免得凭空多出一份记录）。
+  const wantSource = flags.get('--source');
+
+  /**
+   * ⚠️ **交给 watcher 的必须是长路径**（2026-10-13 实测踩到）：Windows 上把**短路径（8.3 形式）**
+   * 交给 `fs.watch` 会让 libuv 断言（`Assertion failed: !_wcsnicmp(filename, dir, dirlen), file src\win\fs-event.c`），
+   * 表现是"构建跑完、重载永远不来、进程半死"；系统临时目录在 Windows 上默认就是短路径形式，所以很容易撞上。
+   * 同一个雷本仓库已经记过一次 —— 见 `core/hostApi.ts` 里"进 `fs.watch` 之前一律换成长路径"。
+   * 换法：`realpathSync.native`（Windows 上走系统 API 把 8.3 解析成长形式；其他平台等价于 realpath）。
+   */
+  let watchRoot = dir;
+  try {
+    watchRoot = realpathSync.native(dir);
+  } catch {
+    /* 解析不了就用原路径：宁可监视不到，也别在这里抛（后面的构建/重载会给出真正的错误） */
+  }
+
+  console.log(t('cli.dev.watch.header', { dir, dist: distDir, id: manifest.id }));
+  console.log(t(autoReload ? 'cli.dev.watch.hint' : 'cli.dev.watch.hint.noReload', { id: manifest.id }));
+
+  /**
+   * **停止闸**：`Ctrl+C` 那一下必须在**任何耗时动作之前**就能接住 —— 2026-10-13 实测：
+   * 处理器原来注册在首次构建之后，作者在"自动安装 / 首次构建"那几秒里按 Ctrl+C 就是默认行为（直接死），
+   * 于是"停止监视时会自动卸载"这句承诺没兑现，插件被留在册里。
+   *
+   * 语义（与守护进程停机那张表同一条口径）：**第一次**信号 = 优雅停止（等清理做完）；
+   * **第二次** = 强制退出（并明确告知"没清理干净、怎么手动收"）—— 连按两下是人最自然的反应，
+   * 与其被默认处理器静默杀掉，不如把话说清楚。
+   */
+  let stopping = false;
+  let resolveStop: (() => void) | null = null;
+  let forceQuit = (): void => {};
+  const onSignal = (): void => {
+    if (!stopping) {
+      stopping = true;
+      console.log(t('cli.dev.watch.stopping'));
+      resolveStop?.(); // 已经进了监视循环 ⇒ 放行等待（没进的话由下面的 `if (stopping)` 兜住）
+      return;
+    }
+    forceQuit();
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+
+  /**
+   * 构建：正常输出**先收着**（成功只报一行"已重建"），失败时才连同渲染后的错误一起倒出来
+   * —— 失败那会儿作者正需要细节（哪条闸拦的、哪个依赖解析不到）。
+   */
+  const buildOnce = async (): Promise<number> => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void lines.push(a.map(String).join(' '));
+    try {
+      await runBuild([dir]);
+      return 0;
+    } catch (e) {
+      console.error(`[spcdev] ${renderThrown(e)}`);
+      for (const l of lines) console.error(l);
+      return e instanceof SpcError && e.code.startsWith('BUILD_') ? 3 : 1;
+    } finally {
+      console.log = orig;
+    }
+  };
+
+  /**
+   * 走**已有管理通道**调一次 `spc <args>`（reload / list / install / uninstall 都走它，一个口子）。
+   *
+   * ⚠️ 两点实测教训（2026-10-13）：
+   *   · **不要 `detached`**：它让子进程另起进程组（Windows 上会**弹控制台窗口**，作者每次重建都看见窗口一闪），
+   *     而我们担心的是"清理命令被 Ctrl+C 打死" —— 但 Ctrl+C 事件在清理命令**启动之前**就已经发完了，
+   *     之后 spawn 的子进程根本收不到 ⇒ 这个担心不成立，弹窗的代价白付；
+   *   · **`windowsHide: true`**：即便不 detached，Windows 上也别让子进程弹窗（GUI/终端都要安静）。
+   */
+  const runSpc = async (spcArgs: string[]): Promise<{ code: number; out: string; err: string }> =>
+    new Promise((ok) => {
+      const child = spawn(process.execPath, [SPC_LAUNCHER, ...spcArgs], {
+        cwd: dir,
+        env: process.env,
+        windowsHide: true,
+      });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (d) => (out += String(d)));
+      child.stderr.on('data', (d) => (err += String(d)));
+      child.on('close', (code) => ok({ code: code ?? 1, out, err }));
+      child.on('error', (e) => ok({ code: 1, out: '', err: String(e) }));
+    });
+
+  /** 重载：与作者手敲的是同一条命令、同一套鉴权与文案；引用解析出来之后一律用**完整引用** */
+  const reloadOnce = async (): Promise<{ code: number; text: string }> => {
+    // 沙箱准备（可能被推迟到"第一次建成功"）还没落地 ⇒ 先等它：否则这一枪必然打在"插件不存在"上
+    if (sandboxPrep !== null) await sandboxPrep;
+    const r = await runSpc(['plugin', 'reload', target]);
+    return { code: r.code, text: (r.err.trim() || r.out.trim()).split('\n')[0] ?? '' };
+  };
+
+  /**
+   * **开发沙箱**（2026-10-13 维护者提的"缺失自动安装"+ "要不要能指定源"）：
+   * 没装 ⇒ 自己装（退出时自己卸）；装的正是这个目录 ⇒ 用现成的、不动它；装的指向别处 ⇒ 只警告；
+   * 同名装在多个源 ⇒ 报错并提示用 `--source` 选一个。判据在 `dev.ts` 的 `decideSandbox`。
+   *
+   * ⚠️ 读不到清单时**不自动装**（fail-closed）：那通常是核心没起来，此时自动装只会留下一份
+   * "我们装的、又没法卸"的记录；让作者看到真正的原因（reload 那步也会报）。
+   */
+  let owned: string | null = null; // 我们自己装的（完整引用）⇒ 退出时由我们卸
+  let target = manifest.id; // 重载用哪个引用：解析出来之后用**完整引用**（裸 id 在多源同名时会歧义）
+
+  /** 沙箱准备（崩溃兜底 + 决策 + 自动安装）。**可被 reload 等待**：首建失败时它会被推迟到"第一次建成功"那一刻 */
+  let sandboxPrepared = !autoReload;
+  let sandboxPrep: Promise<void> | null = null;
+  const prepareSandbox = async (): Promise<void> => {
+    // **崩溃兜底**（2026-10-13 真机实测"被吃了"）：上次 watch 被强杀 / 终端被关 ⇒ 信号根本没机会跑清理，
+    // 它装的插件就留在册里。开发标记就是为这种情况留的：**下次启动先把它收掉**。
+    const stale = readDevMarker(dir);
+    if (stale !== null && !isProcessAlive(stale.pid)) {
+      const un = await runSpc(['plugin', 'uninstall', stale.ref]);
+      if (un.code === 0) {
+        clearDevMarker(dir);
+        console.log(t('cli.dev.watch.staleCleaned', { ref: stale.ref }));
+      } else {
+        console.log(t('cli.dev.watch.stalePending', { ref: stale.ref }));
+      }
+    }
+
+    const listed = await runSpc(['plugin', 'list', '--json']);
+    if (listed.code !== 0) {
+      console.log(t('cli.dev.watch.stateFailed', { text: (listed.err.trim() || listed.out.trim()).split('\n')[0] ?? '' }));
+      sandboxPrepared = true;
+      return;
+    }
+    const parsed = JSON.parse(listed.out) as { plugins: { ref: string; id: string; dir: string }[] };
+    const decision = decideSandbox(parsed.plugins, manifest.id, dir, wantSource);
+    if (decision.kind === 'auto-install') {
+      const inst = await runSpc(['plugin', 'install', dir, '--source', decision.origin]);
+      if (inst.code !== 0) {
+        console.log(t('cli.dev.watch.autoInstallFailed', { text: (inst.err.trim() || inst.out.trim()).split('\n')[0] ?? '' }));
+      } else {
+        owned = `${decision.origin}/${manifest.id}`;
+        target = owned;
+        // 先把"这个是我们装的"记下来，再报喜 —— 顺序反了的话，装完立刻被强杀就又成孤儿了
+        writeDevMarker(dir, owned);
+        console.log(t('cli.dev.watch.autoInstalled', { ref: owned }));
+      }
+    } else if (decision.kind === 'reuse') {
+      target = decision.ref;
+      console.log(t('cli.dev.watch.reuse', { ref: decision.ref }));
+    } else if (decision.kind === 'foreign') {
+      console.log(t('cli.dev.watch.foreign', { ref: decision.ref, dir: decision.dir, want: dir }));
+    } else {
+      console.log(t('cli.dev.watch.ambiguous', { refs: decision.refs.join(' · ') }));
+    }
+    sandboxPrepared = true;
+  };
+
+  /**
+   * **先建一次再决定装不装**（2026-10-13 探针实测）：构建不通过就**不装** —— 那时装进去的是一份
+   * 没有产物的包，册子里只会多一个 failed 记录。改成"建得过才装"；首建失败时它会在**第一次建成功**
+   * 的那次改动上补做（`onBuilt` 里挂），期间 reload 会等准备完（见 `reloadOnce`）。
+   *
+   * （代价：首建在建得过时会跑两遍 —— 一遍这里、一遍会话的 `start()`；几十毫秒，换 fail-closed 值。）
+   */
+  if (autoReload && (await buildOnce()) === 0) {
+    await prepareSandbox();
+  } else if (autoReload) {
+    console.log(t('cli.dev.watch.deferredInstall'));
+  }
+
+  const session = createDevSession({
+    root: watchRoot,
+    autoReload,
+    io: {
+      build: buildOnce,
+      reload: reloadOnce,
+      onBuilt: (ms) => {
+        console.log(t('cli.dev.watch.rebuilt', { ms: String(ms) }));
+        // 首建失败 ⇒ 那时**没装**（装一份没产物的包只会在册子里留个 failed 记录）；
+        // 现在这一次建成功了 ⇒ 把沙箱准备补上（`reloadOnce` 会等它，见那里的注释）
+        if (autoReload && !sandboxPrepared && sandboxPrep === null) {
+          sandboxPrep = prepareSandbox();
+        }
+      },
+      onBuildFailed: (code) =>
+        console.log(
+          // 正在停止时不能说"监视继续"（那是假的：这一枪多半是 Ctrl+C 顺手把 esbuild 服务带走了，实测见过）。
+          // 话得说实：构建失败是真的，但不再重试。
+          stopping
+            ? t('cli.dev.watch.buildFailedStopping', { code: String(code) })
+            : t('cli.dev.watch.buildFailed', { code: String(code) }),
+        ),
+      onReloaded: () => console.log(t('cli.dev.watch.reloaded', { id: manifest.id })),
+      onReloadFailed: (code, text) => console.log(t('cli.dev.watch.reloadFailed', { code: String(code), text })),
+    },
+  });
+
+  const watcher = chokidarWatch(watchRoot, {
+    ignoreInitial: true,
+    // 忽略判据与"什么算源码改动"**同一份**（`dev.ts`）；⚠️ 用 `isWatchedPath` 而不是 `isSourceChange` ——
+    // 后者会把**根目录**也判成忽略（`relative(root, root)` 是空串），chokidar 就什么都不会监视（踩过）
+    ignored: (p: string) => !isWatchedPath(watchRoot, p),
+  });
+  watcher.on('all', (_event, p) => session.changed(p));
+
+  /**
+   * 收尾：等在飞的构建 → 关 watcher → **把自己装的那个卸掉**（它本来就不在册）。
+   * **幂等**（第二次信号走的是"强制退出"，不该重跑一遍清理）；成功则**抹掉开发标记**。
+   *
+   * ⚠️ `shutdownStarted`（已开始）与 `shutdownFinished`（**真做完**）是两件事，别混：
+   * 2026-10-13 探针实测踩过 —— 强制退出的判据原先写成 `!shutdownDone`，而 `shutdownDone` 在**进门那行**
+   * 就置位了 ⇒ 第二次 Ctrl+C 落到"强制退出"的 else 分支上 `exit(0)` 静默走人：不打印、不清理、
+   * 插件留在册里（三轮探针里就这一轮红）。
+   */
+  let shutdownStarted = false;
+  let shutdownFinished = false;
+  const shutdown = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    await session.close();
+    await watcher.close();
+    if (owned !== null) {
+      const un = await runSpc(['plugin', 'uninstall', owned]);
+      if (un.code === 0) {
+        clearDevMarker(dir);
+        console.log(t('cli.dev.watch.autoUninstalled', { ref: owned }));
+      } else {
+        console.log(
+          t('cli.dev.watch.autoUninstallFailed', {
+            ref: owned,
+            text: (un.err.trim() || un.out.trim()).split('\n')[0] ?? '',
+          }),
+        );
+      }
+    }
+    shutdownFinished = true;
+  };
+
+  /**
+   * 收尾**绝不允许静默带走进程**（2026-10-13 真机实测：按一次 Ctrl+C 后进程直接消失、连一句都不打
+   * —— 未捕获的 rejection 就是这种表现）。这里把任何异常变成可读的一行，并把"手动怎么收"说清楚。
+   */
+  const finish = async (): Promise<number> => {
+    try {
+      await shutdown();
+    } catch (e) {
+      console.error(`[spcdev] ${renderThrown(e)}`);
+      if (owned !== null) console.log(t('cli.dev.watch.stalePending', { ref: owned }));
+      return 1;
+    }
+    console.log(t('cli.dev.watch.stopped'));
+    return 0;
+  };
+
+  /**
+   * 第二次信号 = 强制退出：不再等清理（人已经不耐烦了），但**必须把话说清楚** ——
+   * 它装过的那个插件还留在册里，并给出可以照抄的收尾命令。
+   */
+  forceQuit = (): void => {
+    // 清理**还没做完**（注意不是"还没开始"）⇒ 说清楚就撤；已经做完了 ⇒ 直接走
+    if (owned !== null && !shutdownFinished) {
+      console.log(t('cli.dev.watch.forceQuit', { ref: owned }));
+      process.exit(130); // 128 + SIGINT：与守护进程停机那张表同一口径
+    }
+    process.exit(0);
+  };
+
+  await session.start();
+  // 启动期间按过 Ctrl+C（装/建那几秒）⇒ 别进监视循环，直接收尾
+  if (stopping) return await finish();
+  // `--once`：建一次 + 重载一次就收工（CI / 脚本用；**照样走完整的自动安装与卸载**，不留痕迹）
+  if (flags.has('--once')) return await finish();
+  // 等第一次信号放行（信号处理器提前注册，所以"装/建期间按的那一下"也不会丢）
+  await new Promise<void>((ok) => {
+    resolveStop = ok;
+  });
+  return await finish();
+}
+
+/**
+ * `spcdev` 的分发：作者工具全集（**本地**命令）——`watch` 是唯一会碰管理通道的（它替你敲 `spc plugin reload`）。
+ *
+ * `async` 是因为 `keygen` 要**问一句**（作者 ID）、`build` 要 await esbuild、`pack` 要 await zip 写入流、
+ * `watch` 要一直等下去；`io` 只为用例留缝。
+ */
+export const DEV_VERBS = ['keygen', 'new', 'check', 'permission', 'build', 'pack', 'watch', 'dev'] as const;
+
+/**
+ * `spc` 的启动器（`bin/spc.mjs`）——`watch` 自动重载时用它，**路径按本文件位置解析**
+ * （与 `bin/_launch.mjs` 同一个理由：按 cwd 解析在"插件目录被单独 clone 走"时会找不到）。
+ */
+const SPC_LAUNCHER = fileURLToPath(new URL('../bin/spc.mjs', import.meta.url));
 
 export async function runDevCli(cmd: string, args: string[], io: CliIo = {}): Promise<number> {
   try {
@@ -527,9 +832,9 @@ export async function runDevCli(cmd: string, args: string[], io: CliIo = {}): Pr
       case 'pack':
         return await runPack(args, io);
       case 'watch':
-        // ⑦c 的尾巴（`spcdev dev`）还没落地：明确说清楚，而不是给一句"未知命令"
-        console.log(t('cli.dev.notYet', { verb: cmd }));
-        return 1;
+      case 'dev':
+        // `dev` 是别名：设计表里写的动词是 `watch`，§10.7 那张验收链写的是 `dev` —— 两种叫法都收
+        return await runWatch(args);
       default:
         console.log(t('cli.dev.usage'));
         return 1;

@@ -109,27 +109,31 @@ test('permission list：列出冻结表，且与注册表的点数一致', () =>
   assert.equal(fsRead.grant, 'auto', 'self 档缺省推成 auto');
 });
 
-test('spcdev 分发：未落地的动词报"尚未实现"（不是"未知命令"），未知动词给用法', async (t) => {
+test('spcdev 分发：认得的动词都走真实现（不再有"尚未实现"），未知动词给用法', async (t) => {
   const logs: string[] = [];
+  const errs: string[] = [];
   t.mock.method(console, 'log', (...a: unknown[]) => void logs.push(a.map(String).join(' ')));
-  // ⑦c 就剩 `watch`（= `spcdev dev`）没落地：作者不该等一个静默失败的动词
-  assert.equal(await runDevCli('watch', []), 1);
+  t.mock.method(console, 'error', (...a: unknown[]) => void errs.push(a.map(String).join(' ')));
   assert.equal(await runDevCli('nope', []), 1);
   assert.ok(
-    logs.filter((l) => l.includes('尚未实现')).length >= 1,
-    `watch 要报"尚未实现"：${logs.join(' | ')}`,
+    logs.some((l) => l.includes('用法')),
+    `未知动词要给用法：${logs.join(' | ')}`,
   );
-  // 已落地的六个动词能被分发到（keygen 要作者 ID，非交互就得显式给）
+  // 已落地的动词能被分发到（keygen 要作者 ID，非交互就得显式给）
   assert.equal(await runDevCli('keygen', ['--dir', join(TMP, 'devcli-keygen'), '--author', 'std']), 0);
 
-  // `build`（⑦b）/ `pack`（⑦c）自落地起是**真动词**：这里只钉"它们不再走'尚未实现'那条路"（真验收在 build.test.ts / pack.test.ts）
-  for (const verb of ['build', 'pack']) {
-    const before = logs.length;
-    await runDevCli(verb, [join(TMP, `devcli-no-such-plugin-${verb}`)]);
-    assert.ok(
-      !logs.slice(before).some((l) => l.includes('尚未实现')),
-      `${verb} 不该再报"尚未实现"：${logs.slice(before).join(' | ')}`,
-    );
+  // `build` / `pack` / `watch` 都是**真动词**：给一个不存在的目录 ⇒ 报的必须是**那个目录的问题**
+  // （`PLUGIN_DIR_MISSING`），而不是"未知命令"或旧日的"尚未实现"。
+  // ⚠️ `watch` 只在**目录不存在**时才会走到这里 —— 目录真存在时它会一直监视下去（那正是它的用途）。
+  for (const verb of ['build', 'pack', 'watch', 'dev']) {
+    const beforeErr = errs.length;
+    const code = await runDevCli(verb, [join(TMP, `devcli-no-such-plugin-${verb}`)]);
+    const fresh = errs.slice(beforeErr).join(' | ');
+    assert.notEqual(code, 0, `${verb} 对不存在的目录该失败`);
+    // 报的必须是**那个目录/工作区的问题**（各动词先撞到哪一步不同：清单 or `.spcdev`），
+    // 而不是"未知命令"，也不是旧日的"尚未实现"
+    assert.match(fresh, /manifest\.json|工作区|目录/, `${verb} 应当报"这个目录不是插件"：${fresh}`);
+    assert.doesNotMatch(fresh, /尚未实现|未知命令/, `${verb} 不该报未实现/未知命令：${fresh}`);
   }
 });
 

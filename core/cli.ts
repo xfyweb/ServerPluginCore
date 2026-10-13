@@ -304,11 +304,18 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
   const token = await acquireToken();
 
   if (sub === 'list') {
+    const { flags } = parseArgs(args);
     const r = (await httpJson('GET', '/api/plugins', token)) as {
       status: number;
       body: { plugins: PluginView[] };
     };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.status.fail');
+    // `--json`：给**人**看的那一列不是给脚本用的。`spcdev watch` 要判断"装没装、指向哪个目录"，
+    // 读的就是这里（与其它动词的 `--json` 同一条规矩：**机器读的永远是完整值**）。
+    if (flags.has('--json')) {
+      console.log(JSON.stringify({ plugins: r.body.plugins }, null, 2));
+      return;
+    }
     if (r.body.plugins.length === 0) {
       console.log(t('cli.plugin.list.empty'));
       return;

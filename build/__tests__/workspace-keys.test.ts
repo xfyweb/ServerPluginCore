@@ -129,8 +129,28 @@ test('工作区发现：从**子目录**往上找到最近的 .spcdev（近者�
   assert.equal(findWorkspaceDir(deep), ws.dir);
   assert.equal(loadWorkspace(deep).root, ws.root);
 
-  // 插件目录里再放一个 ⇒ 近的那个赢
+  // 插件目录里再放一个 ⇒ 近的那个赢（**前提是它里面有 `config.json`**）
   const inner = join(ws.root, 'plugin', 'some', WORKSPACE_DIRNAME);
   mkdirSync(inner, { recursive: true });
+  writeFileSync(join(inner, 'config.json'), '{}', 'utf8');
+  assert.equal(findWorkspaceDir(deep), inner);
+});
+
+test('工作区发现：**只有 `.spcdev/` 目录不算工作区**（里面得有 config.json）', () => {
+  const ws = workspace('ws-shadow');
+  const deep = join(ws.root, 'plugin', 'demo');
+  const inner = join(deep, WORKSPACE_DIRNAME);
+  mkdirSync(inner, { recursive: true });
+
+  // 复现 2026-10-13 踩到的那个：别的工具往 `.spcdev/` 里放了个文件（当时是我们的开发标记），
+  // 于是"最近的 .spcdev"成了这个**没有 config.json** 的目录 ⇒ 作者 ID 从上层工作区悄悄变成"未声明"，
+  // 同一个插件的下一次构建就报"尚未确定作者 ID"。
+  writeFileSync(join(inner, 'dev-install.json'), '{"ref":"local:default/@std/demo"}', 'utf8');
+  assert.equal(findWorkspaceDir(deep), ws.dir, '没有 config.json ⇒ 继续往上找，别把它当工作区根');
+  assert.equal(loadWorkspace(deep).root, ws.root);
+  assert.equal(loadWorkspace(deep).config.author, ws.config.author, '作者 ID 必须仍来自真正的工作区');
+
+  // 一旦那个 `.spcdev/` 里有了 config.json，它就该赢（近者优先的规矩不变）
+  writeFileSync(join(inner, 'config.json'), JSON.stringify({ author: 'inner' }), 'utf8');
   assert.equal(findWorkspaceDir(deep), inner);
 });
