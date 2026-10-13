@@ -12,8 +12,8 @@
 //   ① 条目 mtime 固定成常量、mode 固定成 0644 ⇒ **同一份载荷打两次包，字节一致**（跨平台也一致）；
 //   ② 条目按路径升序写入。
 // ⚠️ 复核者按 §2.1 只核**载荷**：容器字节变了不影响校验（`build/__tests__/pack.test.ts` 用 yauzl 解回来逐字节比）。
-import { createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, posix, relative, resolve, sep } from 'node:path';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { ZipFile } from 'yazl';
 import { SpcError } from '../core/errors';
 import { AUTHOR_SIG_FILE, META_FILE, sha256Hex, type MetaDoc } from '../core/sources/verify';
@@ -79,6 +79,8 @@ export async function packPlugin(opts: { distDir: string; file: string }): Promi
   }
 
   const file = resolve(opts.file);
+  // 输出目录可能还不存在（默认的 `release/` 第一次打包时就是新建的）⇒ 建出来
+  mkdirSync(dirname(file), { recursive: true });
   const zip = new ZipFile();
   for (const f of files) {
     zip.addFile(f.abs, f.path, { mtime: FIXED_MTIME, mode: FIXED_MODE, compress: true });
@@ -99,8 +101,14 @@ export async function packPlugin(opts: { distDir: string; file: string }): Promi
   return { file, bytes, entries: files.length };
 }
 
-/** 默认输出名：`<插件名>-<版本>.spc`（插件名取 id 里 `/` 之后那段；来源/命名空间不进文件名） */
+/**
+ * 默认输出：`<插件目录>/release/<插件名>-<版本>.spc`。
+ *
+ * 为什么不丢在插件根目录（2026-10-13 维护者手工验收指出"一点不好找"）：根目录已经挤着 `manifest.json` /
+ * `main.ts` / `dist/`（构建产物）/ `.spcdev/`（工具态，含私钥）；发布物再混进去就更难找了。
+ * `release/` 的语义直白：**这里放要发出去的东西**。插件名取 id 里 `/` 之后那段（来源/命名空间不进文件名）。
+ */
 export function defaultPackFile(pluginDir: string, id: string, versionName: string): string {
   const name = id.includes('/') ? id.slice(id.lastIndexOf('/') + 1) : id;
-  return join(pluginDir, `${name}-${versionName}.spc`);
+  return join(pluginDir, 'release', `${name}-${versionName}.spc`);
 }
