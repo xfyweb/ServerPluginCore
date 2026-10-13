@@ -116,12 +116,15 @@ test('CLI plugin list：显示状态而不是"目录里有没有 manifest"', asy
 test('CLI plugin disable / enable：状态机往返，禁用后不再装载', async () => {
   const off = await run(['core/cli.ts', 'plugin', 'disable', '@xfy2412/hello'], env());
   assert.equal(off.code, 0, off.stderr);
-  assert.match(off.stdout, /已禁用：@xfy2412\/hello/);
+  // 回显的是**解析后的完整引用**（不是请求里那个裸 id）：裸 id 唯一匹配没问题，
+  // 但"到底动了哪个来源"要能从输出复核（2026-10-13 手工验收定的）
+  assert.match(off.stdout, /已禁用：local:default\/@xfy2412\/hello/);
   assert.match(off.stdout, /\[disabled\]/);
   assert.match(off.stdout, /已启用=否/);
 
   const on = await run(['core/cli.ts', 'plugin', 'enable', '@xfy2412/hello'], env());
   assert.equal(on.code, 0, on.stderr);
+  assert.match(on.stdout, /已启用：local:default\/@xfy2412\/hello/);
   assert.match(on.stdout, /\[running\]/);
   assert.match(on.stdout, /已启用=是/);
 });
@@ -154,7 +157,7 @@ test('CLI plugin grant/revoke：只接受具体权限点（通配被拒），并
 test('CLI plugin uninstall：内置插件同样可卸载（v2 取消 reserved），记录随之消失', async () => {
   const r = await run(['core/cli.ts', 'plugin', 'uninstall', '@xfy2412/hello'], env());
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /已卸载：@xfy2412\/hello/);
+  assert.match(r.stdout, /已卸载：local:default\/@xfy2412\/hello/);
   const list = await run(['core/cli.ts', 'plugin', 'list'], env());
   assert.doesNotMatch(list.stdout, /@xfy2412\/hello/);
   // 卸载后 status 报 NOT_FOUND（记录真的没了，不是只改了状态）

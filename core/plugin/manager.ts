@@ -900,8 +900,11 @@ export class PluginManager {
   /**
    * 卸载：**托管副本一起删**（`.spc` 装的那种，见 `dropHostedCopy`）；**就地安装的目录永不动**；
    * 数据目录与配置值一律保留（§12-3 倾向）；v2 起没有 reserved 例外。
+   *
+   * 返回**解析后的完整引用**：管理命令允许传裸 id（唯一匹配），但调用方要能把"到底动了哪一个来源"
+   * 打给管理员看 —— 回显他打的字符串是没法复核的（同名插件可能在多个来源下都出现过）。
    */
-  uninstall(input: string): Promise<void> {
+  uninstall(input: string): Promise<{ ref: string }> {
     return this.withLock(async () => {
       const record = this.mustRecord(input);
       const ref = pluginRef(record);
@@ -915,6 +918,7 @@ export class PluginManager {
       dropRecord(file, ref);
       saveRecords(file);
       this.needsReload.delete(ref);
+      return { ref };
     });
   }
 

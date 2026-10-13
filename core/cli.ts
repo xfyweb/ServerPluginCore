@@ -445,10 +445,12 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     if (!id) throw new UsageError(t('cli.plugin.id.required'));
     const r = (await httpJson('POST', `/api/plugins/${idPath(id)}/${sub}`, token)) as {
       status: number;
-      body: { plugin?: PluginView };
+      body: { plugin?: PluginView; ref?: string };
     };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.op.fail');
-    console.log(t(`cli.plugin.${sub}.done`, { id }));
+    // 回显**解析后的完整引用**（不是你打的串）：裸 id 在多源同名时会唯一匹配，但"我到底动了哪一个来源"
+    // 必须能从输出里复核 —— 换源之后同一个 id 在两个来源下都出现过，正是最容易踩的场景（2026-10-13 手工验收）
+    console.log(t(`cli.plugin.${sub}.done`, { id: r.body.plugin?.ref ?? r.body.ref ?? id }));
     if (r.body.plugin) printPlugin(r.body.plugin);
     return;
   }

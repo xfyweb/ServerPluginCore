@@ -291,8 +291,10 @@ const server = createServer(async (req, res) => {
         sendJson(res, 200, { plugin: await manager.reload(pluginId) });
         return;
       }
-      await manager.uninstall(pluginId);
-      sendJson(res, 200, { ok: true, pluginId });
+      // `ref` = **解析后的完整引用**（`pluginId` 是请求里那个串）：管理命令允许传裸 id，
+      // 调用方要能把"到底卸的是哪一个来源"打出来（2026-10-13 手工验收指出回显输入串没法复核）
+      const { ref } = await manager.uninstall(pluginId);
+      sendJson(res, 200, { ok: true, pluginId, ref });
       return;
     }
 
