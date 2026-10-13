@@ -6,7 +6,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { audit, digest, digestParams, flushAudit, initAudit } from './audit';
 import { attachConsole, parseInstallArgs, shouldAttachConsole } from './console';
-import { t } from './i18n';
+import { pluginDetailLines } from './plugin/render';import { t } from './i18n';
 import { toErrorShape } from './errors';
 import { HandshakeServer } from './handshake';
 import { manager } from './plugin/manager';
@@ -431,6 +431,11 @@ server.listen(PORT, '127.0.0.1', async () => {
           );
         },
         stop: () => void shutdown('console'),
+        /**
+         * 单个插件的详情：与 `spc plugin status` **同一份渲染**（`core/plugin/render.ts`）——
+         * 声明 / 已授予 / **未授予**（host 作用域里还差哪些）/ 能力 / 指纹 / 错误，都在这一份里。
+         */
+        show: (ref) => pluginDetailLines(manager.status(ref)),
         /**
          * 插件生命周期：与 `spc plugin …` 走 HTTP 时**最终落到的是同一批 manager 方法**
          * （语义与审计都在 manager 层）—— 这里只是换了个传输，没有第二份实现。

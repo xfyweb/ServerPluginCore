@@ -109,3 +109,19 @@ export function dynamicPointNames(): string[] {
       .map((e) => subscribePointOf(e.ref, e.topic)),
   ];
 }
+
+/**
+ * **声明了、但还没授予的 host 作用域点** —— 管理员问的"还差哪些"。
+ *
+ * ⚠️ 必须在**持有完整点表的那一侧**调用（守护进程）：`exec.template.*` 由**模板注册**在守护进程启动时才进表，
+ * 跨插件点由能力快照派生 —— 客户端进程（`spc`）那本表里没有它们。
+ * 2026-10-13 踩过：这个计算原来写在渲染层（客户端进程），于是真机上"未授予"那一行**永远不出现**，
+ * 而同一条命令的 `grant` 却能成功（授予走的是守护进程里的 `pointSource`）。
+ *
+ * 两个保守之处（都为了不乱报）：`self` 作用域的点**声明即可用**，不算"未授予"；
+ * 两张表都查不到的点**不判**。
+ */
+export function missingHostGrants(declared: readonly string[], granted: readonly string[]): string[] {
+  const have = new Set(granted);
+  return declared.filter((name) => !have.has(name) && pointSource.get(name)?.scope === 'host');
+}

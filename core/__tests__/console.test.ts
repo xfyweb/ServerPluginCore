@@ -83,7 +83,7 @@ function fakeConsole(opts: { pluginThrows?: Error } = {}) {
   const output = new PassThrough();
   let out = '';
   output.on('data', (d: Buffer) => (out += String(d)));
-  const calls = { status: 0, list: 0, stop: 0, plugin: [] as string[] };
+  const calls = { status: 0, list: 0, stop: 0, plugin: [] as string[], show: [] as string[] };
   const rl = attachConsole(
     { input, output },
     {
@@ -102,6 +102,10 @@ function fakeConsole(opts: { pluginThrows?: Error } = {}) {
         calls.plugin.push(`${verb} ${args.join(' ')}`.trim());
         if (opts.pluginThrows) throw opts.pluginThrows;
         return [`${verb} 完成：${args.join(' ')}`];
+      },
+      show: (ref) => {
+        calls.show.push(ref);
+        return [`详情：${ref}`, '  声明：fs.read.data', '  未授予：exec.template.git.version'];
       },
     },
   );
@@ -184,6 +188,20 @@ test('缺参数时打的是该动词的用法（不猜、不执行）', async ()
   assert.deepEqual(c.calls.plugin, [], '缺参数绝不能真去调 manager');
   assert.match(c.out(), /用法：install/);
   assert.match(c.out(), /用法：uninstall/);
+  c.rl.close();
+});
+
+test('show：查单个插件的详情（权限点就在这里看）；缺参数或参数多了都按用法处理', async () => {
+  const c = fakeConsole();
+  await c.type('show @a/b');
+  assert.deepEqual(c.calls.show, ['@a/b']);
+  assert.match(c.out(), /详情：@a\/b/);
+  assert.match(c.out(), /声明：fs\.read\.data/, '"声明"要能看到');
+  assert.match(c.out(), /未授予：exec\.template\.git\.version/, '"未授予"要能看到');
+  await c.type('show');
+  await c.type('show a b');
+  assert.equal(c.calls.show.length, 1, '参数不对绝不真去查');
+  assert.match(c.out(), /用法：show/);
   c.rl.close();
 });
 

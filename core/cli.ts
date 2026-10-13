@@ -10,6 +10,7 @@ import { printAbout } from './about';
 import { renderThrown, t, tError, type RenderableError } from './i18n';
 import { verifyDaemon } from './handshake';
 import { shortFingerprint } from './sources/keys';
+import { pluginDetailLines, pluginExtraLines, pluginHeadline } from './plugin/render';
 import { BRAND } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
@@ -26,25 +27,12 @@ class UsageError extends Error {}
  * ⚠️ 改这里要同步 `core/plugin/manager.ts` 的 `PluginView`。
  * `ref` = **完整引用** `<origin>/<id>`（身份是 `(origin, id)`，同 id 不同来源是两个插件）。
  */
-interface PluginView {
-  ref: string;
-  id: string;
-  origin: string;
-  dir: string;
-  version: { code: number; name: string };
-  type: string;
-  enabled: boolean;
-  state: string;
-  grants: string[];
-  /** 作者公钥指纹（`sha256:…`）；null = 这个包没有作者身份（本地包没带信封） */
-  authorFingerprint: string | null;
-  capabilities: string[];
-  lastError: { code: string; at: number } | null;
-  restartAttempts: number;
-  dataDir: string;
-  configPath: string;
-  reloadRequired: boolean;
-}
+/**
+ * 视图类型**只有一份**（`core/plugin/manager.ts` 那份）。
+ * 以前这里抄了一份镜像声明 —— 给视图加字段时它不会跟着变，于是"赋值不过编译"这种漂移就冒出来了
+ * （2026-10-13 加 `permissions` 时踩到）。type-only 引入在运行期不存在，也不会把守护进程拖进客户端。
+ */
+type PluginView = import('./plugin/manager').PluginView;
 
 /** HTTP 失败 → 优先渲染服务端 detail.code；无 detail 时回退到 CLI 本地文案 */
 function httpFailure(status: number, body: unknown, fallbackKey: string): Error {
@@ -122,29 +110,14 @@ const idPath = (id: string): string => encodeURIComponent(id);
  * 分级：**默认不打** / `status` 打**缩略**（前 8 位，够核对）/ 真做身份决策的地方（换钥、来源锚、keygen）打**全量**；
  * 机器要真值一律走 `--json`（`--json` 路径不经过这里）。
  */
+/**
+ * **列表**用的紧凑渲染：一行摘要 + 附加行。授权面（声明 / 已授 / **未授予**）只在 `status` 里打 ——
+ * 列表里每个插件都铺三行权限，一屏就全是权限了。
+ */
 function printPlugin(p: PluginView, fingerprint: 'none' | 'short' | 'full' = 'none'): void {
-  console.log(
-    t('cli.plugin.line', {
-      // 打**完整引用**（身份是 `(origin, id)`）：同 id 不同来源是两个插件，只打裸 id 分不清是谁，
-      // 而且管理员要复制这个字符串去做后续命令
-      id: p.ref,
-      version: p.version.name,
-      state: p.state,
-      enabled: p.enabled ? t('cli.yes') : t('cli.no'),
-      type: p.type,
-    }),
-  );
+  console.log(pluginHeadline(p));
   if (p.grants.length > 0) console.log(t('cli.plugin.grants', { grants: p.grants.join(', ') }));
-  if (p.authorFingerprint && fingerprint !== 'none') {
-    console.log(
-      t(fingerprint === 'full' ? 'cli.plugin.author' : 'cli.plugin.author.short', {
-        fingerprint: fingerprint === 'full' ? p.authorFingerprint : shortFingerprint(p.authorFingerprint),
-      }),
-    );
-  }
-  if (p.capabilities.length > 0) console.log(t('cli.plugin.caps', { caps: p.capabilities.join(', ') }));
-  if (p.lastError) console.log(t('cli.plugin.lastError', { code: p.lastError.code }));
-  if (p.reloadRequired) console.log(t('cli.plugin.reloadRequired'));
+  for (const line of pluginExtraLines(p, fingerprint)) console.log(line);
 }
 
 /**
@@ -370,7 +343,8 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
   }
 
   if (sub === 'status') {
-    const id = args[0];
+    const { positional, flags } = parseArgs(args);
+    const id = positional[0];
     if (!id) throw new UsageError(t('cli.plugin.id.required'));
     const r = (await httpJson('GET', `/api/plugins/${idPath(id)}`, token)) as {
       status: number;
@@ -378,9 +352,17 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
     };
     if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.plugin.status.fail');
     const p = r.body.plugin;
-    // 详情页给**缩略**指纹：这里够核对（完整值走 --json），不再默认甩 64 位十六进制
-    printPlugin(p, 'short');
-    console.log(t('cli.plugin.detail', { dir: p.dir, dataDir: p.dataDir, config: p.configPath }));
+    // `--json`：`cli.plugin.author.short` 的文案一直承诺"完整值见 spc plugin status --json"，
+    // 而这条分支以前**根本不看 `--json`**（2026-10-13 实测：加了也打人读格式）—— 承诺了就得有。
+    // 规矩同其它动词：机器读的永远是完整值，所以这里给**完整**指纹与全部字段。
+    if (flags.has('--json')) {
+      console.log(JSON.stringify(p, null, 2));
+      return;
+    }
+    // 详情页 = 共享渲染的**详情**（目录 / 声明 / 已授 / **未授予** / 能力 / 指纹 / 错误），
+    // 与控制台 `show` 同一份 —— 两个入口对同一个插件说同样的话。
+    // 指纹给**缩略**：这里够核对（完整值走 --json），不再默认甩 64 位十六进制
+    for (const line of pluginDetailLines(p, 'short')) console.log(line);
     return;
   }
 

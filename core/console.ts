@@ -24,6 +24,8 @@ export type ConsoleCommand =
   | { kind: 'help' }
   | { kind: 'status' }
   | { kind: 'list' }
+  /** 单个插件的详情：show <引用>（只读） */
+  | { kind: 'show'; ref: string }
   | { kind: 'stop' }
   /** 敲的是 `spc …`（管理面命令）：控制台不执行它，但要说清该怎么办 —— 见 `attachConsole` */
   | { kind: 'cli'; raw: string; isStop: boolean }
@@ -102,6 +104,9 @@ export function parseConsoleLine(line: string): ConsoleCommand {
       return rest.length === 0 ? { kind: 'status' } : { kind: 'extra', raw };
     case 'list':
       return rest.length === 0 ? { kind: 'list' } : { kind: 'extra', raw };
+    case 'show':
+      // `show <引用>`：单个插件的详情（只读）。多给参数或漏参数都按用法处理，不猜
+      return rest.length === 1 ? { kind: 'show', ref: rest[0]! } : { kind: 'usage', verb: 'show', need: 'ref' };
     case 'stop':
     case 'exit':
     case 'quit':
@@ -165,6 +170,8 @@ export interface ConsoleHandlers {
    * 返回的行是成功时要打的（一般一行）。
    */
   plugin: (verb: PluginVerb, args: string[]) => Promise<string[]>;
+  /** 单个插件的详情（show <引用>）：与 spc plugin status 同一份渲染 */
+  show: (ref: string) => string[];
 }
 
 /**
@@ -192,6 +199,9 @@ export function attachConsole(
         break;
       case 'list':
         for (const l of handlers.list()) say(l);
+        break;
+      case 'show':
+        for (const l of handlers.show(cmd.ref)) say(l);
         break;
       case 'plugin':
         try {

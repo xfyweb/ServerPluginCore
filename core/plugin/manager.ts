@@ -30,7 +30,7 @@ import type { CallDispatchRequest, CallDispatchResult } from '../hostApi';
 import { isValidGrantPoint } from '../permissions/check';
 import { CALL_POINT_PREFIX, SUBSCRIBE_POINT_PREFIX, callPointOf } from '../permissions/points';
 import { resolveGrant } from '../permissions/registry';
-import { pointSource } from '../permissions/source';
+import { missingHostGrants, pointSource } from '../permissions/source';
 import { findAuthor, loadAuthors, moveAuthor, rememberAuthor } from '../sources/authors';
 import { fingerprintOf } from '../sources/keys';
 import { keyring, type SourceKind } from '../sources/keyring';
@@ -76,6 +76,13 @@ import {
   enabled: boolean;
   state: PluginState;
   grants: string[];
+  /**
+   * **清单里声明的**权限点（需求面，只取名字）。与上面 `grants`（已授予）是两件事：
+   * 管理员要看的正是"它要什么 / 我授了什么 / 还差什么"。
+   */
+  permissions: string[];
+  /** 声明了、但**还没授予**的 host 作用域点（由守护进程算 —— 只有它持有完整的点表） */
+  missingGrants: string[];
   capabilities: string[];
   lastError: PluginErrorRecord | null;
   restartAttempts: number;
@@ -251,8 +258,13 @@ export class PluginManager {
 
   private toView(record: PluginRecord): PluginView {
     let type: PluginType = 'ability';
+    let permissions: string[] = [];
     try {
-      type = readRecordManifest(record).type ?? 'ability';
+      // 顺手把**声明的权限点**一起取出来（本来就要读清单拿 `type`，不多花一次 IO）
+      const manifest = readRecordManifest(record);
+      type = manifest.type ?? 'ability';
+      // 清单里声明的是 `{name, reason?}`（作者写的理由），这里只要名字
+      permissions = (manifest.permissions ?? []).map((p) => p.name);
     } catch {
       // 清单读不出来（被删/改坏）也要能列出来——管理面必须能看到"坏掉的插件"
       type = 'ability';
@@ -266,6 +278,9 @@ export class PluginManager {
       enabled: record.enabled,
       state: record.state,
       grants: [...record.grants],
+      permissions,
+      // 在**这里**算（守护进程持有完整点表）：客户端进程里没有 `exec.template.*` 与跨插件点
+      missingGrants: missingHostGrants(permissions, record.grants),
       capabilities: [...record.capabilities],
       lastError: record.lastError,
       restartAttempts: record.restartAttempts,

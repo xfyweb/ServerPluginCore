@@ -90,7 +90,7 @@ CLI:
 > **退出码**：优雅停完 = `0`；第二次信号 = `130`；停机超时兜底 = `124`；停机自身出错 = `1`。
 > CLI 入口：**`spc daemon stop`**（Windows 上这是唯一优雅的停法：Ctrl+C 只对前台控制台有效、`taskkill` 是硬杀）。
 > **前台控制台**（2026-10-13 加）：在**真终端**里直接跑核心时，stdin 上挂一个控制台：
-> `status` / `list` / `stop`，外加**插件生命周期** —— `install <目录|.spc 文件>` / `uninstall <引用>` /
+> `status` / `list` / **`show <引用>`**（单个插件的详情：声明 / 已授予 / **未授予**的权限点）/ `stop`，外加**插件生命周期** —— `install <目录|.spc 文件>` / `uninstall <引用>` /
 > `reload <引用>` / `enable|disable <引用>`（`stop` 走的就是上面这条 `shutdown()` 路径，reason = `console`）。
 > 它是**唯一不需要信号**的停机方式 —— 绕开"Windows 上 Ctrl+C 要过 cmd / pm2 那几层"。
 >
