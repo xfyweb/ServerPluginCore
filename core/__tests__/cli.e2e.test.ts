@@ -8,7 +8,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -290,6 +290,104 @@ test('CLI 未指定子命令：打印用法', async () => {
   const r = await run(['core/cli.ts'], env());
   assert.equal(r.code, 0);
   assert.match(r.stdout, /用法/);
+});
+
+/**
+ * 造一个**真包**（作者工具链：`spcdev build` → `pack`）并落到临时目录，返回 `.spc` 绝对路径。
+ * ⚠️ 这里在**本进程**里跑构建层（e2e 其余部分都是 spawn 子进程）——构建层只碰自己的临时工作区，
+ * 但抓 `SPC_STATE_DIR` 的模块级常量会被影响 ⇒ 用完把环境还原，别污染文件里其余用例。
+ */
+async function buildPackageFixture(name: string): Promise<string> {
+  const box = mkdtempSync(join(tmpdir(), 'spc-e2e-pkg-'));
+  const saved = { ...process.env };
+  process.env.SPC_STATE_DIR = join(box, 'state');
+  process.env.SPC_AUDIT_DIR = join(box, 'state', 'audit');
+  try {
+    const { runDevCli } = await import('../../build/cli.ts');
+    const { packPlugin } = await import('../../build/pack.ts');
+    const { generateAuthorKey, saveAuthorKey } = await import('../../build/keys.ts');
+    const { ensureWorkspaceConfig, loadWorkspace, patchWorkspaceConfig } = await import('../../build/workspace.ts');
+    const ws = loadWorkspace(box, { create: true });
+    ensureWorkspaceConfig(ws);
+    patchWorkspaceConfig(ws, { author: 'std' });
+    saveAuthorKey(ws, generateAuthorKey());
+    const dir = join(box, 'plugin', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'manifest.json'),
+      JSON.stringify({
+        schema: 2,
+        id: `@std/${name}`,
+        name: `E2E ${name}`,
+        version: { code: 1, name: '0.0.1' },
+        runtime: { type: 'quickjs', esm: true },
+        permissions: [{ name: 'fs.write.data' }],
+      }),
+      'utf8',
+    );
+    writeFileSync(join(dir, 'main.ts'), 'export function init() {}\n', 'utf8');
+    assert.equal(await runDevCli('build', [dir]), 0, '夹具构建应当成功');
+    const packed = await packPlugin({ distDir: join(dir, 'dist'), file: join(dir, `${name}.spc`) });
+    return packed.file;
+  } finally {
+    process.env = saved;
+  }
+}
+
+/**
+ * 数一棵目录树里的文件总数（判断"有没有多出/少掉东西"）
+ */
+function countFiles(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  let n = 0;
+  const walk = (cur: string): void => {
+    for (const name of readdirSync(cur)) {
+      const abs = join(cur, name);
+      if (statSync(abs).isDirectory()) walk(abs);
+      else n += 1;
+    }
+  };
+  walk(dir);
+  return n;
+}
+
+/** 读名册里的插件引用集合（`plugins.json` 是记录的唯一事实源） */
+function readRefs(): string[] {
+  const file = join(STATE, 'plugins.json');
+  if (!existsSync(file)) return [];
+  const doc = JSON.parse(readFileSync(file, 'utf8')) as { plugins: { origin: string; id: string }[] };
+  return doc.plugins.map((p) => `${p.origin}/${p.id}`);
+}
+
+test('CLI plugin install <.spc>：走**托管副本**（解到 STATE_DIR/packages/<来源>/<id 目录名>/），装完即 running', async () => {
+  const spc = await buildPackageFixture('e2e-pkg');
+  const r = await run(['core/cli.ts', 'plugin', 'install', spc, '--source', 'local:default'], env());
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已安装：local:default\/@std\/e2e-pkg/);
+  assert.match(r.stdout, /\[running\]/);
+  // 载荷在**我们的**副本里，不在作者那台机器的目录里（路径段过 sanitize：`local:default` → `local_default`）
+  const hosted = join(STATE, 'packages', 'local_default', 'std__e2e-pkg');
+  assert.match(r.stdout, new RegExp(hosted.replace(/[\\/]/g, '[\\\\/]')));
+  assert.ok(existsSync(join(hosted, 'manifest.json')), '副本里要有清单');
+  assert.ok(existsSync(join(hosted, 'bundle.js')), '副本里要有 bundle');
+
+  // 收尾：把这份夹具插件卸掉，别影响文件里其余用例的记录集合
+  const off = await run(['core/cli.ts', 'plugin', 'uninstall', 'local:default/@std/e2e-pkg', '--yes'], env());
+  assert.equal(off.code, 0, off.stderr);
+});
+
+test('CLI plugin install <.spc>：坏包 ⇒ 非零退出 + 明确错误（不写记录、不留副本）', async () => {
+  const bad = join(mkdtempSync(join(tmpdir(), 'spc-e2e-bad-')), 'bad.spc');
+  writeFileSync(bad, '这不是 zip，只是一段文本\n'.repeat(10), 'utf8');
+  // 数一次文件数：坏包不许**新增**任何东西（别拿某个具体路径判，前面用例留下的副本会干扰）
+  const before = countFiles(join(STATE, 'packages'));
+  const refsBefore = new Set(readRefs());
+  const r = await run(['core/cli.ts', 'plugin', 'install', bad], env());
+  assert.notEqual(r.code, 0);
+  // CLI 渲染的是**本地化文案**（码 + 参数由 daemon 给，边界层翻译）——断言文案，别断言英文码
+  assert.match(r.stderr, /包文件不合法或已损坏：.*bad\.spc/);
+  assert.equal(countFiles(join(STATE, 'packages')), before, '坏包不许留下任何文件');
+  assert.deepEqual(new Set(readRefs()), refsBefore, '坏包不许进名册');
 });
 
 test('daemon 未启动：错误提示清晰（非静默失败）', async () => {

@@ -9,15 +9,17 @@
 //   · `loaded` 内存表 = 活着的沙箱句柄
 //   两者不重复：state 一律写记录，句柄只在内存。
 import { randomBytes } from 'node:crypto';
-import { existsSync, renameSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { cpSync, existsSync, renameSync, rmdirSync, rmSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import type { Manifest, PluginType } from '../../sdk/types';
 import { audit, digest, digestParams } from '../audit';
 import {
   DEFAULT_LOCAL_SOURCE,
   ensureDir,
+  hostedPackageDir,
   isValidSource,
   loadConfig,
+  packagesDir,
   pluginConfigPath,
   pluginDataDir,
   type PluginLimits,
@@ -32,6 +34,7 @@ import { pointSource } from '../permissions/source';
 import { findAuthor, loadAuthors, moveAuthor, rememberAuthor } from '../sources/authors';
 import { fingerprintOf } from '../sources/keys';
 import { keyring, type SourceKind } from '../sources/keyring';
+import { unpackSpc } from '../sources/unpack';
 import { loadLocalEnvelope } from '../sources/verify';
 import { capabilities } from './capabilities';
 import { withBusyRetry } from './call-retry';
@@ -102,6 +105,13 @@ export interface InstallOptions {
    * 管理员确认后带这个开关重来：覆盖名册 + 落一条 `plugin.key-change` 审计。
    */
   acceptKeyChange?: boolean;
+  /**
+   * **内部用**：载荷是"我们的托管副本"（只由 `installPackage` 传 `true`）⇒ 记录里写上 `hosted`
+   * ⇒ **卸载时连副本一起删**（见 `PluginRecord.hosted`）。
+   * ⚠️ CLI / HTTP 面**不暴露**它：是不是托管副本由"从哪条入口装进来"决定，不该让调用方随手声明
+   * （声明错了的后果是删错目录，不可逆）。
+   */
+  hosted?: boolean;
 }
 
 /** 预检计划里的一条"错"（**非空即不能执行**；CLI 直接渲染这些码） */
@@ -131,6 +141,12 @@ export interface ReanchorPlanMove {
   authorFingerprint: string | null;
   dataDir: { from: string; to: string; exists: boolean };
   config: { from: string; to: string; exists: boolean };
+  /**
+   * **托管副本**（`.spc` 装进来的那种，见 `PluginRecord.hosted`）：换了来源 ⇒ 副本也要搬到
+   * `<packages>/<新来源>/<id>/`，`record.dir` 跟着改。
+   * 就地安装（`exists: false`）**不搬** —— 那是作者的目录，它跟着作者走，不跟着来源走。
+   */
+  pkg: { from: string; to: string; exists: boolean };
 }
 
 /**
@@ -520,6 +536,98 @@ export class PluginManager {
   // ---- 管理操作（全部过锁）----
 
   /**
+   * 装入前的公共前奏：读清单 → 读可选信封 → **定归属来源**。
+   *
+   * 抽出来是因为 `.spc` 那条入口（`installPackage`）**在搬副本之前**就得知道来源
+   * —— 托管副本要落到 `<packages>/<来源>/<id 目录名>/`，而来源可能由作者公钥自动落桶决定。
+   * 两条入口共用这一段 ⇒ 不会出现"目录安装按一套规则定来源、包安装按另一套"。
+   */
+  private prepareInstall(
+    dir: string,
+    opts: InstallOptions,
+  ): { manifest: Manifest; authorPub: string | undefined; origin: string } {
+    const manifest = readManifestFromDir(dir);
+    // ① 作者信封（本地路径；有源安装的市场验签流在 P4，见 sources/verify.ts 的 verifyPackage）
+    const envelope = loadLocalEnvelope(dir);
+    if (envelope.kind === 'error') throw new SpcError(envelope.code, envelope.params);
+    const authorPub = envelope.kind === 'ok' ? envelope.authorPub : undefined;
+    // ② 归属来源（v4 ⑥c）：显式给 ⇒ 必须是 keyring 里真有的桶；没给 ⇒ 按包的公钥**自动落进作者的桶**
+    const origin = this.resolveInstallSource(opts.source, authorPub === undefined ? null : fingerprintOf(authorPub));
+    return { manifest, authorPub, origin };
+  }
+
+  /**
+   * 从 `.spc` 装入（`docs/build-layer-design.md` §10.6 的**第二条入口**）：**托管副本**。
+   *
+   * 管线与 `install(dir)` **完全一样**（身份 / 授权 / 审计 / 记录语义都不变），只有**载荷放哪**不同：
+   *   ① 解到 `<STATE_DIR>/packages/.staging/<唯一名>` —— 容器层的全部 fail-closed 判定在解包器里
+   *      （路径形状 / 体积 / 条目数 / 符号链接 / 加密 / 重名，见 `sources/unpack.ts`）；
+   *   ② 按清单 id 与解析出的来源算出托管副本路径；
+   *   ③ 整份搬过去（同卷 `rename`，跨卷退回复制），然后调 `install(托管路径)`。
+   *
+   * 本地 `.spc` ⇒ 仍是**局部语义**（`unanchored`、没有更新渠道）：托管的只是"载荷放哪"，不是"有了来源"。
+   *
+   * ⚠️ **失败要双向清理**：解包失败由解包器清 staging；**装失败这里要删掉托管副本**
+   * —— 孤儿副本最坑：它看起来像个装好的包，但名册里没有它。
+   */
+  async installPackage(file: string, opts: InstallOptions = {}): Promise<PluginView> {
+    const stagingRoot = join(packagesDir(), '.staging');
+    ensureDir(stagingRoot);
+    const staging = join(stagingRoot, `unpack-${Date.now()}-${randomBytes(4).toString('hex')}`);
+    await unpackSpc(file, staging); // 失败时它自己把 staging 删掉
+
+    let dest: string;
+    let origin: string;
+    try {
+      const prepared = this.prepareInstall(staging, opts);
+      origin = prepared.origin;
+      dest = hostedPackageDir(origin, prepared.manifest.id);
+      // 重装 / 升级：托管副本是**我们自己的副本**，整体替换（就地安装则反过来 —— 那是作者的目录，一个字都不许动）
+      rmSync(dest, { recursive: true, force: true });
+      ensureDir(dirname(dest));
+      try {
+        renameSync(staging, dest);
+      } catch {
+        cpSync(staging, dest, { recursive: true });
+        rmSync(staging, { recursive: true, force: true });
+      }
+    } catch (e) {
+      rmSync(staging, { recursive: true, force: true });
+      throw e;
+    }
+
+    try {
+      return await this.install(dest, { ...opts, source: origin, hosted: true });
+    } catch (e) {
+      rmSync(dest, { recursive: true, force: true });
+      throw e;
+    }
+  }
+
+  /**
+   * 卸载时清掉**我们自己的**托管副本（`.spc` 装进来的那种）。
+   *
+   * ⚠️ **两个条件都满足才删**，缺一不删：
+   *   ① 记录标了 `hosted`（就地安装的记录没有这个标）；
+   *   ② `dir` 确实在 `<STATE_DIR>/packages` **之内** —— 纵深防御：哪怕记录被手改过，
+   *      也不能把作者的工作目录当副本删掉（删错目录不可逆）。
+   * 就地安装的目录**永远不碰**；数据目录与配置值也照旧保留（§12-3 的倾向不变，那是另一件事）。
+   */
+  private dropHostedCopy(record: PluginRecord): void {
+    if (record.hosted !== true) return;
+    const root = resolve(packagesDir());
+    const dir = resolve(record.dir);
+    if (!dir.startsWith(root + sep)) return;
+    rmSync(dir, { recursive: true, force: true });
+    // 顺手收掉空掉的 `<来源>/` 目录（非空的留着 —— 同来源下还有别的插件；不存在也无所谓）
+    try {
+      rmdirSync(dirname(dir));
+    } catch {
+      /* 非空 / 不存在：都不是问题 */
+    }
+  }
+
+  /**
    * 安装：读目录 → 校验清单 → 写记录 → （默认）立即装载。
    * **来源（`opts.source`）决定归属**：身份是 `(origin, id)`，同 id 不同源是**两个插件**（各自的目录/配置/授权）；
    * 缺省 `local:default`。本地安装 ⇒ `signedBy`/`verifiedMeta` 为 null（unanchored：没有更新渠道）。
@@ -537,13 +645,8 @@ export class PluginManager {
    */
   install(dir: string, opts: InstallOptions = {}): Promise<PluginView> {
     return this.withLock(async () => {
-      const manifest = readManifestFromDir(dir);
-      // ① 作者信封（本地路径；有源安装的市场验签流在 P4，见 sources/verify.ts 的 verifyPackage）
-      const envelope = loadLocalEnvelope(dir);
-      if (envelope.kind === 'error') throw new SpcError(envelope.code, envelope.params);
-      const authorPub = envelope.kind === 'ok' ? envelope.authorPub : undefined;
-      // ② 归属来源（v4 ⑥c）：显式给 ⇒ 必须是 keyring 里真有的桶；没给 ⇒ 按包的公钥**自动落进作者的桶**
-      const origin = this.resolveInstallSource(opts.source, authorPub === undefined ? null : fingerprintOf(authorPub));
+      // ① 读清单 ② 读可选信封 ③ 定归属来源 —— 与 `.spc` 那条入口共用（见 prepareInstall）
+      const { manifest, authorPub, origin } = this.prepareInstall(dir, opts);
       const file = loadRecords();
       const ref = pluginRef({ origin, id: manifest.id });
       const existing = findRecord(file, ref);
@@ -559,6 +662,7 @@ export class PluginManager {
         grants: opts.grants ?? existing?.grants ?? [],
         signedBy: existing?.signedBy ?? null,
         authorFingerprint,
+        hosted: opts.hosted === true,
       });
       if (opts.grants?.length) {
         // 校验用的是**这次装进来的清单**（声明以新包为准）
@@ -793,14 +897,21 @@ export class PluginManager {
     });
   }
 
-  /** 卸载：数据目录与配置值保留（§12-3 倾向）；v2 起没有 reserved 例外 */
+  /**
+   * 卸载：**托管副本一起删**（`.spc` 装的那种，见 `dropHostedCopy`）；**就地安装的目录永不动**；
+   * 数据目录与配置值一律保留（§12-3 倾向）；v2 起没有 reserved 例外。
+   */
   uninstall(input: string): Promise<void> {
     return this.withLock(async () => {
-      const ref = pluginRef(this.mustRecord(input));
+      const record = this.mustRecord(input);
+      const ref = pluginRef(record);
       const file = loadRecords();
       // 被别的（已启用）插件依赖时不许卸载：先禁用/卸载依赖方
       this.assertNotInUse(ref, 'uninstall');
       await this.stopAndUnload(ref, 'uninstall');
+      // 先删副本、后删记录：删失败（比如文件被占）就整体失败，记录还在 ⇒ 管理员能重试。
+      // 反过来先删记录的话，删副本失败就变成"名册里没有、磁盘上却有"的孤儿。
+      this.dropHostedCopy(record);
       dropRecord(file, ref);
       saveRecords(file);
       this.needsReload.delete(ref);
@@ -1020,6 +1131,12 @@ export class PluginManager {
         errors.push({ code: 'PLUGIN_REANCHOR_CONFLICT', params: { pluginId: from, ref: config.to, reason: 'config-exists' } });
         continue;
       }
+      // 托管副本：只有"我们的副本"才搬（就地安装的 `exists: false` —— 那是作者的目录）
+      const pkgDir = { from: rec.dir, to: hostedPackageDir(targetOrigin, rec.id) };
+      if (rec.hosted === true && existsSync(pkgDir.to)) {
+        errors.push({ code: 'PLUGIN_REANCHOR_CONFLICT', params: { pluginId: from, ref: pkgDir.to, reason: 'package-dir-exists' } });
+        continue;
+      }
       moves.push({
         from,
         fromOrigin: rec.origin,
@@ -1031,6 +1148,7 @@ export class PluginManager {
         authorFingerprint: rec.authorFingerprint,
         dataDir: { ...dataDir, exists: existsSync(dataDir.from) },
         config: { ...config, exists: existsSync(config.from) },
+        pkg: { ...pkgDir, exists: rec.hosted === true && existsSync(pkgDir.from) },
       });
     }
 
@@ -1142,6 +1260,19 @@ export class PluginManager {
             renameSync(m.config.from, m.config.to);
             rollback.push({ from: m.config.from, to: m.config.to });
           }
+          // 托管副本（`.spc` 装的那种）：换了来源 ⇒ 副本也搬到新来源的目录段下（`record.dir` 在 ④ 里跟着改）
+          if (m.pkg.exists) {
+            step = `${m.pkg.from} → ${m.pkg.to}`;
+            ensureDir(dirname(m.pkg.to));
+            renameSync(m.pkg.from, m.pkg.to);
+            rollback.push({ from: m.pkg.from, to: m.pkg.to });
+            // 顺手收掉搬空的旧来源目录（与卸载那条路同一做法：非空/不存在都不管）
+            try {
+              rmdirSync(dirname(m.pkg.from));
+            } catch {
+              /* 非空（同来源下还有别的插件）或不存在：都不是问题 */
+            }
+          }
           moved.push({ from: m.from, to: m.to });
         }
       } catch (err) {
@@ -1178,6 +1309,8 @@ export class PluginManager {
         if (!rec) continue; // 计划刚算出来，这里不该缺
         rec.origin = targetOrigin;
         rec.configPath = m.config.to;
+        // 托管副本搬过位置了 ⇒ `dir` 必须跟着改（不改就是"记录指向一个已经不存在的目录"）
+        if (m.pkg.exists) rec.dir = m.pkg.to;
       }
       saveRecords(file);
 

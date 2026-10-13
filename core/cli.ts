@@ -171,6 +171,8 @@ interface ReanchorPlanView {
     authorFingerprint: string | null;
     dataDir: { from: string; to: string; exists: boolean };
     config: { from: string; to: string; exists: boolean };
+    /** 托管副本（`.spc` 装的那种）也会跟着来源搬；就地安装 `exists: false`（⚠️ 与 manager.ts 的结构副本同步） */
+    pkg: { from: string; to: string; exists: boolean };
   }[];
   grantRewrites: { ref: string; pairs: { from: string; to: string }[] }[];
   needsReload: string[];
@@ -217,6 +219,10 @@ function printReanchorPlan(plan: ReanchorPlanView): void {
       }
       if (m.config.exists) {
         console.log(t('cli.reanchor.move.config', { from: m.config.from, to: m.config.to }));
+      }
+      // 托管副本（`.spc` 装的那种）也会跟着搬：不说清楚，管理员会以为文件还在旧来源目录下
+      if (m.pkg.exists) {
+        console.log(t('cli.reanchor.move.pkg', { from: m.pkg.from, to: m.pkg.to }));
       }
     }
   }
@@ -285,8 +291,8 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
   }
 
   if (sub === 'install') {
-    const dir = args.find((a) => !a.startsWith('--'));
-    if (!dir) throw new Error(t('cli.plugin.install.usage'));
+    const target = args.find((a) => !a.startsWith('--'));
+    if (!target) throw new Error(t('cli.plugin.install.usage'));
     const grants: string[] = [];
     let source: string | undefined;
     let acceptKeyChange = false;
@@ -298,8 +304,11 @@ async function pluginCommand(sub: string | undefined, args: string[]): Promise<v
       // 显式接受换钥：同 `(origin,id)` 的作者公钥与宿主记忆不符时**默认拒装**（fail-closed）
       if (args[i] === '--accept-key-change') acceptKeyChange = true;
     }
+    // 两条入口（`build-layer-design.md` §10.6）：**目录** = 源码就地安装；**`.spc` 文件** = 装进**托管副本**。
+    // 判后缀而不是本地 `statSync`：路径是在 **daemon 那台机器**上解析的（CLI 只把它转过去），本地 stat 不作数。
+    const isPackage = /\.spc$/i.test(target);
     const r = (await httpJson('POST', '/api/plugins/install', token, {
-      dir: resolve(dir),
+      ...(isPackage ? { file: resolve(target) } : { dir: resolve(target) }),
       grants,
       acceptKeyChange,
       ...(source === undefined ? {} : { source }),

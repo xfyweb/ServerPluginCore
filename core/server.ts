@@ -186,27 +186,39 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // POST /api/plugins/install { dir, grants?, start?, source?, acceptKeyChange? }
+    // POST /api/plugins/install { dir | file, grants?, start?, source?, acceptKeyChange? }
+    // `dir` = 源码**就地**安装；`file` = `.spc` 装进**托管副本**（§10.6 的两条入口，同一条管线）
     if (req.method === 'POST' && path === '/api/plugins/install') {
       const body = (await readBody(req)) as {
         dir?: unknown;
+        file?: unknown;
         grants?: unknown;
         start?: unknown;
         source?: unknown;
         acceptKeyChange?: unknown;
       };
-      if (typeof body.dir !== 'string' || body.dir.length === 0) {
-        sendError(res, 400, 'INVALID_ARGS', 'DIR_REQUIRED');
+      const hasDir = typeof body.dir === 'string' && body.dir.length > 0;
+      const hasFile = typeof body.file === 'string' && body.file.length > 0;
+      // 二选一（都给 = 说不清装哪个 ⇒ 拒；都不给 = 没说要装什么 ⇒ 拒）
+      if (hasDir && hasFile) {
+        sendError(res, 400, 'INVALID_ARGS', 'DIR_AND_FILE');
+        return;
+      }
+      if (!hasDir && !hasFile) {
+        sendError(res, 400, 'INVALID_ARGS', 'DIR_OR_FILE_REQUIRED');
         return;
       }
       // `source` 决定**归属**（身份是 `(origin, id)`，同 id 不同来源是两个插件）；缺省 `local:default`
       // `acceptKeyChange` = 管理员**显式接受换钥**（否则同 (origin,id) 换钥一律拒装）
-      const view = await manager.install(body.dir, {
+      const installOpts = {
         grants: asStringArray(body.grants),
         start: body.start !== false,
         acceptKeyChange: body.acceptKeyChange === true,
         ...(typeof body.source === 'string' ? { source: body.source } : {}),
-      });
+      };
+      const view = hasFile
+        ? await manager.installPackage(body.file as string, installOpts)
+        : await manager.install(body.dir as string, installOpts);
       sendJson(res, 200, {
         plugin: view,
         // promote 建议（§3bis）：装完之后"这一组该不该单独成桶"由核心算好，CLI/面板只负责渲染

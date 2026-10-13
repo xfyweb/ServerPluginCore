@@ -75,6 +75,17 @@ export interface PluginRecord {
    */
   authorFingerprint: string | null;
   verifiedMeta: unknown | null;
+  /**
+   * **载荷是"我们的托管副本"还是"作者的目录"**（`build-layer-design.md` §10.6 的两条入口）。
+   *
+   * - `true` = 从 `.spc` 装进来的：`dir` 在 `<STATE_DIR>/packages/<来源>/<id>/`，**是我们的目录**
+   *   ⇒ 卸载时要连副本一起删（记录都没了，副本就是孤儿）；
+   * - 缺省（`undefined`）= 目录**就地**安装：`dir` 是作者的目录（可能是他 clone 的仓库）
+   *   ⇒ **永远不碰**。
+   *
+   * ⚠️ 只在 `true` 时写进记录（不是为了省字节，而是让既有记录保持逐字节不变）。
+   */
+  hosted?: boolean;
 }
 
 export interface PluginsFile {
@@ -232,7 +243,14 @@ export function dropRecord(file: PluginsFile, ref: string): boolean {
 export function newRecord(
   manifest: Manifest,
   dir: string,
-  opts: { source?: string; grants?: string[]; signedBy?: string | null; authorFingerprint?: string | null } = {},
+  opts: {
+    source?: string;
+    grants?: string[];
+    signedBy?: string | null;
+    authorFingerprint?: string | null;
+    /** 载荷是不是"我们的托管副本"（`.spc` 装进来的）⇒ 卸载时连副本一起删，见 `PluginRecord.hosted` */
+    hosted?: boolean;
+  } = {},
 ): PluginRecord {
   // ID 与来源都必须先过 sanitize：它们同时是数据目录/配置文件名，非法的不能写进记录
   sanitizePluginId(manifest.id);
@@ -254,6 +272,8 @@ export function newRecord(
     signedBy: opts.signedBy ?? null,
     authorFingerprint: opts.authorFingerprint ?? null,
     verifiedMeta: null,
+    // 只在托管时写这个字段（就地安装的记录保持与历史记录逐字节一致）
+    ...(opts.hosted === true ? { hosted: true } : {}),
   };
 }
 

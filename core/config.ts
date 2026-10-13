@@ -119,6 +119,24 @@ export function pluginConfigPath(origin: string, id: string): string {
   return join(pluginConfigDir(), sanitizeOrigin(origin), `${sanitizePluginId(id)}.json`);
 }
 
+/**
+ * **托管副本根**：`<STATE_DIR>/packages`。
+ * `.spc` 装出来的包解到这里（`build-layer-design.md` §10.6 的第二条入口）——与"源码就地安装"相对：
+ * 就地安装的 `record.dir` 指向作者的工作目录，托管的指向这里（**我们自己的副本**，作者删了源码也不影响）。
+ */
+export function packagesDir(): string {
+  return join(stateDir(), 'packages');
+}
+
+/**
+ * 某个 `(来源, id)` 的托管副本目录：`<STATE_DIR>/packages/<来源>/<id 目录名>`。
+ * ⚠️ 与 `pluginDataDir` / `pluginConfigPath` 同样**必须过 `sanitizeOrigin` / `sanitizePluginId`**
+ * （来源里可能有 `:`，id 里有 `@` 和 `/`，都是不能直接进目录名的东西）。
+ */
+export function hostedPackageDir(origin: string, id: string): string {
+  return join(packagesDir(), sanitizeOrigin(origin), sanitizePluginId(id));
+}
+
 export function ensureDir(path: string): string {
   mkdirSync(path, { recursive: true });
   return path;
