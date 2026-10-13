@@ -45,6 +45,10 @@
 
 作者 ID 的来源顺序：`--author` > `.spcdev/config.json` 里已有的 > 交互询问（仅 TTY）——**没有 `--id`**。
 
+核心的**前台控制台**（在真终端里直接跑核心时出现的那个 `> `）同一条口径：**只在 stdin 是 TTY 时挂**，
+服务模式（pm2 / systemd / 管道）下不挂、连 stdin 都不碰。命令面刻意只有 `help` / `status` / `list` / `stop`
+（详见 `docs/management-channel.md` 的停机那一节）。
+
 ## 4. 输出通道
 
 - **结果 → stdout**（`console.log`）；**诊断与错误 → stderr**（`console.error`），行首带 `[spc]` / `[spcdev]` 前缀。

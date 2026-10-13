@@ -86,6 +86,11 @@ pnpm spc daemon stop           # 停止核心
 ```
 
 > 停机优先用 `pnpm spc daemon stop`（走 HTTP，跨平台一致）。前台运行时 `Ctrl+C` 走同一条路径，连按两次为强制退出（退出码 130）；停机超时默认 10s，可用 `SPC_SHUTDOWN_TIMEOUT_MS` 覆盖。
+>
+> **前台控制台**：在真终端里直接跑核心时会出现 `> ` 提示符，敲 `help` 看全部命令 ——
+> `status` 看状态 · `list` 列插件 · `install <目录|.spc>` / `uninstall` / `reload` / `enable` / `disable` 管插件 ·
+> **`stop` 停机**（不需要 Ctrl+C）。只在 stdin 是真终端时出现（pm2 / systemd / 管道下没有）；
+> 关掉终端输入只会摘掉控制台，**不会**停掉核心。
 
 **长期运行 / 进程管理器**：用仓库根的 `server.js` —— 它自己加载 TypeScript，而且与守护进程**同进程**（`pm2` / `systemd` 记录到、发信号到的就是守护进程本身，中间不多一层）：
 

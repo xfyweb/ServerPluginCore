@@ -97,6 +97,13 @@ test('server.js：裸 node 能起守护进程、真的开始服务、能停能�
   // 守护进程**自己**打的横幅必须出现在**这个进程**的 stdout 上 —— 这才证明它是同进程加载的，
   // 而不是又 spawn 了一层（夹一层的话，pm2 记录到的 PID 就不是守护进程，信号也会打偏）
   assert.match(out(), /listening/, `server.js 应当是**同进程**加载守护进程（没看到它自己的横幅）：\n${out().slice(0, 1500)}`);
+  // 这条进程的 stdin 是**管道**（不是 TTY）⇒ 前台控制台**不该挂**（`cli-contract.md` §3「非 TTY 不猜」）。
+  // 服务模式（pm2 / systemd / 重定向）下挂上控制台就是事故：stdin 的 EOF 会变成悬案。
+  assert.doesNotMatch(
+    out(),
+    /控制台就绪|Console ready/,
+    `非 TTY 下不该挂控制台（服务模式 stdin 不是终端）：\n${out().slice(0, 1500)}`,
+  );
 });
 
 test(

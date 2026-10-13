@@ -89,6 +89,21 @@ CLI:
 > ③ 落一条 `core.shutdown` 审计（actor = `<core>`）+ flush 审计缓冲，然后退出。
 > **退出码**：优雅停完 = `0`；第二次信号 = `130`；停机超时兜底 = `124`；停机自身出错 = `1`。
 > CLI 入口：**`spc daemon stop`**（Windows 上这是唯一优雅的停法：Ctrl+C 只对前台控制台有效、`taskkill` 是硬杀）。
+> **前台控制台**（2026-10-13 加）：在**真终端**里直接跑核心时，stdin 上挂一个控制台：
+> `status` / `list` / `stop`，外加**插件生命周期** —— `install <目录|.spc 文件>` / `uninstall <引用>` /
+> `reload <引用>` / `enable|disable <引用>`（`stop` 走的就是上面这条 `shutdown()` 路径，reason = `console`）。
+> 它是**唯一不需要信号**的停机方式 —— 绕开"Windows 上 Ctrl+C 要过 cmd / pm2 那几层"。
+>
+> **语法三规矩**：① **扁平**（这里是 `install <目录>`，CLI 是 `spc plugin install <目录>`）；
+> ② 旗标与 `spc` **同名同义**（`--source` / `--grant` / `--accept-key-change`），**不新增** `spc` 里没有的东西；
+> ③ **语义与审计复用 manager** —— 与 CLI 走 HTTP 最终落到的是**同一批方法**（审计写在 manager 层），
+> 所以这里没有第二份实现，只是换了个传输；错误也走 `core/i18n` 同一套渲染。
+> 不认识的旗标、多余的参数一律拒（fail-closed）：`--sorce` 被忽略就会按缺省源装错桶，而"装错桶"在
+> 身份模型（`(origin, id)`）里等于装成了**另一个插件**。
+>
+> ⚠️ **只在 stdin 是 TTY 时挂**（`cli-contract.md` §3「非 TTY 不猜」）：pm2 / systemd / 管道下**连 stdin 都不碰**；
+> stdin 被关闭 = 终端没了 ⇒ **只摘控制台，不停机**。**作者工具不进**（`keygen` / `new` / `build` / `pack`）；
+> **客户端专属不进**（`--json` / 退出码 / `about`）。
 > 超时可用 `SPC_SHUTDOWN_TIMEOUT_MS` 覆盖（默认 10s）。
 
 后续：`/api/plugins/{id}`（enable/disable/install）、面板专用端点（P3）。

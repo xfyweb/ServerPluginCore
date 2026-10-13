@@ -5,6 +5,7 @@
 // 都必须经过这里——CLI 只是 HTTP 客户端，不直接碰 plugins.json。
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { audit, digest, digestParams, flushAudit, initAudit } from './audit';
+import { attachConsole, parseInstallArgs, shouldAttachConsole } from './console';
 import { t } from './i18n';
 import { toErrorShape } from './errors';
 import { HandshakeServer } from './handshake';
@@ -392,6 +393,87 @@ server.listen(PORT, '127.0.0.1', async () => {
   const running = rows.filter((p) => p.state === 'running').length;
   const failed = rows.filter((p) => p.state === 'failed').length;
   console.log(t('daemon.plugins', { total: String(rows.length), running: String(running), failed: String(failed) }));
+
+  /**
+   * **前台控制台**：只在真终端里挂（`shouldAttachConsole` 只认 TTY）——
+   * 服务模式（pm2 / systemd / 管道）下连 stdin 都不碰，免得 EOF 变成悬案。
+   *
+   * 命令刻意的少：`help` / `status` / `list` / `stop`。会改插件状态的动词不进这里（那是管理面 + 审计的职责），
+   * 而 `stop` 走的就是**下面那个 `shutdown()`** —— 与 `spc daemon stop`（reason=`request`）和信号同一条路。
+   */
+  if (shouldAttachConsole(process.stdin)) {
+    attachConsole(
+      { input: process.stdin, output: process.stdout },
+      {
+        status: () => [
+          t('console.status', {
+            version: VERSION,
+            brand: BRAND,
+            pid: String(process.pid),
+            platform: process.platform,
+            uptime: String(Math.round(process.uptime())),
+            total: String(manager.list().length),
+            running: String(manager.runningCount()),
+          }),
+        ],
+        list: () => {
+          const views = manager.list();
+          if (views.length === 0) return [t('console.list.empty')];
+          // 只给"一眼看清"的最小字段；指纹 / 能力 / 授权那些留给 `spc plugin list`
+          // （那是管理面的呈现契约，控制台不复制它）
+          return views.map((p) =>
+            t('console.list.line', {
+              ref: p.ref,
+              version: p.version.name,
+              state: p.state,
+              enabled: p.enabled ? t('console.list.on') : t('console.list.off'),
+            }),
+          );
+        },
+        stop: () => void shutdown('console'),
+        /**
+         * 插件生命周期：与 `spc plugin …` 走 HTTP 时**最终落到的是同一批 manager 方法**
+         * （语义与审计都在 manager 层）—— 这里只是换了个传输，没有第二份实现。
+         */
+        plugin: async (verb, args) => {
+          if (verb === 'install') {
+            const p = parseInstallArgs(args);
+            if (p.bad.length > 0) {
+              return [t('console.flag.unknown', { arg: p.bad.join(' ') }), t('console.usage.install')];
+            }
+            if (p.target === undefined) return [t('console.usage.install')];
+            const opts = {
+              grants: p.grants,
+              start: true,
+              acceptKeyChange: p.acceptKeyChange,
+              ...(p.source === undefined ? {} : { source: p.source }),
+            };
+            // 判后缀而不是 statSync：路径是在**这台机器**上解析的，而 `.spc` = 托管副本、目录 = 就地安装
+            // （两条入口同一条管线，见 `build-layer-design.md` §10.6）—— 与 HTTP 路由同一份判断
+            const view = /\.spc$/i.test(p.target)
+              ? await manager.installPackage(p.target, opts)
+              : await manager.install(p.target, opts);
+            return [t('cli.plugin.installed', { id: view.ref, dir: view.dir })];
+          }
+          const ref = args[0]!;
+          // 其余四个只吃一个引用；多给的一律拒（不猜他要对哪个动手）
+          if (args.length > 1) {
+            return [t('console.flag.unknown', { arg: args.slice(1).join(' ') }), t('console.usage.ref', { verb })];
+          }
+          switch (verb) {
+            case 'uninstall':
+              return [t('cli.plugin.uninstall.done', { id: (await manager.uninstall(ref)).ref })];
+            case 'reload':
+              return [t('cli.plugin.reload.done', { id: (await manager.reload(ref)).ref })];
+            case 'enable':
+              return [t('cli.plugin.enable.done', { id: (await manager.enable(ref)).ref })];
+            case 'disable':
+              return [t('cli.plugin.disable.done', { id: (await manager.disable(ref)).ref })];
+          }
+        },
+      },
+    );
+  }
 });
 
 let shuttingDown = false;
@@ -439,7 +521,7 @@ function exitNow(code: number, why: string): never {
  * **退出码契约**：优雅停完 = `0`；第二次信号（用户催了）= `130`（128+SIGINT 惯例）；
  * 超时 = `124`（timeout 惯例）；停机过程自身出错 = `1`。
  */
-async function shutdown(reason: 'SIGINT' | 'SIGTERM' | 'request'): Promise<void> {
+async function shutdown(reason: 'SIGINT' | 'SIGTERM' | 'request' | 'console'): Promise<void> {
   if (shuttingDown) {
     // 第二次：用户在催（Ctrl+C 连按 / 脚本重发）⇒ 立刻走。
     // 以前这里是 `return`（空转）——那等于"第二次 Ctrl+C 什么也不做"，只剩强杀一条路。
