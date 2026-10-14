@@ -6,7 +6,7 @@
 // 记录内容只含机器可读的码与参数摘要：不落本地化文本（本地化只在 CLI / 面板渲染层）、
 // 不落明文参数（路径等敏感值一律摘要）。控制台提示走 t()（运维可见文本）。
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, openSync, readSync, closeSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { auditDir } from './config';
 import { t } from './i18n';
@@ -152,4 +152,86 @@ export function flushAudit(): number {
 export function digestParams(params?: Record<string, string>): string | undefined {
   if (!params || Object.keys(params).length === 0) return undefined;
   return digest(JSON.stringify(params));
+}
+
+/**
+ * **尾部读**审计：只读文件末尾一段，返回最近的条目（供 `spc audit tail` 那条读面用）。
+ *
+ * 为什么是"尾部读"而不是"整个文件读进来"：审计文件只增不减（本仓库实测能涨到 100 MB+），
+ * 而读面每次请求都吞整个文件的话，一次 `audit tail` 就能把守护进程的内存顶上去。
+ * 这里最多读 `maxBytes`（默认 1 MiB）——**从末尾往前**取；因为是从中间截的，第一行可能是半条
+ * （除非刚好读到文件开头），丢掉它并计进 `skipped`。
+ *
+ * **游标是字节偏移**（`since` 入 / `nextOffset` 出）：审计文件**只追加**，所以偏移是稳定游标
+ * ——`spc audit tail -f` 靠它续读。**不能用时间戳**：同一毫秒可以有多条，按时间戳续读要么漏要么重。
+ * 客户端落后太多（`since` 早于窗口起点）时会从窗口起点读，并置 `truncatedFile = true` 让它说出来。
+ *
+ * 过滤器都是"与"关系；坏行（解析不了）也计 `skipped`，**不让一条坏行把整个读面打哑**。
+ */
+export function readAuditTail(opts: {
+  limit?: number;
+  plugin?: string;
+  method?: string;
+  result?: 'ok' | 'denied' | 'error';
+  maxBytes?: number;
+  /** 续读游标：只读**这个字节偏移之后**的内容（缺省 = 读末尾窗口） */
+  since?: number;
+} = {}): { entries: AuditEntry[]; skipped: number; truncatedFile: boolean; nextOffset: number } {
+  const limit = Math.max(1, opts.limit ?? 50);
+  const maxBytes = Math.max(1024, opts.maxBytes ?? 1024 * 1024);
+  let fd: number | undefined;
+  try {
+    const size = statSync(AUDIT_FILE).size;
+    // 窗口起点：有游标就从游标读（但仍不超过 maxBytes 的窗口），否则读末尾窗口
+    const floor = Math.max(0, size - maxBytes);
+    const start = opts.since === undefined ? floor : Math.max(opts.since, floor);
+    // "丢过东西"= 我们要么没从文件开头读（缺省模式），要么没从客户端要的位置读（游标落后）
+    const truncatedFile = start > (opts.since ?? 0);
+    const len = size - start;
+    if (len <= 0) return { entries: [], skipped: 0, truncatedFile: false, nextOffset: size };
+    const buf = Buffer.allocUnsafe(len);
+    fd = openSync(AUDIT_FILE, 'r');
+    readSync(fd, buf, 0, len, start);
+
+    // 按**字节**切行（不先整体 toString：多字节字符被窗口切断时不会污染其它行）
+    let cursor = 0;
+    let skipped = 0;
+    // ⚠️ 只有当**起点被推后了**（缺省模式的末尾窗口，或客户端游标落后于窗口）时，窗口第一行才是半条。
+    // 客户端给的游标正好落在行边界时，第一行是**完整行** —— 那时丢它就是把数据丢了（2026-10-14 实测踩到：
+    // `since=<上一条之后>` 续读时少给了一条）。
+    const partialFirst = start > (opts.since ?? 0);
+    if (partialFirst) {
+      const firstNl = buf.indexOf(0x0a);
+      if (firstNl === -1) return { entries: [], skipped: 1, truncatedFile, nextOffset: start };
+      cursor = firstNl + 1;
+      skipped += 1;
+    }
+    const picked: AuditEntry[] = [];
+    for (;;) {
+      const nl = buf.indexOf(0x0a, cursor);
+      if (nl === -1) break; // 结尾没有换行 ⇒ 是写了一半的半条，**不消费**（游标停在它之前）
+      const line = buf.subarray(cursor, nl).toString('utf8').trim();
+      cursor = nl + 1;
+      if (line === '') continue;
+      let entry: AuditEntry;
+      try {
+        entry = JSON.parse(line) as AuditEntry;
+      } catch {
+        skipped += 1;
+        continue;
+      }
+      if (opts.plugin !== undefined && (entry.ref ?? entry.pluginId) !== opts.plugin) continue;
+      if (opts.method !== undefined && entry.method !== opts.method) continue;
+      if (opts.result !== undefined && entry.result !== opts.result) continue;
+      picked.push(entry);
+      // 只留最近 limit 条（从头开始丢），与"tail -n"的语义一致
+      if (picked.length > limit) picked.shift();
+    }
+    return { entries: picked, skipped, truncatedFile, nextOffset: start + cursor };
+  } catch {
+    // 文件不存在（还没写过审计）⇒ 空结果，不是错误
+    return { entries: [], skipped: 0, truncatedFile: false, nextOffset: opts.since ?? 0 };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }

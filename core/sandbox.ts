@@ -13,6 +13,7 @@ import { audit as auditRaw, digest, digestParams, type AuditEntry } from './audi
 import { DEFAULT_LIMITS, type PluginLimits } from './config';
 import { buildEnvFacts } from './emulated-env';
 import { SpcError, toErrorShape } from './errors';
+import { hostLogMethod } from './logs';
 import { checkPermission } from './permissions/check';
 import { pointSource } from './permissions/source';
 import {
@@ -318,8 +319,10 @@ export interface SandboxOptions {
   /** 四层限额（缺省用 DEFAULT_LIMITS） */
   limits?: PluginLimits;
   facts?: SandboxFacts;
-  /** 插件日志出口（缺省打宿主 console，带插件前缀） */
+  /** 插件日志出口（缺省打宿主 console，带插件前缀）—— ctx.logger.* 走它 */
   logger?: (level: 'info' | 'warn' | 'error', message: string) => void;
+  /** console.* 的**聚合器**出口（宿主 stdout 那份由沙箱自己打，不带前缀） */
+  onLog?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** 定时器回填桥 */
   bridge?: SandboxBridge;
 }
@@ -551,7 +554,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   const log =
     options.logger ??
     ((level: 'info' | 'warn' | 'error', message: string) => {
-      console[level](`[${options.pluginId}] ${message}`);
+      // `info` 打到 `console.log`（不是 `console.info`）—— 历史行为，也是运维直觉，见 `logs.ts` 的注释
+      console[hostLogMethod(level)](`[${options.pluginId}] ${message}`);
     });
   // 插件数据目录只解析一次：`node:os`/`node:process` 的环境事实、以及 ctx 里的 dataDir 都用它
   // （两处各写一份 `?? process.cwd()` 迟早会漂移）
@@ -935,15 +939,29 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
   vm.setProp(vm.global, '__spcEnv', envHandle);
 
   // 注入最小 console（QuickJS 沙箱默认无 console）
+  // ⚠️ 与 `ctx.logger` **同一个出口**（`options.logger`）：以前这里直接 `console[level](...)` 打到宿主 stdout，
+  // 于是 `console.log` 出来的东西**进不了聚合器**（`spc log` 读不到）、也没有等级 —— 同一个插件的两种写法
+  // 行为不一致是最难查的那种。等级映射：`log`/`info` ⇒ info（console 没有 debug）。
   const consoleObj = scope.manage(vm.newObject());
-  for (const level of ['log', 'error', 'warn', 'info'] as const) {
+  for (const [name, level] of [
+    ['log', 'info'],
+    ['info', 'info'],
+    ['warn', 'warn'],
+    ['error', 'error'],
+  ] as const) {
     const fn = scope.manage(
-      vm.newFunction(`console.${level}`, (...args) => {
-        console[level](...args.map((h) => vm.getString(h)));
+      vm.newFunction(`console.${name}`, (...args) => {
+        const text = args.map((h) => vm.getString(h)).join(' ');
+        // ⚠️ 两条出口是**分开**的（历史行为，别合并）：
+        //   · 宿主 stdout：**不加前缀**（`ctx.logger.*` 才带 `[ref]` 前缀）—— 合并过一次，
+        //     54 条捕获宿主 `console.log` 的真沙箱用例立刻全红（它们按"无前缀"断言，2026-10-14 踩过）；
+        //   · 聚合器：走 `options.onLog`（守护进程注入），`spc log` 读它。
+        console[hostLogMethod(level)](text);
+        options.onLog?.(level, text);
         return vm.undefined;
       }),
     );
-    vm.setProp(consoleObj, level, fn);
+    vm.setProp(consoleObj, name, fn);
   }
   vm.setProp(vm.global, 'console', consoleObj);
 

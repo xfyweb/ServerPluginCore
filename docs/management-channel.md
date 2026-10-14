@@ -78,7 +78,8 @@ CLI:
 | `/api/sources` | GET | 来源（keyring）清单：kind / alias / 启停 / 暂停 / 指纹 / 作者锚 / 已装个数 |
 | `/api/sources/{add,remove,enable,disable,alias,anchor}` | POST | 来源管理（`add` 不带 `pub` ⇒ 远程 TOFU 拉取状态文档；`anchor` 不带 `pub` ⇒ 解绑锚） |
 | `/api/plugins/reanchor[/plan]` | POST | **换源（搬家）**：`/plan` 是只读预检、执行在锁内重算（TOCTOU）；`refs` 走 body（完整引用含 `@` 与 `/`，塞 URL 只会自找编码麻烦） |
-| `/api/audit?tail=N` | GET | 审计日志尾部 |
+| `/api/audit?tail=N` | GET | 审计日志尾部（2026-10-14 落地）。过滤器：`plugin`（**完整引用或裸 id**，与其它管理命令同一套解析）/ `method` / `result`；`tail` 与 `limit` 同义（前者是最早写进契约的名字，**只增不改**）。**尾部读**：最多读文件末尾 1 MiB（审计文件只增不减），从中间截断时的半行丢掉并计进 `skipped`，坏行同样计数 —— 不让一行坏数据把读面打哑。**游标是字节偏移**（入 `since` / 出 `nextOffset`）：审计文件**只追加**，偏移是稳定游标；**不能用时间戳**（同一毫秒可以有多条，续读会漏会重）。`spc audit tail -f` 就是按它每 500ms 轮询（**不引 SSE**：多一条通道就多一处要维护的语义） |
+| `/api/logs?limit=N` | GET | **插件日志**（2026-10-14 落地；内存环形的读面，见 `core/logs.ts`）。过滤器：`plugin`（同上）/ `level`（**至少**该等级）/ `since`（游标，**用 `seq` 不用时间戳** —— 同一毫秒可以有多条）。响应带 `nextSeq` 与 `dropped`（被环形淘汰掉的条数），让调用方说得出"窗口之前有缺口"。`spc log -f` 同样按游标轮询 |
 | `/api/daemon/shutdown` | POST | **优雅停机**（2026-09-23）：先回 200，再异步走完整停机路径 |
 
 > **停机契约**（`POST /api/daemon/shutdown` 与 `SIGINT`/`SIGTERM` 走**同一条**路径，退出码是契约）：

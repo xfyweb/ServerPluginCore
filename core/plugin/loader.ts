@@ -47,6 +47,8 @@ export interface LoadDeps {
   dispatchCall: (req: CallDispatchRequest) => Promise<CallDispatchResult>;
   /** 插件日志出口 */
   logger?: (level: 'info' | 'warn' | 'error', message: string) => void;
+  /** console.* 的聚合器出口（宿主 stdout 那份沙箱自己打，不带前缀） */
+  onLog?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
 /** 一个已装载（init/start 成功）的插件句柄 */
@@ -268,6 +270,7 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
       limits: deps.limits,
       facts: { version: manifest.version, dataDir, manifest, config },
       logger: deps.logger,
+    onLog: deps.onLog,
       bridge,
     },
   );

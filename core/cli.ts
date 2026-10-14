@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { printAbout } from './about';
 import { renderThrown, t, tError, type RenderableError } from './i18n';
+import { auditLine, logLine } from './log-render';
 import { verifyDaemon } from './handshake';
 import { shortFingerprint } from './sources/keys';
 import { pluginDetailLines, pluginExtraLines, pluginHeadline } from './plugin/render';
@@ -33,6 +34,18 @@ class UsageError extends Error {}
  * （2026-10-13 加 `permissions` 时踩到）。type-only 引入在运行期不存在，也不会把守护进程拖进客户端。
  */
 type PluginView = import('./plugin/manager').PluginView;
+type AuditEntry = import('./audit').AuditEntry;
+type LogEntry = import('./logs').LogEntry;
+
+/** `spc audit tail` 的响应形状（与守护进程 `readAuditTail` 的返回一致） */
+type AuditBody = { entries: AuditEntry[]; skipped: number; truncatedFile: boolean; nextOffset: number };
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** 窗口/坏行都要说出来（否则"审计里没有"会被误读成"没发生"） */
+function reportAuditGaps(body: AuditBody): void {
+  if (body.truncatedFile) console.log(t('cli.audit.window', { skipped: String(body.skipped) }));
+  else if (body.skipped > 0) console.log(t('cli.audit.skipped', { skipped: String(body.skipped) }));
+}
 
 /** HTTP 失败 → 优先渲染服务端 detail.code；无 detail 时回退到 CLI 本地文案 */
 function httpFailure(status: number, body: unknown, fallbackKey: string): Error {
@@ -489,12 +502,19 @@ interface SourceView {
  * 为什么要它（而不是 `args.find(a => !a.startsWith('--'))`）：后者会把**旗标的值**当成位置参数
  * —— `add local:std-a --alias "小A"` 里 `小A` 会被当成第二个位置参数。
  */
-function parseArgs(args: string[]): { positional: string[]; flags: Map<string, string> } {
+/**
+ * 解析 `--flag [value]` **与** `-f [value]`。
+ *
+ * ⚠️ 2026-10-14 修：以前只认 `--` 前缀，于是 `-n 5` 掉进 `positional` 被**静默忽略** ——
+ * `spc audit tail -n 5` 会打出默认的 50 条，看着"能用"其实没生效（这类静默忽略最难查）。
+ * 单个 `-` 仍是位置参数（"从 stdin 读"的约定写法），只有 `-x` 这种才算旗标。
+ */
+export function parseArgs(args: string[]): { positional: string[]; flags: Map<string, string> } {
   const positional: string[] = [];
   const flags = new Map<string, string>();
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a.startsWith('--')) {
+    if (a.length > 1 && a.startsWith('-')) {
       const next = args[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
         flags.set(a, next);
@@ -701,6 +721,133 @@ async function main() {
   if (cmd === 'plugin') {
     await pluginCommand(args[0], args.slice(1));
     return;
+  }
+
+  // `spc log`：读插件日志（守护进程里的内存环形，见 `core/logs.ts`）。
+  // `-f` 跟随 = 按 `nextSeq` 游标轮询（不引 SSE：多一条通道就多一处要维护的语义）。
+  if (cmd === 'log') {
+    const { flags } = parseArgs(args);
+    const token = await acquireToken();
+    const follow = flags.has('-f') || flags.has('--follow');
+    const base = new URLSearchParams();
+    const plugin = flags.get('--plugin');
+    const level = flags.get('--level');
+    const limit = flags.get('--limit') ?? flags.get('-n');
+    if (plugin !== undefined) base.set('plugin', plugin);
+    if (level !== undefined) base.set('level', level);
+    if (limit !== undefined) base.set('limit', limit);
+    if (follow) console.log(t('cli.follow.hint'));
+
+    // ⚠️ 跟随轮询**不能带 limit**：`-n` 是"首屏看几条"的意思，带进轮询就会把中间的新条目**静默跳过**
+    // （游标还一路推到队尾 ⇒ 那几条永远看不到）。2026-10-14 真机跟随验收抓到的。
+    const pull = async (since?: number): Promise<{ entries: LogEntry[]; nextSeq: number; dropped: number }> => {
+      const qs = new URLSearchParams(base);
+      if (since !== undefined) {
+        qs.set('since', String(since));
+        qs.delete('limit');
+      }
+      const r = (await httpJson('GET', `/api/logs?${qs.toString()}`, token)) as {
+        status: number;
+        body: { entries: LogEntry[]; nextSeq: number; dropped: number };
+      };
+      if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.log.fail');
+      return r.body;
+    };
+
+    const body = await pull();
+    if (flags.has('--json') && !follow) {
+      console.log(JSON.stringify(body, null, 2));
+      return;
+    }
+    if (body.entries.length === 0 && !follow) {
+      console.log(t('cli.log.empty'));
+      return;
+    }
+    for (const e of body.entries) console.log(logLine(e));
+    // 只看最近的 N 条时，**说清窗口之前有没有缺口** —— 不然"日志里没有"会被误读成"没发生"
+    if (body.dropped > 0) console.log(t('cli.log.dropped', { count: String(body.dropped) }));
+    if (!follow) return;
+
+    let cursor = body.nextSeq;
+    for (;;) {
+      await sleep(500);
+      let next: { entries: LogEntry[]; nextSeq: number };
+      try {
+        next = await pull(cursor);
+      } catch (e) {
+        console.error(`[spc] ${renderThrown(e)}`);
+        console.error(t('cli.follow.lost'));
+        process.exit(1);
+      }
+      cursor = next.nextSeq;
+      for (const e of next.entries) console.log(logLine(e));
+    }
+  }
+
+  // `spc audit tail`：读审计（守护进程做尾部读，见 `core/audit.ts` 的 `readAuditTail`）。
+  // 行的渲染**必须本地化**（`api-contract.md` §8：核心只记机器可读的码，"本地化在 `spc audit tail` / 面板渲染层完成"）。
+  if (cmd === 'audit') {
+    const sub = args[0];
+    if (sub !== 'tail') {
+      console.log(t('cli.audit.usage'));
+      return;
+    }
+    const { flags } = parseArgs(args.slice(1));
+    const token = await acquireToken();
+    const follow = flags.has('-f') || flags.has('--follow');
+    const base = new URLSearchParams();
+    for (const [flag, key] of [
+      ['--plugin', 'plugin'],
+      ['--method', 'method'],
+      ['--result', 'result'],
+    ] as const) {
+      const v = flags.get(flag);
+      if (v !== undefined) base.set(key, v);
+    }
+    const limit = flags.get('--limit') ?? flags.get('-n');
+    if (limit !== undefined) base.set('limit', limit);
+
+    // 同 `spc log`：`-n` 只管首屏，跟随轮询不带 limit（否则中间的新条目会被静默跳过）
+    const pull = async (since?: number): Promise<AuditBody> => {
+      const qs = new URLSearchParams(base);
+      if (since !== undefined) {
+        qs.set('since', String(since));
+        qs.delete('limit');
+      }
+      const r = (await httpJson('GET', `/api/audit?${qs.toString()}`, token)) as { status: number; body: AuditBody };
+      if (r.status !== 200) throw httpFailure(r.status, r.body, 'cli.audit.fail');
+      return r.body;
+    };
+
+    const body = await pull();
+    if (flags.has('--json') && !follow) {
+      console.log(JSON.stringify(body, null, 2));
+      return;
+    }
+    if (body.entries.length === 0 && !follow) {
+      console.log(t('cli.audit.empty'));
+      return;
+    }
+    for (const e of body.entries) console.log(auditLine(e));
+    reportAuditGaps(body);
+    if (!follow) return;
+
+    if (follow) console.log(t('cli.follow.hint'));
+    let cursor = body.nextOffset;
+    for (;;) {
+      await sleep(500);
+      let next: AuditBody;
+      try {
+        next = await pull(cursor);
+      } catch (e) {
+        console.error(`[spc] ${renderThrown(e)}`);
+        console.error(t('cli.follow.lost'));
+        process.exit(1);
+      }
+      cursor = next.nextOffset;
+      for (const e of next.entries) console.log(auditLine(e));
+      reportAuditGaps(next);
+    }
   }
 
   if (cmd === 'source') {

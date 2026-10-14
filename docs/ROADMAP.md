@@ -45,8 +45,8 @@
 | 状态 | 项 |
 |---|---|
 | ✅ 已完成 | core 初始化 + 非 root fail-closed；QuickJS 沙箱宿主（错误桥 + 模块白名单 + dispose 修复）；权限注册表与判定（v3：`scope` + 逐点授予）；审计链路；**exec 模板基线**（模板注册表 + 原生写法匹配 + 参数校验 + env/超时/截断 + 内置 git 模板集）；exec 沙箱设计（声明层）；**P1.5 的装载器与生命周期**（见下） |
-| ⚠️ 部分 | CLI（`about`/`status`/插件全命令面；缺 `audit tail`）；sdk（清单校验器 + 两个手写 `.d.ts`；构建模板缺）；性能 benchmark（**API 往返 ✅ 已测**：`tools/bridge-bench.mjs`，数字见 `docs/module-emulation-design.md` §207；JSON/正则未单独测） |
-| ❌ 待补 | `exec.spawn` 任务模型（P2）；构建流水线（P2）；`audit tail`；事件面本体（P2：**核心不发流程事件、不做强制裁决**，见 `docs/events-and-hooks-design.md` §1）；钩子链（P2 不做，见同文档 §2） |
+| ⚠️ 部分 | CLI（`about`/`status`/插件全命令面/`log`/`audit tail` ✅；维护模式守护进程与级联确认仍缺，见 P2-8）；sdk（清单校验器 + 两个手写 `.d.ts`；构建模板缺）；性能 benchmark（**API 往返 ✅ 已测**：`tools/bridge-bench.mjs`，数字见 `docs/module-emulation-design.md` §207；JSON/正则未单独测） |
+| ❌ 待补 | `exec.spawn` 任务模型（P2-1）；钩子链（P2 不做，见 `docs/events-and-hooks-design.md` §2） |
 
 - `core/` 初始化：Node + TS，入口、配置、非 root fail-closed；
 - **spike 起点**（spike-01 已产出，P1 在其上补齐）：`core/sandbox.ts`（asyncify 沙箱 + 错误桥 + 模块白名单注册表）、`core/hostApi.ts`、`core/audit.ts`、`core/fs/safe-path.ts`、`plugin/hello/`、`patches/` + `scripts/verify-quickjs-patch.mjs`；P1 待补：权限门覆盖、生命周期（init/start/stop）、崩溃/超时处理；
@@ -81,7 +81,13 @@
    **核心不发布流程事件**（`exec.*` / `job.*` / `process.*` / `auth.*` 一律不做——exec/job/process 是插件自己的动作、结果它自己拿得到；`auth.*` 属下面那条）；
    **能力插件之间不做强制裁决**（核心只转发意见，采纳与否由发布方决定）。
    **钩子链**（≈ 协作插件 `hook`：核心在决策点上回调插件、答复进核心决策）**结论保留、P2 不做**，等 hook 轮——那时 `auth.*` 的 SSO 场景才有落点；
-4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）；
+4. **日志聚合器 + 配置中心**：沙箱 console → 聚合（分级/标签/检索，插件仅见自身日志）；配置 = kv 结构化上层（schema 校验 + 热更新）。
+   **前半 ✅ 已落地（2026-10-14）**：`core/logs.ts`（**有界环形**：条数 + 单条长度上限，游标用 `seq` 不用时间戳）
+   + 沙箱 `console.*` 与 `ctx.logger.*` 汇到**同一个出口**（以前 `console` 直接打宿主 stdout、不进聚合器 —— 同一个插件两种写法行为不一致）
+   + `GET /api/logs` 与 `spc log [-n] [--plugin] [--level] [--json]`（**分级** = 至少该等级；**标签** = 插件完整引用；**检索** = 过滤 + 游标续读）。
+   日志**只留内存**（重启即清）：要留痕的是审计，不是日志。**`-f` 实时跟随也做了**（CLI 按游标每 500ms 轮询，不引 SSE）
+   —— 维护者原话"我还以为是像 systemd 那样的实时日志呢"，所以它不该缺。**配置中心未做**；
+   `--follow` 实时跟随与"插件读自己日志"的 API 也留到有需求时（现在插件只能写）。
 5. **模板注册制**：插件在 manifest 声明 `execTemplates`（两方来源：核心内置 / 插件声明；**管理员是审批方，不定义模板**；静态校验 E1–E10，详见 exec-sandbox-design.md）；驱动插件的注册协议见第 10 项；
 6. **官方模块仿真**（docs/module-emulation-design.md，**当前最高优先**）：让插件作者按 Node 原生写法写插件、并可用"只用官方模块"的依赖。
    **原则：语法与行为对齐 Node——Node 是契约宗主**；用对齐测试守住（同一输入喂真 Node 与 shim 比输出），无法对齐的一律**明确报错**，不给近似值。

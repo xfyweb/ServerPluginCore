@@ -9,7 +9,7 @@
 
 | | `spc` | `spcdev` |
 |---|---|---|
-| 是什么 | **管理面**（`status` / `daemon` / `plugin` / `source` …） | **作者工具**（`keygen` / `new` / `check` / `permission list` / `build` / `pack` / `watch`） |
+| 是什么 | **管理面**（`status` / `daemon` / `plugin` / `source` / `log` / `audit tail`，两者都支持 `-f` 跟随 …） | **作者工具**（`keygen` / `new` / `check` / `permission list` / `build` / `pack` / `watch`） |
 | 前提 | 多数动词要 **daemon 在跑** | **全程本地**，不需要 daemon |
 | 版本 | 随核心运行时一起分发（P5 起） | **必须与本仓库同版本** |
 | 入口 | `core/cli.ts`（`bin/spc`） | `core/cli-dev.ts`（`bin/spcdev`） |

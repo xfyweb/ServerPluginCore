@@ -31,6 +31,7 @@ import { isValidGrantPoint } from '../permissions/check';
 import { CALL_POINT_PREFIX, SUBSCRIBE_POINT_PREFIX, callPointOf } from '../permissions/points';
 import { resolveGrant } from '../permissions/registry';
 import { missingHostGrants, pointSource } from '../permissions/source';
+import { hostLogMethod, logs } from '../logs';
 import { findAuthor, loadAuthors, moveAuthor, rememberAuthor } from '../sources/authors';
 import { fingerprintOf } from '../sources/keys';
 import { keyring, type SourceKind } from '../sources/keyring';
@@ -453,7 +454,17 @@ export class PluginManager {
         dependencyStatus: this.dependencyStatus,
         resolveDep: this.resolveDep,
         dispatchCall: this.dispatchCall,
-        logger: (level, message) => console[level](`[${ref}] ${message}`),
+        // 插件日志出口：**打 stdout 照旧**（运维 / pm2 看得到，行为不变）+ **进聚合器**（`spc log` 读它）。
+        // 两件事都要：只打 stdout 就没法查历史，只进聚合器就把现有运维链路打断。
+        // ⚠️ 宿主方法按 `hostLogMethod` 映射：`info` ⇒ `console.log`（**不是** `console.info`）——
+        // 这条改错会让所有"捕获宿主 console.log"的用例静默收不到东西（2026-10-14 踩过）。
+        logger: (level, message) => {
+          // `ctx.logger.*`：**带前缀**（历史行为）+ 进聚合器
+          console[hostLogMethod(level)](`[${ref}] ${message}`);
+          logs.append({ ref, level, text: message });
+        },
+        // `console.*`：宿主 stdout 那份**由沙箱自己打（不带前缀，历史行为）**，这里只负责进聚合器
+        onLog: (level, message) => logs.append({ ref, level, text: message }),
       });
       this.loaded.set(ref, run);
       // 能力清单落记录（撤销依据 + 展示 + 审计追溯）

@@ -4,8 +4,9 @@
 // 记录由 daemon 拥有：所有写操作（install/enable/disable/reload/grant/revoke/uninstall）
 // 都必须经过这里——CLI 只是 HTTP 客户端，不直接碰 plugins.json。
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { audit, digest, digestParams, flushAudit, initAudit } from './audit';
+import { audit, digest, digestParams, flushAudit, initAudit, readAuditTail } from './audit';
 import { attachConsole, parseInstallArgs, shouldAttachConsole } from './console';
+import { asLogLevel, logs } from './logs';
 import { pluginDetailLines } from './plugin/render';import { t } from './i18n';
 import { toErrorShape } from './errors';
 import { HandshakeServer } from './handshake';
@@ -184,6 +185,64 @@ const server = createServer(async (req, res) => {
     // /api/plugins
     if (req.method === 'GET' && path === '/api/plugins') {
       sendJson(res, 200, { plugins: manager.list() });
+      return;
+    }
+
+    /**
+     * GET /api/logs?plugin=&level=&limit=&since= —— 插件日志（内存环形，见 `core/logs.ts`）
+     *
+     * `plugin` 支持**完整引用或裸 id**：解析用 `manager.status()`（与其它管理命令**同一套**解析），
+     * 于是"没有这个插件"与"裸 id 有多义"报的是同一批码，CLI 不必为读面另造一套说法。
+     */
+    if (req.method === 'GET' && path === '/api/logs') {
+      const q = url.searchParams;
+      const ref = q.get('plugin') === null ? undefined : manager.status(q.get('plugin')!).ref;
+      const levelRaw = q.get('level');
+      const level = levelRaw === null ? undefined : asLogLevel(levelRaw);
+      if (levelRaw !== null && level === undefined) {
+        sendError(res, 400, 'INVALID_ARGS', 'LOG_LEVEL_INVALID', { level: levelRaw });
+        return;
+      }
+      const limitRaw = q.get('limit');
+      const sinceRaw = q.get('since');
+      const result = logs.query({
+        ...(ref === undefined ? {} : { ref }),
+        ...(level === undefined ? {} : { level }),
+        ...(limitRaw === null ? {} : { limit: Number(limitRaw) }),
+        ...(sinceRaw === null ? {} : { since: Number(sinceRaw) }),
+      });
+      sendJson(res, 200, { ok: true, ...result });
+      return;
+    }
+
+    /**
+     * GET /api/audit?plugin=&method=&result=&limit= —— 审计**尾部读**（见 `core/audit.ts` 的 `readAuditTail`）
+     *
+     * 为什么由守护进程读文件、而不是让 CLI 自己找状态目录：状态目录是守护进程的事实（`SPC_STATE_DIR`），
+     * 而且"只读末尾一段"这条约束只有一处实现才不会两边不一致。
+     */
+    if (req.method === 'GET' && path === '/api/audit') {
+      const q = url.searchParams;
+      const ref = q.get('plugin') === null ? undefined : manager.status(q.get('plugin')!).ref;
+      const method = q.get('method') ?? undefined;
+      const resultRaw = q.get('result');
+      // `tail` 是最早写在契约里的参数名（`management-channel.md` §4 那行），`limit` 是后来统一的叫法：
+      // **两个都认**（契约只增不改），`tail` 优先。
+      const limitRaw = q.get('tail') ?? q.get('limit');
+      // since = 续读游标（**字节偏移**，spc audit tail -f 用它）：审计文件只追加，偏移是稳定游标
+      const sinceRaw = q.get('since');
+      if (resultRaw !== null && resultRaw !== 'ok' && resultRaw !== 'denied' && resultRaw !== 'error') {
+        sendError(res, 400, 'INVALID_ARGS', 'AUDIT_RESULT_INVALID', { result: resultRaw });
+        return;
+      }
+      const tail = readAuditTail({
+        ...(ref === undefined ? {} : { plugin: ref }),
+        ...(method === undefined ? {} : { method }),
+        ...(resultRaw === null ? {} : { result: resultRaw }),
+        ...(limitRaw === null ? {} : { limit: Number(limitRaw) }),
+        ...(sinceRaw === null ? {} : { since: Number(sinceRaw) }),
+      });
+      sendJson(res, 200, { ok: true, ...tail });
       return;
     }
 
