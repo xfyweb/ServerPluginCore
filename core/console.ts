@@ -12,7 +12,8 @@
 //
 // ⚠️ stdin 关闭（终端没了）**不等于停机**：只把控制台摘掉，守护进程继续跑 —— 免得"关掉一个窗口"
 // 顺手停掉线上的核心。要停就 `stop` / `spc daemon stop` / SIGINT / SIGTERM。
-import { createInterface, type Interface } from 'node:readline';
+import { clearLine, createInterface, cursorTo, type Interface } from 'node:readline';
+import { format } from 'node:util';
 import { enterChannel } from './audit';
 import { renderThrown, t } from './i18n';
 
@@ -186,7 +187,68 @@ export function attachConsole(
   const rl = createInterface({ input: io.input, output: io.output, prompt: '> ', terminal: true });
   let stopping = false;
   let chain: Promise<void> = Promise.resolve(); // 命令**串行**：安装还没完就又敲卸载，顺序必须确定
-  const say = (line: string): void => void io.output.write(`${line}\n`);
+
+  /**
+   * 提示符是否正**在屏幕上等输入**。
+   *
+   * 为什么要这个状态：异步输出（插件日志走**同进程**的 `console.*`，见 sandbox/manager）与提示符共用
+   * 同一个 stdout，而 readline 不知道别人也在写 —— 它写了 `> `，别人的行从光标处接上去，提示符就被吃掉
+   * （2026-10-14 维护者实测："CLI 操作可能导致控制台小箭头被吃"：插件日志刷了几屏，`>` 不见了）。
+   * 做法：**只在提示符在场时**先清行、写完再把提示符补回来（`prompt(true)` 保留已敲了一半的输入）；
+   * 命令进行中（提示符不在屏幕上）就照常直写 —— 否则一次 reload 的十几行日志会各补一个 `> `。
+   */
+  let awaiting = false;
+  // 只有**明确是终端**才写控制序列：管道/文件时 `isTTY` 是 `undefined`（甚至 `false`），
+  // 那种情况下写 `\x1b[2K` 只会污染日志（控制台本来就只挂在 TTY 上，这条是兜底）。
+  const tty = (io.output as { isTTY?: boolean }).isTTY === true;
+
+  /** 清掉当前行并回到行首（把提示符或半截输入挪开，给异步输出让位） */
+  const yieldLine = (): void => {
+    if (!tty) return;
+    clearLine(io.output as never, 0);
+    cursorTo(io.output as never, 0);
+  };
+  let closed = false; // readline 关掉之后**不许再 prompt**（会 ERR_USE_AFTER_CLOSE）
+  const showPrompt = (preserve = false): void => {
+    if (closed) return;
+    awaiting = true;
+    rl.prompt(preserve);
+  };
+  /** 打一行：提示符在场就让位 + 补回来；不在场就直写 */
+  const say = (line: string): void => {
+    const yielded = awaiting && tty;
+    if (yielded) yieldLine();
+    io.output.write(`${line}\n`);
+    if (yielded && !stopping) showPrompt(true);
+  };
+
+  // 让**异步输出**也走同一条路：插件日志用的是 `console[hostLogMethod](…)`（沙箱与 manager 都在调），
+  // 这里就地接管三个方法；控制台摘掉时原样还回去（`restoreConsole()`）。
+  //
+  // ⚠️ **不能调用原函数**（那会写回 `process.stdout`/`stderr`，与控制台的 `io.output` 不是一回事 ——
+  // 生产里恰好是同一个流，但只要输出被换成别的流就会错位，用例也钉不住）。所以显式路由：
+  //   · `console.log`（info 级）⇒ **控制台的输出流**（生产 = stdout）；
+  //   · `console.warn` / `error` ⇒ 仍旧走 **stderr**（pm2 之类的分流别被搅乱）。
+  // 格式与 console 一致（`util.format`），否则插件日志里的 `%s`、对象展开会变样。
+  const originals = { log: console.log, warn: console.warn, error: console.error };
+  const route: Record<'log' | 'warn' | 'error', (text: string) => void> = {
+    log: (text) => void io.output.write(`${text}\n`),
+    warn: (text) => void process.stderr.write(`${text}\n`),
+    error: (text) => void process.stderr.write(`${text}\n`),
+  };
+  for (const method of ['log', 'warn', 'error'] as const) {
+    console[method] = (...args: unknown[]): void => {
+      const yielded = awaiting && tty;
+      if (yielded) yieldLine();
+      route[method](format(...args));
+      if (yielded && !stopping) showPrompt(true);
+    };
+  }
+  const restoreConsole = (): void => {
+    console.log = originals.log;
+    console.warn = originals.warn;
+    console.error = originals.error;
+  };
 
   const run = async (cmd: ConsoleCommand): Promise<void> => {
     switch (cmd.kind) {
@@ -229,13 +291,14 @@ export function attachConsole(
   };
 
   say(t('console.attached'));
-  rl.prompt();
+  showPrompt();
 
   rl.on('line', (line) => {
     if (stopping) return; // 已经在下线了：多敲的几行不再理会（同一次停机只走一遍）
     // 控制台是**进程内**调用（不走 HTTP）：把这一段标成 `console` 通道，
     // 于是里面管理动作的审计带 `via: console` —— "谁在什么时候改的"才分得清是 CLI 还是控制台。
     enterChannel('console');
+    awaiting = false; // 提示符已被这次回车吃掉：命令进行中不必再让位
     const cmd = parseConsoleLine(line);
     if (cmd.kind === 'stop') {
       stopping = true;
@@ -243,11 +306,13 @@ export function attachConsole(
       handlers.stop();
       return; // 停机路径会接管（正常是打日志然后退出），不再打提示符
     }
-    chain = chain.then(() => run(cmd)).then(() => rl.prompt());
+    chain = chain.then(() => run(cmd)).then(() => showPrompt());
   });
 
   // stdin 关闭 = 终端没了：**只摘控制台，不停机**（见文件头）
   rl.on('close', () => {
+    closed = true; // 先立旗：close 处理自己也会 say(...)，那时已经不能再 prompt 了
+    restoreConsole(); // 控制台摘了就别再接管 console.*
     if (!stopping) say(t('console.detached'));
   });
   return rl;

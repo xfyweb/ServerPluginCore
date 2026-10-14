@@ -220,3 +220,98 @@ test('文案键是真的存在且没有 markdown（终端不渲染）', () => {
     assert.doesNotMatch(text, /\*\*|`/, `${key} 不该含 markdown`);
   }
 });
+
+// ---------------- 提示符 vs 异步输出（2026-10-14 的实测 bug） ----------------
+//
+// 维护者原话：「CLI 操作可能导致控制台小箭头被吃」—— 插件日志走的是**同进程**的 `console.*`
+// （沙箱与 manager 都在调），而 readline 不知道别人也在写 stdout：它写了 `> `，别人的行从光标处接上去，
+// 提示符就被冲掉了（功能没坏，只是看不见）。
+//
+// 夹具：直接把假的 output 标成 TTY（真实终端才有 isTTY=true）—— 假流默认不是 TTY，
+// 那种情况**故意**不写控制序列（别污染管道/文件）。
+
+/** 造一个"像终端"的假控制台：output 标 TTY，能拿到原始输出 */
+function ttyConsole() {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  (output as unknown as { isTTY: boolean }).isTTY = true;
+  let out = '';
+  output.on('data', (d: Buffer) => (out += String(d)));
+  const rl = attachConsole(
+    { input, output },
+    {
+      status: () => {
+        // 命令**进行中**打一行（此时提示符不在屏幕上）—— 用来钉"不该乱让位"
+        console.log('命令进行中的输出');
+        return ['核心 0.0.0（假）'];
+      },
+      list: () => [],
+      stop: () => {},
+      plugin: async () => [],
+      show: () => [],
+    },
+  );
+  const type = async (line: string): Promise<void> => {
+    input.write(`${line}\n`);
+    await new Promise((r) => setTimeout(r, 30));
+  };
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 30));
+  return { rl, type, tick, out: () => out };
+}
+
+test('异步输出（插件日志走 console.*）不会吃掉提示符：让位 → 写 → 补回来', async () => {
+  const c = ttyConsole();
+  await c.tick();
+  const before = c.out().length;
+
+  // 模拟"提示符正等着输入时，插件日志来了"
+  console.log('[local:default/@a/b] 插件日志一行');
+  await c.tick();
+
+  const chunk = c.out().slice(before);
+  assert.match(chunk, /\x1b\[2K/, '先清掉提示符那一行（否则日志会接在 "> " 后面）');
+  assert.match(chunk, /\x1b\[1G/, '回到行首');
+  assert.match(chunk, /\[local:default\/@a\/b\] 插件日志一行/, '日志照打');
+  assert.match(chunk, /> $|> \x1b/, '写完要把提示符补回来（维护者看到的就是它不见了）');
+  c.rl.close();
+});
+
+test('命令进行中的输出**不**乱让位：插件连刷十几行也不会各补一个提示符', async () => {
+  const c = ttyConsole();
+  await c.tick();
+  await c.type('status'); // handler 里会 console.log 一行（此时提示符不在屏幕上）
+  const text = c.out();
+  assert.match(text, /命令进行中的输出/);
+  assert.ok(
+    !text.includes('\x1b[2K'),
+    `命令进行中不该出现"清行"控制序列（否则一次 reload 的十几行日志会刷出十几个提示符）：${JSON.stringify(text)}`,
+  );
+  c.rl.close();
+});
+
+test('非终端的输出不写控制序列（管道/文件别被污染）', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough(); // 故意不设 isTTY
+  let out = '';
+  output.on('data', (d: Buffer) => (out += String(d)));
+  const rl = attachConsole(
+    { input, output },
+    { status: () => [], list: () => [], stop: () => {}, plugin: async () => [], show: () => [] },
+  );
+  await new Promise((r) => setTimeout(r, 30));
+  console.log('这行不该带控制序列');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.match(out, /这行不该带控制序列/);
+  assert.ok(!out.includes('\x1b[2K'), '非 TTY 不写清行序列');
+  rl.close();
+});
+
+test('控制台摘掉之后，console.* 原样还回去（不再被接管）', async () => {
+  const c = ttyConsole();
+  await c.tick();
+  c.rl.close();
+  await c.tick();
+  const before = console.log;
+  console.log('摘掉之后的一行');
+  assert.equal(console.log, before, 'console.log 应当已经还原成原函数');
+});
