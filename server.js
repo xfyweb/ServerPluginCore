@@ -13,4 +13,20 @@
 // `SPC_SHUTDOWN_TIMEOUT_MS`。停机：`spc daemon stop`，或给本进程发 SIGINT / SIGTERM（两个都接）。
 import { tsImport } from 'tsx/esm/api';
 
+const { parseLaunchArgs, renderLaunchHelp } = await tsImport('./core/launch-args.ts', import.meta.url);
+
+// 参数面（旗标 / 环境变量 / 默认值）的**唯一真相**在 `core/launch-args.ts`：这里是它的调用方，
+// 不再自己维护一份说明。认识的旗标翻译成环境变量（核心侧只认环境变量），`--maintenance` 原样留在 argv。
+const parsed = parseLaunchArgs(process.argv.slice(2));
+if (parsed.help === true) {
+  console.log(renderLaunchHelp());
+  process.exit(0);
+}
+if (!parsed.ok) {
+  console.error("未知参数：" + parsed.bad.join(" "));
+  console.error(renderLaunchHelp());
+  process.exit(1);
+}
+Object.assign(process.env, parsed.env);
+
 await tsImport('./core/server.ts', import.meta.url);
