@@ -396,7 +396,7 @@
   "err.RECORDS_INVALID": "Invalid install records; refusing to start: {file} ({reason})",
 
   "err.PLUGIN_NOT_FOUND": "Plugin not found: {pluginId}",
-  "err.PLUGIN_REF_AMBIGUOUS": "Ambiguous plugin reference: {input} matches several sources ({refs}) — use the full reference <origin>/<plugin id>",
+  "err.PLUGIN_REF_AMBIGUOUS": "Ambiguous plugin reference: {input} matches several plugins ({refs}) — be more specific: @author/name, or the full reference <origin>/@author/name",
   "err.PLUGIN_SOURCE_INVALID": "Invalid source: {origin} (expected local:<name> or a market domain)",
   "err.PLUGIN_AUTHOR_MISMATCH": "Author key does not match the recorded one: {pluginId} (expected {expected}, got {actual}); if this is the same author pass --accept-key-change, or install from a different source (--source)",
   "err.PLUGIN_DIR_MISSING": "Plugin directory does not exist: {dir}",

@@ -1,4 +1,4 @@
-// 审计结构 v2：**谁做的 / 关于谁** 的用例（`_audit/docs/plans/audit-redesign.md` §三、§五）。
+// 审计结构 v2：**谁做的 / 关于谁** 的用例（结构与拍板理由见 `docs/api-contract.md` §8）。
 //
 // 判据（都是 2026-10-14 那次改结构要治的病）：
 //   ① 管理动作（install / uninstall / enable / disable / reload）**必须有条目** —— 以前一条都不落，

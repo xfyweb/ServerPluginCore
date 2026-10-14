@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import type { Manifest } from '../../sdk/types';
-import { PLUGIN_ID_RE } from '../../sdk/ids';
+import { ID_SEGMENT_RE, PLUGIN_ID_RE } from '../../sdk/ids';
 import { DEFAULT_LOCAL_SOURCE, ensureDir, isValidSource, pluginConfigPath, pluginsFile, sanitizeOrigin, sanitizePluginId } from '../config';
 import { SpcError } from '../errors';
 
@@ -207,19 +207,54 @@ export function findRecord(file: PluginsFile, ref: string): PluginRecord | undef
 }
 
 /**
- * **管理面输入 → 记录**：先按完整引用精确匹配；否则把它当**裸 id**（以 `@` 开头）做唯一匹配。
+ * **管理面输入 → 记录**（通用解析器）：一路允许省到"**只要没有歧义**"为止。
  *
- * 为什么容错裸 id：管理命令（`spc plugin status @a/b`）手打完整引用太啰嗦，而绝大多数机器上
- * 同一个 id 只有一个来源。但**歧义必须报错，不能随便挑一个**——"挑错了"就是在动另一个插件的数据。
- * 跨插件引用（调用目标 / topic / 依赖声明 / 权限点名）**一律用完整引用**，不走这条容错。
+ *   ① **完整引用** `<来源>/<插件 id>`（记录的唯一键）—— 精确匹配，最具体；
+ *   ② **裸 id** `@作者/名字` —— 跨来源唯一匹配；
+ *   ③ **裸名字**（id 里 `/` 之后那半）—— 跨作者与来源唯一匹配，最省。
+ *
+ * 每一级都要求**形状合法**（形状的唯一定义在 `sdk/ids.ts`）并且**必须唯一**：不唯一就抛
+ * `PLUGIN_REF_AMBIGUOUS`（带候选与 `form`），**绝不挑一个** —— 挑错就是在动另一个插件的数据。
+ *
+ * 为什么要有 ③（2026-10-14 维护者提）：机器上常常只有一个 `counter`，为了停用它却得打全
+ * `@xfy2412/counter`，而"来源"早就可以省了 —— 那"作者"在没有歧义时也该能省。
+ *
+ * ⚠️ 只认**标识符**，**不认** manifest 里的展示名（`name` 字段可以重名、可以带空格与中文）。
+ * ⚠️ 跨插件引用（调用目标 / topic / 依赖声明 / 权限点名）**一律用完整引用**，不走这条容错 ——
+ * 那些是"写进别人清单里的名字"，省一点就会在换源/改作者时静默指错地方。
  */
 export function resolveRecord(file: PluginsFile, input: string): PluginRecord | undefined {
-  const exact = findRecord(file, input);
+  const raw = input.trim();
+  // ① 完整引用（记录的唯一键）
+  const exact = findRecord(file, raw);
   if (exact) return exact;
-  if (!input.startsWith('@')) return undefined; // 不像裸 id ⇒ 就是没有
-  const hits = file.plugins.filter((p) => p.id === input);
+  // ② 裸 id `@作者/名字`：跨来源唯一
+  if (PLUGIN_ID_RE.test(raw)) {
+    return uniqueOrThrow(
+      file.plugins.filter((p) => p.id === raw),
+      raw,
+      'id',
+    );
+  }
+  // ③ 裸名字：跨作者与来源唯一
+  if (ID_SEGMENT_RE.test(raw)) {
+    return uniqueOrThrow(
+      file.plugins.filter((p) => p.id.slice(p.id.indexOf('/') + 1) === raw),
+      raw,
+      'name',
+    );
+  }
+  return undefined; // 长得就不像引用 / id / 名字 ⇒ 就是没有
+}
+
+/** 命中必须唯一；多个就报错（`form` 让渲染层说清"该写得更具体成什么样"） */
+function uniqueOrThrow(hits: PluginRecord[], input: string, form: 'id' | 'name'): PluginRecord | undefined {
   if (hits.length > 1) {
-    throw new SpcError('PLUGIN_REF_AMBIGUOUS', { input, refs: hits.map(pluginRef).join('、') });
+    throw new SpcError('PLUGIN_REF_AMBIGUOUS', {
+      input,
+      refs: hits.map(pluginRef).join('、'),
+      form,
+    });
   }
   return hits[0];
 }

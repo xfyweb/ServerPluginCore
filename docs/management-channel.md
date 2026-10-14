@@ -107,6 +107,9 @@ CLI:
 > **客户端专属不进**（`--json` / 退出码 / `about`）。
 > 超时可用 `SPC_SHUTDOWN_TIMEOUT_MS` 覆盖（默认 10s）。
 
+插件的 `plugin` 参数是**引用**：完整引用 / 裸 `@作者/名字` / 裸名字都能用（**只要没有歧义**；不唯一报 409 的
+`PLUGIN_REF_AMBIGUOUS`，见 api-contract.md「引用的缩写阶梯」）。
+
 后续：`/api/plugins/{id}`（enable/disable/install）、面板专用端点（P3）。
 
 ### 4.1 响应与错误（全英文码，无本地化文本）

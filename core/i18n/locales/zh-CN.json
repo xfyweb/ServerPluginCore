@@ -35,7 +35,7 @@
   "cli.plugin.reload.done": "已重载：{id}",
   "cli.plugin.uninstall.done": "已卸载：{id}",
   "cli.plugin.usage": "用法：spc plugin list | install <目录> | enable|disable|reload|uninstall <ID> | status <ID> | grant|revoke <ID> <权限点>... | reanchor <引用...> --origin <新来源>",
-  "cli.reanchor.usage": "用法：spc plugin reanchor <完整引用...> --origin <新来源> [--yes]（先打印预检计划，确认后才执行）",
+  "cli.reanchor.usage": "用法：spc plugin reanchor <插件...> --origin <新来源> [--yes]（插件引用可省到唯一即可；先打印预检计划，确认后才执行）",
   "cli.reanchor.target": "目标来源：{origin} · {kind} · {alias} · 已启用={enabled}",
   "cli.reanchor.target.unknown": "目标来源：{origin} · 未知来源（本机无此来源，可用来源见下）",
   "cli.reanchor.knownOrigins": "  本机来源：{origins}",
@@ -396,7 +396,7 @@
   "err.RECORDS_INVALID": "安装记录非法，拒绝启动：{file}（{reason}）",
 
   "err.PLUGIN_NOT_FOUND": "插件不存在：{pluginId}",
-  "err.PLUGIN_REF_AMBIGUOUS": "插件引用有歧义：{input} 匹配到多个来源（{refs}）；请写完整引用 <来源>/<插件 id>",
+  "err.PLUGIN_REF_AMBIGUOUS": "插件引用有歧义：{input} 匹配到多个插件（{refs}）；请写更具体的引用：@作者/名字，或完整引用 <来源>/@作者/名字",
   "err.PLUGIN_SOURCE_INVALID": "来源非法：{origin}（应为 local:<名字> 或市场域名）",
   "err.PLUGIN_AUTHOR_MISMATCH": "作者公钥与记录不符：{pluginId}（期望 {expected}，实际 {actual}）；确认是同一作者请加 --accept-key-change，或改用其他来源（--source）",
   "err.PLUGIN_DIR_MISSING": "插件目录不存在：{dir}",
