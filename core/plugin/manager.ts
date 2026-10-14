@@ -964,15 +964,22 @@ export class PluginManager {
     });
   }
 
-  enable(input: string): Promise<PluginView> {
+  /**
+   * 启用。`load` 默认 true（顺带装载）。
+   *
+   * `{ load: false }` 是**维护模式**（`--maintenance`）用的形态：那时不该有任何插件在跑，
+   * 装载就自毁前提 ⇒ 只改记录，并在审计里标 `mode: 'maintenance'`（"改了记录但没跑"必须看得见）。
+   */
+  enable(input: string, opts: { load?: boolean } = {}): Promise<PluginView> {
   const via = currentChannel();
+  const load = opts.load !== false;
   return this.withLock(async () => {
       const ref = pluginRef(this.mustRecord(input));
       const record = this.patchRecord(ref, { enabled: true, state: 'installed', lastError: null });
-      if (!this.loaded.has(ref)) {
+      if (load && !this.loaded.has(ref)) {
         await this.loadAndStart(record);
       }
-      this.auditAdmin('plugin.enable', ref, undefined, undefined, via);
+      this.auditAdmin('plugin.enable', ref, load ? undefined : { mode: 'maintenance' }, undefined, via);
       return this.status(ref);
     });
   }

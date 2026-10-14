@@ -18,8 +18,20 @@ import { enterChannel } from './audit';
 import { renderThrown, t } from './i18n';
 
 /** 控制台能管的插件生命周期动词（与 `spc plugin <verb>` 一一对应） */
-export type PluginVerb = 'install' | 'uninstall' | 'reload' | 'enable' | 'disable';
-const PLUGIN_VERBS: readonly PluginVerb[] = ['install', 'uninstall', 'reload', 'enable', 'disable'];
+export type PluginVerb =
+  | 'install'
+  | 'uninstall'
+  | 'reload'
+  | 'enable'
+  | 'disable'
+  /** 授权变更（维护模式里 CLI 不参与 ⇒ 控制台必须能做，2026-10-14 定） */
+  | 'grant'
+  | 'revoke';
+const PLUGIN_VERBS: readonly PluginVerb[] = ['install', 'uninstall', 'reload', 'enable', 'disable', 'grant', 'revoke'];
+
+/** 源管理（维护模式里 CLI 不参与 ⇒ 控制台也要能做；`log` / `audit tail` 明确不进控制台） */
+export type SourceVerb = 'list' | 'add' | 'remove' | 'enable' | 'disable' | 'alias' | 'anchor';
+const SOURCE_VERBS: readonly SourceVerb[] = ['list', 'add', 'remove', 'enable', 'disable', 'alias', 'anchor'];
 
 export type ConsoleCommand =
   | { kind: 'empty' }
@@ -33,7 +45,9 @@ export type ConsoleCommand =
   | { kind: 'cli'; raw: string; isStop: boolean }
   /** 插件生命周期：`verb` + 原始参数（旗标解析交给 handler 那边的同一套语义） */
   | { kind: 'plugin'; verb: PluginVerb; args: string[] }
-  | { kind: 'usage'; verb: string; need: 'target' | 'ref' }
+  /** 源管理：`source <verb> …`（与 `spc source` 同名同义） */
+  | { kind: 'source'; verb: SourceVerb; args: string[] }
+  | { kind: 'usage'; verb: string; need: 'target' | 'ref' | 'ref-points' | 'source' }
   /** 不接受参数的命令却带了参数：明说，**不静默忽略**（`stop now` 不该被当成 `stop`） */
   | { kind: 'extra'; raw: string }
   | { kind: 'unknown'; raw: string };
@@ -95,9 +109,20 @@ export function parseConsoleLine(line: string): ConsoleCommand {
 
   if (PLUGIN_VERBS.includes(head as PluginVerb)) {
     const verb = head as PluginVerb;
-    // `install` 要一个目标（目录或 `.spc`）；其余四个要一个插件引用 —— 缺了就报该动词的用法，别猜
+    // `install` 要一个目标（目录或 `.spc`）；`grant`/`revoke` 要「引用 + 至少一个权限点」；
+    // 其余要一个引用 —— 缺了就报该动词的用法，别猜
     if (rest.length === 0) return { kind: 'usage', verb, need: verb === 'install' ? 'target' : 'ref' };
+    if ((verb === 'grant' || verb === 'revoke') && rest.length < 2) {
+      return { kind: 'usage', verb, need: 'ref-points' };
+    }
     return { kind: 'plugin', verb, args: rest };
+  }
+  if (head === 'source') {
+    const verb = (rest[0] ?? '').toLowerCase();
+    // 不给子命令 / 不认识 ⇒ 报用法（与 `spc source` 一样，**不猜**）
+    if (!SOURCE_VERBS.includes(verb as SourceVerb)) return { kind: 'usage', verb: 'source', need: 'source' };
+    if (verb !== 'list' && rest.length < 2) return { kind: 'usage', verb: 'source', need: 'source' };
+    return { kind: 'source', verb: verb as SourceVerb, args: rest.slice(1) };
   }
   switch (head) {
     case 'help':
@@ -174,6 +199,8 @@ export interface ConsoleHandlers {
   plugin: (verb: PluginVerb, args: string[]) => Promise<string[]>;
   /** 单个插件的详情（show <引用>）：与 spc plugin status 同一份渲染 */
   show: (ref: string) => string[];
+  /** 源管理：调用方注入（抛错即失败） */
+  source: (verb: SourceVerb, args: string[]) => Promise<string[]>;
 }
 
 /**
@@ -266,6 +293,13 @@ export function attachConsole(
       case 'show':
         for (const l of handlers.show(cmd.ref)) say(l);
         break;
+      case 'source':
+        try {
+          for (const l of await handlers.source(cmd.verb, cmd.args)) say(l);
+        } catch (e) {
+          say(renderThrown(e));
+        }
+        break;
       case 'plugin':
         try {
           for (const l of await handlers.plugin(cmd.verb, cmd.args)) say(l);
@@ -274,9 +308,19 @@ export function attachConsole(
           say(renderThrown(e));
         }
         break;
-      case 'usage':
-        say(t(cmd.need === 'target' ? 'console.usage.install' : 'console.usage.ref', { verb: cmd.verb }));
+      case 'usage': {
+        // `grant`/`revoke` 的用法与 `spc plugin grant` **同一句**（学一套就够，控制台不另造说法）
+        const key =
+          cmd.need === 'target'
+            ? 'console.usage.install'
+            : cmd.need === 'ref-points'
+              ? 'cli.plugin.grant.usage'
+              : cmd.need === 'source'
+                ? 'console.usage.source'
+                : 'console.usage.ref';
+        say(t(key, { verb: cmd.verb }));
         break;
+      }
       case 'extra':
         say(t('console.noargs', { line: cmd.raw }));
         break;

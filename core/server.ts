@@ -17,9 +17,11 @@ import {
     type AuditActorKind,
     type AuditVia,
   } from './audit';
-import { attachConsole, parseInstallArgs, shouldAttachConsole } from './console';
+import { attachConsole, shouldAttachConsole } from './console';
+import { buildConsoleHandlers } from './console-handlers';
+import { acquireLifecycleLock, releaseLifecycleLock } from './lifecycle-lock';
 import { asLogLevel, logs } from './logs';
-import { pluginDetailLines } from './plugin/render';import { t } from './i18n';
+import { t } from './i18n';
 import { toErrorShape } from './errors';
 import { HandshakeServer } from './handshake';
 import { manager } from './plugin/manager';
@@ -45,6 +47,36 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
 // 审计链路启动探测（写不了就退出）：**必须早于任何插件装载**，
 // 否则插件调用会写进内存缓冲，运维以为审计正常、实际读不到。
 initAudit();
+
+/** 维护模式开关：见文件尾那段 */
+const MAINTENANCE = process.argv.includes('--maintenance');
+
+/**
+ * **启动锁**（正常形态与维护模式共用一把）：同一状态目录只许一个核心进程。
+ * 维护模式不绑端口 ⇒ 没有它就可能与正在运行的 daemon 并存，两个进程同写记录/密钥/审计。
+ */
+const LOCK = acquireLifecycleLock(MAINTENANCE ? 'maintenance' : 'normal');
+if (!LOCK.ok) {
+  const h = LOCK.holder;
+  console.error(t('daemon.lock.held', {
+    pid: String(h?.pid ?? '?'),
+    mode: h?.mode ?? '?',
+    started: h ? new Date(h.startedAt).toISOString() : '?',
+  }));
+  process.exit(1);
+}
+if (LOCK.tookOver) {
+  console.log(t('daemon.lock.took_over', { path: LOCK.path }));
+  audit({
+    ts: Date.now(),
+    actor: coreActor(),
+    method: 'core.start',
+    paramsDigest: digestParams({ mode: LOCK.info.mode }) ?? digest('start'),
+    result: 'ok',
+    detail: { tookOverStaleLock: 'true' },
+    timing: { ms: 0 },
+  });
+}
 // 跨日换文件 + 打包昨天的审计（整夜空闲的守护进程也得换，所以不能只靠写路径的惰性检查）
 scheduleAuditMidnight();
 
@@ -457,7 +489,15 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', async () => {
+// 端口被占 / 其它监听错误：明确文案 + 退出码，而不是把未捕获异常甩给用户
+server.on('error', (err: NodeJS.ErrnoException) => {
+  const key = err.code === 'EADDRINUSE' ? 'daemon.port.in_use' : 'daemon.listen.fail';
+  console.error(t(key, { port: String(PORT), code: err.code ?? 'INTERNAL', message: err.message }));
+  releaseLifecycleLock();
+  process.exit(1);
+});
+
+if (!MAINTENANCE) server.listen(PORT, '127.0.0.1', async () => {
   console.log(`[daemon] ${BRAND}`);
   console.log(t('daemon.listen', { port: PORT, pid: process.pid }));
   console.log(t('daemon.key', { key: handshake.publicKeyB64.slice(0, 24) }));
@@ -488,79 +528,7 @@ server.listen(PORT, '127.0.0.1', async () => {
   if (shouldAttachConsole(process.stdin)) {
     attachConsole(
       { input: process.stdin, output: process.stdout },
-      {
-        status: () => [
-          t('console.status', {
-            version: VERSION,
-            brand: BRAND,
-            pid: String(process.pid),
-            platform: process.platform,
-            uptime: String(Math.round(process.uptime())),
-            total: String(manager.list().length),
-            running: String(manager.runningCount()),
-          }),
-        ],
-        list: () => {
-          const views = manager.list();
-          if (views.length === 0) return [t('console.list.empty')];
-          // 只给"一眼看清"的最小字段；指纹 / 能力 / 授权那些留给 `spc plugin list`
-          // （那是管理面的呈现契约，控制台不复制它）
-          return views.map((p) =>
-            t('console.list.line', {
-              ref: p.ref,
-              version: p.version.name,
-              state: p.state,
-              enabled: p.enabled ? t('console.list.on') : t('console.list.off'),
-            }),
-          );
-        },
-        stop: () => void shutdown('console'),
-        /**
-         * 单个插件的详情：与 `spc plugin status` **同一份渲染**（`core/plugin/render.ts`）——
-         * 声明 / 已授予 / **未授予**（host 作用域里还差哪些）/ 能力 / 指纹 / 错误，都在这一份里。
-         */
-        show: (ref) => pluginDetailLines(manager.status(ref)),
-        /**
-         * 插件生命周期：与 `spc plugin …` 走 HTTP 时**最终落到的是同一批 manager 方法**
-         * （语义与审计都在 manager 层）—— 这里只是换了个传输，没有第二份实现。
-         */
-        plugin: async (verb, args) => {
-          if (verb === 'install') {
-            const p = parseInstallArgs(args);
-            if (p.bad.length > 0) {
-              return [t('console.flag.unknown', { arg: p.bad.join(' ') }), t('console.usage.install')];
-            }
-            if (p.target === undefined) return [t('console.usage.install')];
-            const opts = {
-              grants: p.grants,
-              start: true,
-              acceptKeyChange: p.acceptKeyChange,
-              ...(p.source === undefined ? {} : { source: p.source }),
-            };
-            // 判后缀而不是 statSync：路径是在**这台机器**上解析的，而 `.spc` = 托管副本、目录 = 就地安装
-            // （两条入口同一条管线，见 `build-layer-design.md` §10.6）—— 与 HTTP 路由同一份判断
-            const view = /\.spc$/i.test(p.target)
-              ? await manager.installPackage(p.target, opts)
-              : await manager.install(p.target, opts);
-            return [t('cli.plugin.installed', { id: view.ref, dir: view.dir })];
-          }
-          const ref = args[0]!;
-          // 其余四个只吃一个引用；多给的一律拒（不猜他要对哪个动手）
-          if (args.length > 1) {
-            return [t('console.flag.unknown', { arg: args.slice(1).join(' ') }), t('console.usage.ref', { verb })];
-          }
-          switch (verb) {
-            case 'uninstall':
-              return [t('cli.plugin.uninstall.done', { id: (await manager.uninstall(ref)).ref })];
-            case 'reload':
-              return [t('cli.plugin.reload.done', { id: (await manager.reload(ref)).ref })];
-            case 'enable':
-              return [t('cli.plugin.enable.done', { id: (await manager.enable(ref)).ref })];
-            case 'disable':
-              return [t('cli.plugin.disable.done', { id: (await manager.disable(ref)).ref })];
-          }
-        },
-      },
+      buildConsoleHandlers({ mode: 'normal', stop: () => void shutdown('console') }),
     );
   }
 });
@@ -591,6 +559,7 @@ function auditShutdown(reason: string, result: 'ok' | 'error', started: number, 
 
 /** 统一出口：显式退出码 + **flush 审计缓冲**（否则运行期攒下的条目随进程消失） */
 function exitNow(code: number, why: string): never {
+  releaseLifecycleLock();
   const flushed = flushAudit();
   if (flushed < 0) console.error(t('daemon.shutdown.audit_pending', { count: String(-flushed) }));
   if (code !== 0) console.error(t('daemon.shutdown.forced', { why, code: String(code) }));
@@ -627,8 +596,11 @@ async function shutdown(reason: 'SIGINT' | 'SIGTERM' | 'request' | 'console'): P
   }, SHUTDOWN_TIMEOUT_MS).unref();
 
   try {
-    server.close();
-    server.closeIdleConnections();
+    // 维护模式没有在监听 ⇒ 对未监听的 server 调 close 会回一个 ERR_SERVER_NOT_RUNNING 的错误事件
+    if (server.listening) {
+      server.close();
+      server.closeIdleConnections();
+    }
     // 停插件时把**整场停机的总预算**一起交下去：每个插件的 stop 预算被压成
     // `min(它自己的 stopTimeoutMs, 剩余总预算)`。少了这一条，N 个卡住的插件就是 N × stopTimeoutMs
     // ——而插件 stop 里的死循环会**同步阻塞宿主**，连上面那个硬超时定时器都轮不上（实测 3s 才回来）。
@@ -647,3 +619,33 @@ async function shutdown(reason: 'SIGINT' | 'SIGTERM' | 'request' | 'console'): P
 
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+/**
+ * **维护模式**（`--maintenance`，2026-10-14 定）：
+ *
+ *   · **不装载任何插件**（`server.listen` 根本不跑，`startAll` 自然不会被调用）；
+ *   · **不启 HTTP 面**：没有路由、不占端口、不需要握手令牌；
+ *   · **只走 TTY 控制台**：CLI 不参与、也不拉起它（没有 daemon 时 CLI 只说该怎么做）；
+ *   · 存活期由人/脚本显式结束（控制台 `stop` / `exit`）——**没有**30 秒自动退出。
+ *
+ * ⚠️ 它**绝不是"跳过检查"的旁路**：检查在任何形态下都照常执行，只是不装载的形态下没有对象可拦。
+ */
+if (MAINTENANCE) {
+  if (!shouldAttachConsole(process.stdin)) {
+    // 没有交互面就没人能操作它 —— fail-closed，不起一个谁都碰不到的东西
+    console.error(t('daemon.maintenance.tty_required'));
+    process.exit(1);
+  }
+  try {
+    seedBuiltinSources(); // 桶要先有：维护模式照样是「装插件」的入口
+  } catch (e) {
+    const shape = toErrorShape(e);
+    console.error(`[daemon] keyring: ${shape?.code ?? 'INTERNAL'} ${JSON.stringify(shape?.params ?? {})}`);
+    process.exit(1);
+  }
+  console.log(t('daemon.maintenance.banner', { version: VERSION, pid: String(process.pid) }));
+  attachConsole(
+    { input: process.stdin, output: process.stdout },
+    buildConsoleHandlers({ mode: 'maintenance', stop: () => void shutdown('console') }),
+  );
+}

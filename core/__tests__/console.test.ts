@@ -87,6 +87,7 @@ function fakeConsole(opts: { pluginThrows?: Error } = {}) {
   const rl = attachConsole(
     { input, output },
     {
+      source: async () => [],
       status: () => {
         calls.status += 1;
         return ['核心 0.0.0（假）'];
@@ -247,6 +248,7 @@ function ttyConsole() {
       },
       list: () => [],
       stop: () => {},
+      source: async () => [],
       plugin: async () => [],
       show: () => [],
     },
@@ -296,7 +298,8 @@ test('非终端的输出不写控制序列（管道/文件别被污染）', asyn
   output.on('data', (d: Buffer) => (out += String(d)));
   const rl = attachConsole(
     { input, output },
-    { status: () => [], list: () => [], stop: () => {}, plugin: async () => [], show: () => [] },
+    { status: () => [], list: () => [], stop: () => {},
+      source: async () => [], plugin: async () => [], show: () => [] },
   );
   await new Promise((r) => setTimeout(r, 30));
   console.log('这行不该带控制序列');

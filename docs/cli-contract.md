@@ -117,3 +117,12 @@
    管理面的**用法错误**（参数缺失 / 形状不对，例：`spc source add xfy2412` 没写 `local:` 前缀、
    `spc plugin install` 没给路径）现在是 **2**；其余失败仍是 1。CI 才分得清"我参数写错了"与"操作失败了"；
 5. 要不要给两个命令加 `--lang` 旗标（现在只有环境变量）。
+
+## 维护模式（CLI 不参与）
+
+核心可以用 `--maintenance` 起成**维护形态**：不装载任何插件、不启 HTTP 面、只走它自己的 TTY 控制台。
+
+- **CLI 不拉起它、也不连它**：没有维护形态的 HTTP 面。核心没在跑时，`spc …` 只会**告诉管理员**该怎么起（不代劳、不猜）；
+- 维护形态里的操作只在**核心的控制台**里做（`install` / `uninstall` / `enable` / `disable` / `grant` / `revoke` / `source …` / `show` / `list` / `status` / `stop`）；
+- 维护形态里 `install` / `enable` **只改记录**（不装载，下次正常启动时装载），`reload` 不可用；
+- `spc daemon stop` 仍是对**正常形态**的优雅停机入口；维护形态用控制台 `stop` 退出。
