@@ -9,7 +9,7 @@ import {
   type QuickJSAsyncRuntime,
   type QuickJSHandle,
 } from 'quickjs-emscripten';
-import { audit as auditRaw, digest, digestParams, type AuditEntry } from './audit';
+import { audit as auditRaw, digest, digestParams, pluginActor, type AuditCorr, type AuditEntry, type AuditSubject } from './audit';
 import { DEFAULT_LIMITS, type PluginLimits } from './config';
 import { buildEnvFacts } from './emulated-env';
 import { SpcError, toErrorShape } from './errors';
@@ -294,7 +294,8 @@ export interface SandboxBridge {
    * 而重试次数、等待时长这些**只有宿主方法的实现自己知道**。让它把标签留下、由包装层合并，
    * 比在包装层里为 `plugins.call` 开一个特例清楚（也避免出现第二条描述同一次调用的日志）。
    */
-  tagAudit?: (extra: { callId?: string; attempts?: number; waitedMs?: number }) => void;
+  /** 宿主方法给本次调用留下的**串联信息**（`plugins.call`：callId / 重试次数 / 等待） */
+  tagAudit?: (extra: { corr?: AuditCorr }) => void;
 }
 
 /** 注入 ctx 的"环境事实"（能力走 @host/api，环境走 ctx，见 plugin-lifecycle-design §1.3） */
@@ -570,17 +571,22 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
    * `callId` 是**环境值**：本插件正被别的插件调用时（`callEndpoint` 那一阶段），它这一段里产生的
    * **每一条**审计都带上同一个 id —— 否则"B 在 handler 里读了三个文件"这三条日志无法归到那次跨插件调用上。
    */
-  const auditOwn = (entry: Omit<AuditEntry, 'pluginId' | 'ref'> & { pluginId?: string }): void =>
-    auditRaw({
-      ...entry,
-      pluginId: options.pluginId,
-      ref: options.ref,
-      ...(entry.callId === undefined && currentCallId !== undefined ? { callId: currentCallId } : {}),
-    });
+  const auditOwn = (entry: Omit<AuditEntry, 'actor' | 'ts' | 'subject'> & { subject?: AuditSubject; ts?: number }): void =>
+  auditRaw({
+    ts: Date.now(),
+    // 本插件就是**发起者**；"关于谁"默认是它自己（定时器/事件/权限点由调用点覆盖）
+    actor: pluginActor(options.ref ?? options.pluginId),
+    subject: entry.subject ?? { kind: 'self' },
+    ...entry,
+    // 被别的插件调用期间产生的**每一条**都带同一个 callId（与 hostApi 那一侧同源）
+    ...(entry.corr?.callId === undefined && currentCallId !== undefined
+      ? { corr: { ...entry.corr, callId: currentCallId } }
+      : {}),
+  });
   /** 当前是否正被别的插件调用（`callEndpoint` 期间有值）；对 hostApi 也有意义（见 SandboxBridge.currentCallId） */
   let currentCallId: string | undefined;
   /** 本次宿主调用要附带的审计字段（宿主方法的实现自己填，包装层合并；每次调用前清空） */
-  let hostAuditTag: { callId?: string; attempts?: number; waitedMs?: number } | undefined;
+  let hostAuditTag: { corr?: AuditCorr } | undefined;
   if (options.bridge) {
     options.bridge.currentCallId = () => currentCallId;
     options.bridge.tagAudit = (extra) => {
@@ -682,13 +688,11 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           // 破坏"每个宿主调用一条审计"这条不变量。
           auditOwn({
             ts: Date.now(),
-            pluginId: options.pluginId,
             method: name,
-            target: undefined,
             paramsDigest: digest(name),
             result: 'error',
             error: { code: 'INVALID_ARGS', paramsDigest: digestParams({ reason: 'binary-arg-not-arraybuffer' }) },
-            durationMs: Date.now() - start,
+            timing: { ms: Date.now() - start },
           });
           const reason = 'binary-arg-not-arraybuffer';
           return { early: vm.newString(hostErrorPayload('INVALID_ARGS', { reason })) };
@@ -715,16 +719,15 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
         auditOwn({
           ts: Date.now(),
-          pluginId: options.pluginId,
           method: name,
           // **不落明文**：这一支是"权限点解析失败"，`strings[0]` 完全由插件控制
           // （exec.run 的命令行里可能有路径/凭据），与 audit.ts「不落明文参数」的策略相矛盾。
-          // 需要复盘时用 paramsDigest 关联；能给出权限点的地方（下面那支）才写 target。
-          target: undefined,
+          // 需要复盘时用 paramsDigest 关联；能给出权限点的地方（下面那支）才写 subject。
+          // （不给 subject ⇒ 包装器默认 self：这一条就是"本插件自己的一次调用"）
           paramsDigest: callDigest,
           result: 'denied',
           permission: { decision: 'deny', code: shape.code, paramsDigest: digestParams(shape.params) },
-          durationMs: Date.now() - start,
+          timing: { ms: Date.now() - start },
         });
         return { early: vm.newString(hostErrorPayload(shape.code, shape.params)) };
       }
@@ -736,9 +739,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       if (check.decision === 'deny') {
         auditOwn({
           ts: Date.now(),
-          pluginId: options.pluginId,
           method: name,
-          target: requested,
+          subject: { kind: 'point', ref: requested },
           paramsDigest: callDigest,
           result: 'denied',
           permission: {
@@ -746,7 +748,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
             code: check.code,
             paramsDigest: digestParams(check.params),
           },
-          durationMs: Date.now() - start,
+          timing: { ms: Date.now() - start },
         });
         return {
           early: vm.newString(
@@ -776,9 +778,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       const serialized = bytes ? null : JSON.stringify(result ?? null);
       auditOwn({
         ts: Date.now(),
-        pluginId: options.pluginId,
         method: name,
-        target: prep.requested,
+        subject: { kind: 'point', ref: prep.requested },
         paramsDigest: prep.callDigest,
         result: 'ok',
         permission: {
@@ -787,9 +788,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           paramsDigest: prep.grantDigest,
         },
         resultBytes: bytes ? bytes.byteLength : Buffer.byteLength(serialized as string),
-        // 宿主方法自己留下的补充字段（目前只有 plugins.call：callId / attempts / waitedMs）
-        ...(hostAuditTag ?? {}),
-        durationMs: Date.now() - prep.start,
+        // 宿主方法自己留下的串联信息（目前只有 plugins.call：callId / attempts / waitedMs）
+        ...(hostAuditTag?.corr ? { corr: hostAuditTag.corr } : {}),
+        timing: { ms: Date.now() - prep.start },
       });
       return bytes ? vm.newArrayBuffer(bytes) : vm.newString(serialized as string);
     }
@@ -799,9 +800,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
       auditOwn({
         ts: Date.now(),
-        pluginId: options.pluginId,
         method: name,
-        target: prep.requested,
+        subject: { kind: 'point', ref: prep.requested },
         paramsDigest: prep.callDigest,
         result: 'error',
         permission: {
@@ -811,8 +811,8 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         },
         error: { code: shape.code, paramsDigest: digestParams(shape.params) },
         // 失败路径同样要带上标签：**忙到用尽重试**的那次调用恰恰最需要 attempts/waitedMs
-        ...(hostAuditTag ?? {}),
-        durationMs: Date.now() - prep.start,
+        ...(hostAuditTag?.corr ? { corr: hostAuditTag.corr } : {}),
+        timing: { ms: Date.now() - prep.start },
       });
       return vm.newString(hostErrorPayload(shape.code, shape.params));
     }
@@ -979,7 +979,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       vm.dispose();
       runtime.dispose();
       throw new SpcError('PLUGIN_LOAD_FAILED', {
-        pluginId: options.pluginId,
         cause: 'BOOTSTRAP_FAILED',
         message: String(dumped),
       });
@@ -1015,7 +1014,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       vm.dispose();
       runtime.dispose();
       throw new SpcError('PLUGIN_LOAD_FAILED', {
-        pluginId: options.pluginId,
         cause: 'GLOBALS_PRELUDE_FAILED',
         message: String(dumped),
       });
@@ -1074,6 +1072,9 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       config: {},
     };
     const factsJson = JSON.stringify({
+      // ⚠️ `pluginId` 是插件 ctx 的**环境事实**（`ctx.pluginId`），插件会读它 —— **不是审计字段**。
+      // 2026-10-14 迁移审计结构时，一批"删掉审计块里的 pluginId"的替换按单行匹配，把它也删了
+      // （端点里 `ctx.pluginId` 变 undefined ⇒ `plugins.call` 回显少了 who）⇒ 用例逮住。
       pluginId: options.pluginId,
       version: facts.version,
       dataDir: facts.dataDir,
@@ -1092,7 +1093,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           res.error.dispose();
         }
         throw new SpcError('PLUGIN_LOAD_FAILED', {
-          pluginId: options.pluginId,
           cause: 'CTX_FAILED',
           message: String(dumped),
         });
@@ -1263,7 +1263,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       const overrunMs = Date.now() - dl;
       if (overrunMs > 0) {
         throw new SpcError(timeoutCodeFor(hook), {
-          pluginId: options.pluginId,
           hook,
           overrunMs: String(overrunMs),
         });
@@ -1355,7 +1354,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         if (status === 'async' || pump.status === 'pending') {
           // 处理器返回了 Promise 但没泵完：插件留下了未回收的异步任务（与钩子同一条规矩）
           throw new SpcError('PLUGIN_JOB_PENDING', {
-            pluginId: options.pluginId,
             callee: options.ref ?? options.pluginId,
             hook: 'call',
             path,
@@ -1380,7 +1378,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       const overrunMs = Date.now() - dl;
       if (overrunMs > 0) {
         throw new SpcError('PLUGIN_CALL_TIMEOUT', {
-          pluginId: options.pluginId,
           callee: options.ref ?? options.pluginId,
           hook: 'call',
           path,
@@ -1391,7 +1388,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       if (typeof value !== 'string') {
         // 引导层已经保证"成功 ⇒ 字符串"，这里再兜一层：拿不到文本就绝不能当成功返回
         throw new SpcError('PLUGIN_CALL_BAD_RESULT', {
-          pluginId: options.pluginId,
           callee: options.ref ?? options.pluginId,
           hook: 'call',
           path,
@@ -1402,13 +1398,12 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       auditOwn({
         ts: Date.now(),
         method: 'plugins.call',
-        target: path,
+        detail: { path },
         paramsDigest: digest(JSON.stringify([callId, paramsBytes, bytes?.byteLength ?? 0])),
         result: 'ok',
-        callId,
+        corr: { callId },
         resultBytes: Buffer.byteLength(value),
-        suspendedMs: lastSuspendedMs,
-        durationMs: Date.now() - started,
+        timing: { ms: Date.now() - started, suspendedMs: lastSuspendedMs },
       });
       return value;
     } catch (err) {
@@ -1417,13 +1412,12 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       auditOwn({
         ts: Date.now(),
         method: 'plugins.call',
-        target: path,
+        detail: { path },
         paramsDigest: digest(JSON.stringify([callId, paramsBytes, bytes?.byteLength ?? 0])),
         result: 'error',
         error: { code: shape.code, paramsDigest: digestParams(shape.params) },
-        callId,
-        suspendedMs: lastSuspendedMs,
-        durationMs: Date.now() - started,
+        corr: { callId },
+        timing: { ms: Date.now() - started, suspendedMs: lastSuspendedMs },
       });
       throw err;
     } finally {
@@ -1451,27 +1445,23 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       await invoke(kind, callbackId, kind, limits.timerTimeoutMs);
       auditOwn({
         ts: Date.now(),
-        pluginId: options.pluginId,
         method: auditMethod,
-        target: targetId,
+        subject: { kind: 'timer', ref: targetId },
         paramsDigest: digest(callbackId),
         result: 'ok',
         // 阶段已由 `invoke` 的 endPhase 收尾 ⇒ 累计值已挪到 lastSuspendedMs（现场那个恒为 0）
-        suspendedMs: lastSuspendedMs,
-        durationMs: Date.now() - started,
+        timing: { ms: Date.now() - started, suspendedMs: lastSuspendedMs },
       });
     } catch (err) {
       const shape = toErrorShape(err) ?? { code: 'INTERNAL' };
       auditOwn({
         ts: Date.now(),
-        pluginId: options.pluginId,
         method: auditMethod,
-        target: targetId,
+        subject: { kind: 'timer', ref: targetId },
         paramsDigest: digest(callbackId),
         result: 'error',
         error: { code: shape.code, paramsDigest: digestParams(shape.params) },
-        suspendedMs: lastSuspendedMs,
-        durationMs: Date.now() - started,
+        timing: { ms: Date.now() - started, suspendedMs: lastSuspendedMs },
       });
     }
   }
@@ -1500,7 +1490,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         // 没有它，插件可以几秒内塞进成千上万个宿主 setInterval（实测 5s/6659 个、RSS +18.9MB、无报错）。
         if (timers.size >= limits.maxTimers) {
           throw new SpcError('TIMER_LIMIT_EXCEEDED', {
-            pluginId: options.pluginId,
             limit: String(limits.maxTimers),
           });
         }
@@ -1579,7 +1568,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         const loaded = namespace;
         if (loaded !== undefined && isThenableHandle(vm, loaded)) {
           throw new SpcError('PLUGIN_LOAD_FAILED', {
-            pluginId: options.pluginId,
             hook: 'load',
             message:
               'module uses top-level await, which the sandbox does not support: ' +
@@ -1598,7 +1586,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
         const overrunMs = Date.now() - (started + limits.loadTimeoutMs);
         if (overrunMs > 0) {
           throw new SpcError(timeoutCodeFor('load'), {
-            pluginId: options.pluginId,
             hook: 'load',
             overrunMs: String(overrunMs),
           });
@@ -1633,7 +1620,6 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
       // 判定为加载失败：终止本次加载 + 记账（是否禁用该插件由上层策略决定，核心不崩）
       auditOwn({
         ts: Date.now(),
-        pluginId: options.pluginId,
         method: 'lifecycle.load',
         paramsDigest: digest(name),
         result: 'error',
@@ -1642,8 +1628,7 @@ export async function createSandbox(api: HostApi, options: SandboxOptions): Prom
           paramsDigest: digestParams({ cause: err.params.cause ?? err.code }),
         },
         // 这里读的是**现场累计值**（本阶段的 endPhase 还没跑，`lastSuspendedMs` 还是上一阶段的）
-        suspendedMs,
-        durationMs: Date.now() - started,
+        timing: { ms: Date.now() - started, suspendedMs },
       });
       throw err;
         })();

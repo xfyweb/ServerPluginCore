@@ -13,6 +13,7 @@
 // ⚠️ stdin 关闭（终端没了）**不等于停机**：只把控制台摘掉，守护进程继续跑 —— 免得"关掉一个窗口"
 // 顺手停掉线上的核心。要停就 `stop` / `spc daemon stop` / SIGINT / SIGTERM。
 import { createInterface, type Interface } from 'node:readline';
+import { enterChannel } from './audit';
 import { renderThrown, t } from './i18n';
 
 /** 控制台能管的插件生命周期动词（与 `spc plugin <verb>` 一一对应） */
@@ -232,6 +233,9 @@ export function attachConsole(
 
   rl.on('line', (line) => {
     if (stopping) return; // 已经在下线了：多敲的几行不再理会（同一次停机只走一遍）
+    // 控制台是**进程内**调用（不走 HTTP）：把这一段标成 `console` 通道，
+    // 于是里面管理动作的审计带 `via: console` —— "谁在什么时候改的"才分得清是 CLI 还是控制台。
+    enterChannel('console');
     const cmd = parseConsoleLine(line);
     if (cmd.kind === 'stop') {
       stopping = true;

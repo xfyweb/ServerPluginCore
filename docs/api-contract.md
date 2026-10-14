@@ -430,30 +430,80 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 ## 8. 审计
 
-每条调用落：`{ts, pluginId, ref?, method, target?, paramsDigest, result, permission: {decision, code, paramsDigest}, error?: {code, paramsDigest}, resultBytes?, suspendedMs?, callId?, attempts?, waitedMs?, durationMs}`——审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。`target` 是动态权限点的解析结果（如 `exec.template.nginx.reload`），`resultBytes` 是结果序列化字节数（exec 的命令输出量），两者都非敏感，便于排障与统计。
+每条调用落一条 JSONL（文件位置与游标见 §8.4），结构版本 **v2**（2026-10-14 重整）：
 
-**跨插件调用的三个补充字段**（2026-09-25，只增不改）：
+```jsonc
+{ "v": 2, "seq": 12, "ts": 1791951692498,
+  "actor":   { "kind": "plugin", "ref": "local:default/@a/b" },
+  "subject": { "kind": "point", "ref": "kv.write" },
+  "method": "kv.set",
+  "paramsDigest": "…", "result": "ok",
+  "permission": { "decision": "allow", "code": "ALLOWED" },
+  "timing": { "ms": 1, "suspendedMs": 0 },
+  "resultBytes": 128,
+  "corr": { "callId": "…", "attempts": 1, "waitedMs": 0 },
+  "detail": { "origin": "local:b" } }
+```
+
+审计日志只增不改，插件不可达；**只记机器可读的码与参数摘要**（不落明文参数、不落本地化文本；
+本地化在 `spc audit tail` / 面板渲染层完成）；权限拒绝单独告警。
+
+### 8.1 谁做的 / 关于谁（v2 的核心）
+
+| 字段 | 语义 |
+|---|---|
+| `actor.kind` | `plugin`（插件自己调的）/ `operator`（管理员：CLI、TTY 控制台、将来的面板）/ `core`（核心自己：停机收尾、自动重启、强制回收） |
+| `actor.ref` | 插件干的 ⇒ 该插件**完整引用**；管理员干的 ⇒ **留空**（P3 填用户）；核心 ⇒ 无 |
+| `actor.via` | 只有 `operator` 有：`cli`（HTTP 管理通道）/ `console`（守护进程的 TTY 控制台）/ `internal`（不是人从某条通道发起的） |
+| `actor.user` | P3 的用户身份位（现在恒为空）—— 结构不用再动 |
+| `subject.kind` / `.ref` | 关于谁/什么：`plugin` / `origin` / `point`（权限点）/ `timer` / `event` / `self`（插件自己的事，渲染时省略）/ `none` |
+| `detail` | **只对管理动作**：**闭集码值**明文（来源 / 权限点 / 别名 / 指纹 / 计数）。⚠️ 路径、凭据、业务数据**不许进**（照旧只进 `paramsDigest`） |
+| `timing.ms` / `.suspendedMs` | 执行时长 / **等宿主 Promise 的墙钟**（分开记的理由见下） |
+| `corr.callId` / `.eventId` / `.attempts` / `.waitedMs` | 串联与重试代价（跨插件调用、事件） |
+| `paramsDigest` / `permission` / `error` / `resultBytes` / `result` / `method` | 沿用（名字没改） |
+
+> **为什么改**（2026-10-14，维护者原话："插件主动行为鉴权和用户主动行为混在一起，难以辨认"）：
+> v1 只有一个身份槽（`pluginId` + `ref`），而它在不同 method 家族里**角色不同** —— 插件调用里是**发起者**、
+> 管理动作里是**被操作对象**、`source.*` 里干脆是 origin。于是 `kv.set`（插件干的）与 `plugin.grant`（管理员干的）
+> 在流里长得一模一样。现在**发起者**与**对象**分列两处，读面也能按 `actor` / `via` 过滤。
+
+**管理动作的方法码**：`plugin.install` / `.uninstall` / `.enable` / `.disable` / `.reload`（v2 补上，
+以前**一条都不落** —— 只有它们带出来的 `lifecycle.*`，`uninstall` 之后记录没了就说不清"谁卸的、从哪个源装的"）、
+`plugin.grant` / `.revoke` / `.key-change` / `.reanchor`，以及 `source.add` / `.remove` / `.enable` /
+`.disable` / `.alias` / `.anchor`。
+
+> 授权与身份这三条（`plugin.grant` / `.revoke` / `.key-change`）是"**谁在什么时候改了授权/身份**"的**唯一**出处 ——
+> 撤回不靠记录里的状态字段，靠这里的日志；变更的点在 `detail.points`（v2 起明文可读），换钥的新指纹在 `detail.fingerprint`。
+
+**生命周期条目**（plugin-lifecycle-design §7）：`lifecycle.load`（求值失败）、`lifecycle.init` / `.start` /
+`.stop` / `.unload`（每个钩子，`result: ok/error` + `timing.ms`）、`lifecycle.restart`（`failedRestart=auto`
+触发，带 `detail.attempts` 与 `corr.attempts`）；`subject` = 那个插件；`actor` = **谁触发的这次装载**
+（管理员操作 ⇒ `operator`，自动重启/开机 ⇒ `core`）。**定时器回调**落 `timers.tick`（`subject` = timerId，
+`paramsDigest` = callbackId 摘要）—— 它不经过宿主桥，所以由沙箱侧显式记账。
+
+**跨插件调用的补充字段**（2026-09-25，v2 里改名进 `corr`）：
 
 | 字段 | 谁写 | 回答什么 |
 |---|---|---|
-| `callId` | 一次 `plugins.call` 的**所有相关条目共用**：调用方那条宿主调用、被调方那条"被调"条目、以及被调方**内部**因这次调用产生的每一条（fs/kv/…） | "这一次跨插件交互里，对端都干了什么" —— 条目分属**两个插件**，光看 `ref` 串不起来（与事件面的 `eventId` 同构）。环境值由沙箱提供（`SandboxBridge.currentCallId`），hostApi 与沙箱两条写入路径同源 |
-| `attempts` | 投递链（`core/plugin/call-retry.ts`） | 试了几次（1 = 一次就通）；>1 说明对端当时正忙（定时器/监视回调在飞） |
-| `waitedMs` | 同上 | 重试累计等待（有界：3 次尝试含首次 ⇒ 最多等 50+100=150ms；硬顶 350ms） |
+| `corr.callId` | 一次 `plugins.call` 的**所有相关条目共用**：调用方那条宿主调用、被调方那条"被调"条目、以及被调方**内部**因这次调用产生的每一条（fs/kv/…） | "这一次跨插件交互里，对端都干了什么" —— 条目分属**两个插件**，光看 `actor.ref` 串不起来 |
+| `corr.attempts` | 投递链（`core/plugin/call-retry.ts`） | 试了几次（1 = 一次就通）；>1 说明对端当时正忙（定时器/监视回调在飞） |
+| `corr.waitedMs` | 同上 | 重试累计等待（有界：3 次尝试含首次 ⇒ 最多等 50+100=150ms；硬顶 350ms） |
 
-> **v4 加 `ref`（只增不改）**：身份是 `(origin, id)` —— 同 id 不同来源是**两个插件**，只记裸 `pluginId` 时两条审计读起来分不清是谁。`ref` = **完整引用** `<origin>/<id>`；`pluginId` 保留原样（历史条目与既有展示仍按它读）。
->
-> **核心自身的条目**（不是某个插件干的）用 `pluginId: "<core>"`（不可能与插件 id 撞：插件 id 形如 `@user/name`）；目前只有 `core.shutdown` 一条（停机收尾时落，见 management-channel.md §4 的停机契约）。
+**核心自身的条目**（不是某个插件干的）：`actor.kind = 'core'`（v1 的 `pluginId: "<core>"` 已废）；
+目前有 `core.shutdown`（停机收尾时落，原因进 `detail.reason`）与 `lifecycle.shutdown-abandoned`（停机预算用完）。
 
-**生命周期条目**（plugin-lifecycle-design §7）：`lifecycle.load`（求值失败）、`lifecycle.init` / `lifecycle.start` / `lifecycle.stop` / `lifecycle.unload`（每个钩子，`result: ok/error` + durationMs）、`lifecycle.restart`（`failedRestart=auto` 触发，带 `attempts`）；`target` = 插件 ID。**定时器回调**落 `timers.tick`（`target` = timerId，`paramsDigest` = callbackId 摘要）——它不经过宿主桥，所以由沙箱侧显式记账。
+### 8.2 文件与游标（按天分文件）
 
-**授权与身份条目**（2026-09-25 补）：
-| `method` | 何时 | `target` |
+| 文件 | 何时 | 说明 |
 |---|---|---|
-| `plugin.grant` | `spc plugin grant` / 首次安装**播种** `install` 档点（`paramsDigest` 带 `via: install-seed`） | 变了的那几个权限点（逗号分隔） |
-| `plugin.revoke` | `spc plugin revoke` | 同上 |
-| `plugin.key-change` | 管理员用 `--accept-key-change` 接受换钥 | **新的**作者公钥指纹（旧的在 `paramsDigest` 里） |
+| `audit/<YYYY-MM-DD>.jsonl` | 当天 | 当天全部条目都追加到这里；**同一天内多次重启仍写同一个文件** |
+| `audit/<YYYY-MM-DD>.jsonl.gz` | 跨日之后 | 跨日时把前一天的 `.jsonl` gzip 打包（启动时补做"午夜时进程不在"留下的明文） |
+| `audit/legacy-v1*.jsonl.gz` | 一次性 | 迁移时把旧的单文件 `audit.jsonl` 挪走留档（读面不解析它） |
 
-> ⚠️ 这三条是"**谁在什么时候改了授权/身份**"的唯一出处 —— 撤回不靠记录里的状态字段，靠这里的日志。
+- 每条带 `v`（结构版本）与 `seq`（**文件内**序号，从 1 起、不回退不跳号）⇒ **读面游标 = `"<日期>#<seq>"`**
+  （人也能照着念；**不用字节偏移、也不用时间戳** —— 后者在同一毫秒多条时会重会漏）；
+- 读面 `limit` 不够时往前面几天的 `.gz` 里回看，**最多 7 天 / 解压 64 MiB**，到边界如实报 `lookbackExhausted`；
+- 失败策略照旧：启动探测不可写 ⇒ 退出（fail-closed）；运行期写失败进内存缓冲，缓冲超 10 MB ⇒ 退出。
 
 ## 9. manifest（schema 2）
 

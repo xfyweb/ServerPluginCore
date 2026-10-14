@@ -3,6 +3,7 @@
 // 与 exec.test.ts 的分工：那边测 exec 模板与原生写法匹配，这边测"插件真的能用这些 API 干什么、
 // 越界会怎样"。全部走**真实装载链路**（manager.install → 沙箱 → 钩子），不直接调宿主函数——
 // 只有这样才能同时验证权限点、桥的 JSON 编解码、以及 ctx 注入。
+import type { AuditEntry } from '../audit';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,6 +11,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'spc-hostapi-'));
+
+/**
+ * 当天的审计文件（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ **本地算**，不走 `core/audit`：本文件的模块是静态 import，而 `SPC_AUDIT_DIR` 的隔离在 import
+ * **之后**才设 ⇒ 从 `core/audit` 拿路径会拿到"默认目录"那一份，读的写的是仓库 `.spc/audit`
+ * （2026-10-14 踩过：隔离失效，跑一次测试就往仓库写几十 KB～1 MB）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(TMP, 'audit', `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_STATE_DIR = TMP;
 process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
@@ -350,14 +364,20 @@ test('events：只能发布 manifest 声明过的 topic（声明即审核面）'
   );
   await manager.install(dir);
   // 最后一条 publish 的 payload 不落盘（总线是 P2），所以这里改从审计侧验证"非法 topic 被拒"
-  const audit = readFileSync(join(TMP, 'audit', 'audit.jsonl'), 'utf8')
+  const audit = readFileSync(auditFileToday(), 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as { pluginId: string; method: string; result: string; error?: { code: string } });
-  const denied = audit.filter((e) => e.pluginId === id('events') && e.method === 'events.publish' && e.result === 'error');
+    .map((l) => JSON.parse(l) as AuditEntry);
+  const denied = audit.filter((e) =>
+      (e.actor?.ref === id('events') || e.actor?.ref?.endsWith('/' + id('events')) === true) &&
+      e.method === 'events.publish' &&
+      e.result === 'error');
   assert.equal(denied.length, 1);
   assert.equal(denied[0].error?.code, 'EVENT_TOPIC_NOT_DECLARED');
-  const ok = audit.filter((e) => e.pluginId === id('events') && e.method === 'events.publish' && e.result === 'ok');
+  const ok = audit.filter((e) =>
+      (e.actor?.ref === id('events') || e.actor?.ref?.endsWith('/' + id('events')) === true) &&
+      e.method === 'events.publish' &&
+      e.result === 'ok');
   assert.equal(ok.length, 2);
   await manager.disable(id('events'));
 });
@@ -439,16 +459,15 @@ test('权限：`grant: auto`（self）的点**不声明也能用**，审计记 a
     { permissions: ['lifecycle.health'] },
   );
   await manager.install(dir);
-  const audit = readFileSync(join(TMP, 'audit', 'audit.jsonl'), 'utf8')
+  const audit = readFileSync(auditFileToday(), 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as {
-      pluginId: string;
-      method: string;
-      result: string;
-      permission?: { code: string; params?: Record<string, string> };
-    });
-  const call = audit.find((e) => e.pluginId === id('perm') && e.method === 'kv.set');
+    .map((l) => JSON.parse(l) as AuditEntry);
+  const call = audit.find(
+      (e) =>
+        (e.actor?.ref === id('perm') || e.actor?.ref?.endsWith('/' + id('perm')) === true) &&
+        e.method === 'kv.set',
+    );
   assert.equal(call?.result, 'ok', '未声明也该放行（self/auto）');
   assert.equal(call?.permission?.code, 'ALLOWED');
   await manager.disable(id('perm'));

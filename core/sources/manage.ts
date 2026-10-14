@@ -9,7 +9,7 @@
 //   ② **有插件归属的源不许删**（§5"永不自动新增源"的另一面：源是归属，删源会让记录指向不存在的来源）；
 //   ③ **改锚不追溯**（§3bis）：只影响后续安装，已装插件的 `authorFingerprint` 不动，但必须落审计
 //      并把"还有 N 个按旧锚记录"这个数字**报给管理员** —— 提示是这一步唯一的产品价值。
-import { audit, digest, digestParams } from '../audit';
+import { audit, digest, digestParams, operatorActor, type AuditDetail } from '../audit';
 import { SpcError } from '../errors';
 import { loadRecords } from '../plugin/records';
 import {
@@ -85,15 +85,24 @@ export function getSource(origin: string): SourceView | undefined {
  * ⚠️ `pluginId` 是必填字段，源不是插件 ⇒ 这里填 **origin**；读审计时靠 `method` 的 `source.` 前缀区分
  * （加一个 `sourceId` 字段是"只增不改"允许的，但当下没有第二个读者，先不加字段）。
  */
-function auditSource(origin: string, method: string, target: string, params?: Record<string, string>): void {
+/**
+ * 来源管理动作的审计。
+ *
+ * ⚠️ 参数**以明文进 `detail`**（2026-10-14 拍板："管理动作的 detail 允许闭集码值明文"）：
+ * 这些值是 origin / 别名 / 指纹 / 计数这类**码值**，不是敏感数据 —— 而"从哪个源来、改了什么"
+ * 正是这条审计唯一要回答的事，只留摘要就等于没记。`paramsDigest` 照旧留着（相关性 / 防篡改）。
+ */
+function auditSource(origin: string, method: string, detail?: AuditDetail): void {
   audit({
     ts: Date.now(),
-    pluginId: origin,
+    // 来源管理是**管理员动作**（`via` 由通道环境给：HTTP 路由 = cli，控制台 = console）
+    actor: operatorActor(),
+    subject: { kind: 'origin', ref: origin },
     method,
-    target,
-    paramsDigest: digestParams(params) ?? digest(origin),
+    paramsDigest: digestParams(detail) ?? digest(origin),
     result: 'ok',
-    durationMs: 0,
+    ...(detail === undefined ? {} : { detail }),
+    timing: { ms: 0 },
   });
 }
 
@@ -127,7 +136,7 @@ export async function addSource(
     if (input.pub !== undefined) throw new SpcError('SOURCE_PUB_NOT_APPLICABLE', { origin });
     const entry = newLocalSource(origin, alias, input.anchorPub ? anchorOf(input.anchorPub) : undefined);
     kr.add(entry);
-    auditSource(origin, 'source.add', origin, { kind: 'local', anchor: entry.authorAnchor?.fingerprint ?? '' });
+    auditSource(origin, 'source.add', { kind: 'local', anchor: entry.authorAnchor?.fingerprint ?? '' });
     return toView(entry);
   }
 
@@ -176,7 +185,7 @@ export async function addSource(
     };
   }
   kr.add(entry);
-  auditSource(origin, 'source.add', origin, { kind: 'market', pub: entry.fingerprint ?? '' });
+  auditSource(origin, 'source.add', { kind: 'market', pub: entry.fingerprint ?? '' });
   return toView(entry);
 }
 
@@ -199,20 +208,20 @@ export function removeSource(origin: string): void {
     throw new SpcError('SOURCE_IN_USE', { origin, count: String(count) });
   }
   kr.remove(origin);
-  auditSource(origin, 'source.remove', origin);
+  auditSource(origin, 'source.remove');
 }
 
 /** 启停源（停用 ⇒ `SOURCE_DISABLED`；已装插件照常运行，§6.4 同款口径） */
 export function setSourceEnabled(origin: string, enabled: boolean): SourceView {
   const entry = keyring().setEnabled(origin, enabled);
-  auditSource(origin, enabled ? 'source.enable' : 'source.disable', origin);
+  auditSource(origin, enabled ? 'source.enable' : 'source.disable');
   return toView(entry);
 }
 
 /** 改别名（仅显示；**别名永不进点名**，见 `core/permissions/points.ts` 的文件头） */
 export function setSourceAlias(origin: string, alias: string): SourceView {
   const entry = keyring().setAlias(origin, alias);
-  auditSource(origin, 'source.alias', origin, { alias });
+  auditSource(origin, 'source.alias', { alias });
   return toView(entry);
 }
 
@@ -236,7 +245,7 @@ export function setSourceAnchor(origin: string, pub: string | null): AnchorChang
   const entry = kr.setAnchor(origin, pub === null ? null : anchorOf(pub));
   const after = entry.authorAnchor?.fingerprint ?? '';
   const staleCount = sourceUsage(origin);
-  auditSource(origin, 'source.anchor', origin, { from: before, to: after, installed: String(staleCount) });
+  auditSource(origin, 'source.anchor', { from: before, to: after, installed: String(staleCount) });
   return { view: toView(entry), staleCount };
 }
 

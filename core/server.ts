@@ -4,7 +4,19 @@
 // 记录由 daemon 拥有：所有写操作（install/enable/disable/reload/grant/revoke/uninstall）
 // 都必须经过这里——CLI 只是 HTTP 客户端，不直接碰 plugins.json。
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { audit, digest, digestParams, flushAudit, initAudit, readAuditTail } from './audit';
+import {
+  audit,
+  coreActor,
+  digest,
+  digestParams,
+  flushAudit,
+  initAudit,
+  readAuditTail,
+  enterChannel,
+  scheduleAuditMidnight,
+    type AuditActorKind,
+    type AuditVia,
+  } from './audit';
 import { attachConsole, parseInstallArgs, shouldAttachConsole } from './console';
 import { asLogLevel, logs } from './logs';
 import { pluginDetailLines } from './plugin/render';import { t } from './i18n';
@@ -33,6 +45,8 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
 // 审计链路启动探测（写不了就退出）：**必须早于任何插件装载**，
 // 否则插件调用会写进内存缓冲，运维以为审计正常、实际读不到。
 initAudit();
+// 跨日换文件 + 打包昨天的审计（整夜空闲的守护进程也得换，所以不能只靠写路径的惰性检查）
+scheduleAuditMidnight();
 
 const handshake = new HandshakeServer();
 
@@ -127,6 +141,9 @@ function asString(v: unknown): string | undefined {
 }
 
 const server = createServer(async (req, res) => {
+  // 管理通道 = HTTP（`spc` 命令 / 面板）：这一整段异步上下文都算 `cli` 通道，
+  // 于是里面的管理动作条目自动带 `via: cli`（P3 接面板时在这里分流即可）
+  enterChannel('cli');
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
@@ -209,6 +226,7 @@ const server = createServer(async (req, res) => {
         ...(ref === undefined ? {} : { ref }),
         ...(level === undefined ? {} : { level }),
         ...(limitRaw === null ? {} : { limit: Number(limitRaw) }),
+        // 日志的游标是**数字 seq**（内存环形，见 `core/logs.ts`）；审计的游标是字符串 `"<日期>#<seq>"` —— 两者别混
         ...(sinceRaw === null ? {} : { since: Number(sinceRaw) }),
       });
       sendJson(res, 200, { ok: true, ...result });
@@ -229,8 +247,11 @@ const server = createServer(async (req, res) => {
       // `tail` 是最早写在契约里的参数名（`management-channel.md` §4 那行），`limit` 是后来统一的叫法：
       // **两个都认**（契约只增不改），`tail` 优先。
       const limitRaw = q.get('tail') ?? q.get('limit');
-      // since = 续读游标（**字节偏移**，spc audit tail -f 用它）：审计文件只追加，偏移是稳定游标
+      // `since` = 续读游标 `"<日期>#<seq>"`（`spc audit tail -f` 用它）
       const sinceRaw = q.get('since');
+      // `actor` / `via` = 按发起者与通道过滤（"插件自己干的"还是"管理员在 CLI 上干的"）
+      const actorRaw = q.get('actor');
+      const viaRaw = q.get('via');
       if (resultRaw !== null && resultRaw !== 'ok' && resultRaw !== 'denied' && resultRaw !== 'error') {
         sendError(res, 400, 'INVALID_ARGS', 'AUDIT_RESULT_INVALID', { result: resultRaw });
         return;
@@ -240,9 +261,11 @@ const server = createServer(async (req, res) => {
         ...(method === undefined ? {} : { method }),
         ...(resultRaw === null ? {} : { result: resultRaw }),
         ...(limitRaw === null ? {} : { limit: Number(limitRaw) }),
-        ...(sinceRaw === null ? {} : { since: Number(sinceRaw) }),
-      });
-      sendJson(res, 200, { ok: true, ...tail });
+        ...(sinceRaw === null ? {} : { since: sinceRaw }),
+        ...(actorRaw === null ? {} : { actor: actorRaw as AuditActorKind }),
+        ...(viaRaw === null ? {} : { via: viaRaw as AuditVia }),
+        });
+        sendJson(res, 200, { ok: true, ...tail });
       return;
     }
 
@@ -550,16 +573,17 @@ const SHUTDOWN_TIMEOUT_MS = Number(process.env.SPC_SHUTDOWN_TIMEOUT_MS ?? 10_000
 const SHUTDOWN_GRACE_MS = Math.min(500, Math.floor(SHUTDOWN_TIMEOUT_MS / 4));
 
 /** 核心自身的审计条目用这个 pluginId（不可能与插件 id 撞：插件 id 形如 `@user/name`） */
-const CORE_ACTOR = '<core>';
 
 function auditShutdown(reason: string, result: 'ok' | 'error', started: number, detail?: string): void {
   audit({
     ts: Date.now(),
-    pluginId: CORE_ACTOR,
+    // 核心自身的动作（没有操作者、没有"关于谁"）；停机原因进明细
+    actor: coreActor(),
     method: 'core.shutdown',
     paramsDigest: digestParams(detail === undefined ? { reason } : { reason, detail }) ?? digest(reason),
     result,
-    durationMs: Date.now() - started,
+    detail: { reason, ...(detail === undefined ? {} : { code: detail }) },
+    timing: { ms: Date.now() - started },
   });
 }
 

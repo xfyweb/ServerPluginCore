@@ -5,6 +5,7 @@
 //
 // 隔离：SPC_STATE_DIR / SPC_AUDIT_DIR / SPC_KEYRING_DIR 必须在**动态 import 之前**设好
 // （core/audit.ts 的 AUDIT_DIR 是模块级常量）。
+import type { AuditEntry } from '../audit';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -12,6 +13,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'spc-reanchor-'));
+
+/**
+ * 当天的审计文件：`<TMP>/audit/<YYYY-MM-DD>.jsonl`（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ 这里**故意本地算**、不走 `core/audit` 的 `currentAuditFile()`：本文件是"先设 `SPC_AUDIT_DIR`（临时目录）
+ * 再 `await import(...)`"的写法，若用**静态** `import`，模块会在环境变量设好**之前**加载 ⇒ 路径解析成默认目录，
+ * 既读到别的文件、又会往仓库的 `.spc/audit` 里写（2026-10-14 踩过）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(TMP, 'audit', `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_STATE_DIR = TMP;
 process.env.SPC_KEYRING_DIR = join(TMP, 'keyring');
 process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
@@ -97,13 +111,13 @@ async function bucket(origin: string, anchorPub?: string): Promise<void> {
   await addSource({ origin, alias: origin, ...(anchorPub ? { anchorPub } : {}) });
 }
 
-function auditOf(method: string): Record<string, unknown>[] {
-  const file = join(TMP, 'audit', 'audit.jsonl');
+function auditOf(method: string): AuditEntry[] {
+  const file = auditFileToday();
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split('\n')
     .filter((l) => l.includes(`"${method}"`))
-    .map((l) => JSON.parse(l) as Record<string, unknown>);
+    .map((l) => JSON.parse(l) as AuditEntry);
 }
 
 const dataFile = (origin: string, name: string) => join(pluginDataDir(origin, id(name)), 'state.txt');
@@ -161,11 +175,12 @@ test('换源：预检计划 + 执行（记录 / 数据目录 / 配置文件 / �
   assert.equal(findAuthor('local:default', id('basic')), undefined);
   assert.equal(loadAuthors().authors.filter((a) => a.id === id('basic')).length, 1);
 
-  // 审计：`pluginId` = 旧引用、`ref` = 新引用（旧新都在同一条里）
+  // 审计：`subject` = 搬过去之后的引用、`detail.from` = 旧引用（旧新都在同一条里）；发起者是管理员
   const entries = auditOf('plugin.reanchor');
   assert.equal(entries.length, 1);
-  assert.equal(entries[0].pluginId, from);
-  assert.equal(entries[0].ref, to);
+  assert.equal(entries[0].subject?.ref, to);
+  assert.equal(entries[0].detail?.from, from);
+  assert.equal(entries[0].actor?.kind, 'operator', '换源是管理动作，不是插件自己干的');
 });
 
 // ---------------- 授权点名重写 ----------------

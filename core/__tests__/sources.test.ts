@@ -12,7 +12,12 @@ import { join } from 'node:path';
 const TMP = mkdtempSync(join(tmpdir(), 'spc-sources-'));
 const KEYRING_DIR = join(TMP, 'keyring');
 const KEYRING_FILE = join(KEYRING_DIR, 'keyring.json');
-const AUDIT_FILE = join(TMP, 'audit', 'audit.jsonl');
+// 审计**按天分文件**（2026-10-14）：当天条目在 `<STATE>/audit/<YYYY-MM-DD>.jsonl`
+function dayOf(d: Date): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+const AUDIT_FILE = (): string => join(TMP, 'audit', dayOf(new Date()) + '.jsonl');
 process.env.SPC_STATE_DIR = TMP;
 process.env.SPC_KEYRING_DIR = KEYRING_DIR;
 process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
@@ -77,8 +82,8 @@ function readKeyringFile(): { keyringSchema: number; sources: Record<string, unk
 }
 
 function auditLines(method: string): string[] {
-  if (!existsSync(AUDIT_FILE)) return [];
-  return readFileSync(AUDIT_FILE, 'utf8')
+  if (!existsSync(AUDIT_FILE())) return [];
+  return readFileSync(AUDIT_FILE(), 'utf8')
     .split('\n')
     .filter((l) => l.includes(`"${method}"`));
 }

@@ -11,6 +11,7 @@
 //
 // 宿主通道用**真的宿主 API**（`buildHostApi`）+ 一个假桥：假桥只做真桥做的三件事
 // （参数按 VM 类型取、结果 JSON 化、失败回错误信封），宿主实现一行都不重写。
+import type { AuditEntry } from '../audit';
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -23,6 +24,19 @@ import { pathToFileURL } from 'node:url';
 
 // 审计隔离（本文件后半段会建真沙箱）：AUDIT_DIR 在模块加载时读环境变量，所以先设再动态 import
 const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-fs-'));
+
+/**
+ * 当天的审计文件（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ **本地算**，不走 `core/audit`：本文件对 `stop` 之前的所有模块都是静态 import，而 `AUDIT_DIR` 的隔离
+ * （`mkdtempSync` + `process.env.SPC_AUDIT_DIR`）在 import **之后**才执行 ⇒ 若从 `core/audit` 拿路径，
+ * 那个模块早用默认目录加载完了，读的写的是仓库 `.spc/audit`（2026-10-14 踩过，涨了近 1 MB）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(AUDIT_DIR, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 after(() => rmSync(AUDIT_DIR, { recursive: true, force: true }));
 
@@ -1730,11 +1744,11 @@ export function init() {
     assert.match(out, /LIMIT 64 EMFILE/, `实际日志：${out}`);
     // 卸载：句柄表被强制回收（那 64 个没人关的 fd 全靠这一步），并落一条审计
     assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收');
-    const forced = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const forced = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
-      .filter((e) => e.pluginId === '@spc-test/fd' && e.method?.startsWith('handles.'))
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .filter((e) => (e.actor?.ref === '@spc-test/fd' || e.actor?.ref?.endsWith('/@spc-test/fd') === true) && e.method?.startsWith('handles.'))
       .map((e) => e.method!);
     for (const expected of ['handles.open', 'handles.close', 'handles.limit', 'handles.forced-release']) {
       assert.ok(forced.includes(expected), `审计缺少 ${expected}（实际：${[...new Set(forced)].join(',')}）`);
@@ -1828,11 +1842,11 @@ export async function init() {
     assert.match(out, /AFTER EBADF\/read\/file closed/, `实际日志：${out}`);
     assert.match(out, /LIMIT 64 EMFILE/, `实际日志：${out}`);
     assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收');
-    const audit = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const audit = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
-      .filter((e) => e.pluginId === '@spc-test/fh' && e.method?.startsWith('handles.'))
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .filter((e) => (e.actor?.ref === '@spc-test/fh' || e.actor?.ref?.endsWith('/@spc-test/fh') === true) && e.method?.startsWith('handles.'))
       .map((e) => e.method!);
     for (const expected of ['handles.open', 'handles.close', 'handles.limit', 'handles.forced-release']) {
       assert.ok(audit.includes(expected), `审计缺少 ${expected}（实际：${[...new Set(audit)].join(',')}）`);
@@ -1924,11 +1938,11 @@ export function stop() {
     }
     // 卸载：`leaked` 那个 watcher 从没关过 ⇒ 走强制回收，并留一条审计
     assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收');
-    const audit = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const audit = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string; target?: string })
-      .filter((e) => e.pluginId === '@spc-test/watch');
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .filter((e) => e.actor?.ref === '@spc-test/watch' || e.actor?.ref?.endsWith('/@spc-test/watch') === true);
     const methods = audit.map((e) => e.method!);
     assert.ok(methods.includes('handles.open'), `审计缺少 handles.open（实际：${[...new Set(methods)].join(',')}）`);
     assert.ok(methods.includes('handles.close'), `审计缺少 handles.close（实际：${[...new Set(methods)].join(',')}）`);
@@ -2017,11 +2031,11 @@ export async function init() {
     assert.match(out, /BAD error:ENOENT,close\/pending=true/, `实际日志：${out}`);
     assert.match(out, /DONE/, `实际日志：${out}`);
     assert.equal(releaseCalls, 1, 'dispose 应当调用一次桥上的句柄回收（那条没关的读流靠它）');
-    const audit = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const audit = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
-      .filter((e) => e.pluginId === '@spc-test/streams')
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .filter((e) => e.actor?.ref === '@spc-test/streams' || e.actor?.ref?.endsWith('/@spc-test/streams') === true)
       .map((e) => e.method!);
     assert.ok(audit.includes('handles.forced-release'), `审计缺少 handles.forced-release（实际：${[...new Set(audit)].join(',')}）`);
     rmSync(dir, { recursive: true, force: true });

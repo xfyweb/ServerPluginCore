@@ -2,6 +2,7 @@
 //
 // 隔离：SPC_STATE_DIR / SPC_AUDIT_DIR 必须在**动态 import 之前**设好
 // （core/audit.ts 的 AUDIT_DIR 是模块级常量，见其注释）。
+import type { AuditEntry } from '../audit';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,6 +10,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'spc-lifecycle-'));
+
+/**
+ * 当天的审计文件：`<TMP>/audit/<YYYY-MM-DD>.jsonl`（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ 这里**故意本地算**、不走 `core/audit` 的 `currentAuditFile()`：本文件是"先设 `SPC_AUDIT_DIR`（临时目录）
+ * 再 `await import(...)`"的写法，若用**静态** `import`，模块会在环境变量设好**之前**加载 ⇒ 路径解析成默认目录，
+ * 既读到别的文件、又会往仓库的 `.spc/audit` 里写（2026-10-14 踩过）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(TMP, 'audit', `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_STATE_DIR = TMP;
 process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
@@ -113,13 +127,13 @@ function readData(pluginId: string, file: string): string {
 }
 
 /** 读审计条目（只读 JSONL，不解析业务语义） */
-function auditEntries(): Record<string, unknown>[] {
-  const file = join(TMP, 'audit', 'audit.jsonl');
+function auditEntries(): AuditEntry[] {
+  const file = auditFileToday();
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as Record<string, unknown>);
+    .map((l) => JSON.parse(l) as AuditEntry);
 }
 
 /** 临时覆盖环境变量跑一段逻辑（配置在每次 loadConfig() 时重新求值，所以运行期生效） */
@@ -506,13 +520,14 @@ test('审计消歧（②b）：同 id 两个来源的**宿主调用**条目，�
   await manager.install(dir, { source: 'local:dev-b' });
 
   const mine = auditEntries().filter(
-    (e) => e.method === 'fs.write' && (e.ref === `local:dev-a/${id('audit-ref')}` || e.ref === `local:dev-b/${id('audit-ref')}`),
+    (e) =>
+      e.method === 'fs.write' &&
+      (e.actor?.ref === `local:dev-a/${id('audit-ref')}` || e.actor?.ref === `local:dev-b/${id('audit-ref')}`),
   );
   assert.equal(mine.length, 2, `两次装载各应有一条 fs.write 审计，实际 ${mine.length}`);
-  // 裸 `pluginId` 是历史字段：两条**一样**（这正是需要 ref 的原因）
-  assert.deepEqual([...new Set(mine.map((e) => e.pluginId))], [id('audit-ref')]);
+  // `actor.ref` 是完整引用：两条**来源不同**（这正是当初加 `ref` 的原因）
   assert.deepEqual(
-    [...new Set(mine.map((e) => e.ref))].sort(),
+    [...new Set(mine.map((e) => e.actor?.ref))].sort(),
     [`local:dev-a/${id('audit-ref')}`, `local:dev-b/${id('audit-ref')}`],
   );
 
@@ -741,8 +756,8 @@ test('装载顺序：记录顺序把依赖方排在前面，startAll 仍按拓�
   // 注意：生命周期审计的 `pluginId` 字段现在承载**完整引用**（身份 = (origin, id)，见设计 §3.2）
   const inits = auditEntries()
     .filter((e) => e.method === 'lifecycle.init')
-    .filter((e) => e.pluginId === ref('topo-consumer') || e.pluginId === ref('topo-provider'))
-    .map((e) => e.pluginId);
+    .filter((e) => e.subject?.ref === ref('topo-consumer') || e.subject?.ref === ref('topo-provider'))
+    .map((e) => e.subject?.ref);
   assert.deepEqual(
     inits.slice(-2),
     [ref('topo-provider'), ref('topo-consumer')],
@@ -891,7 +906,7 @@ test('failedRestart=auto：连续失败到上限后停在 failed，审计记 lif
   assert.equal(view.state, 'failed');
   assert.equal(view.restartAttempts, 3, `重试次数应为 maxAttempts+1=3，实际 ${view.restartAttempts}`);
   const restarts = auditEntries().filter(
-    (e) => e.pluginId === ref('restart-auto') && e.method === 'lifecycle.restart',
+    (e) => e.subject?.ref === ref('restart-auto') && e.method === 'lifecycle.restart',
   );
   assert.ok(restarts.length >= 3, `审计里应有 >=3 条 lifecycle.restart，实际 ${restarts.length}`);
   assert.ok(restarts.some((e) => String(e.paramsDigest).length > 0));
@@ -1034,7 +1049,7 @@ test('授权播种：install 档只在**首次安装**播一次；升级新增�
   assert.deepEqual(manager.status(id('seedable')).grants, [SEEDED]);
   // 播种要留痕（谁写的这条授权：安装清单，不是管理员手工点的）
   assert.ok(
-    auditEntries().some((e) => e.method === 'plugin.grant' && String(e.target).includes(SEEDED)),
+    auditEntries().some((e) => e.method === 'plugin.grant' && String(e.detail?.points ?? '').includes(SEEDED)),
     '播种必须落一条 plugin.grant 审计',
   );
 
@@ -1079,22 +1094,22 @@ test('审计：生命周期条目按 lifecycle.init/start/stop/unload 落账（�
   await manager.install(dir);
   await manager.disable(id('audited'));
   const methods = auditEntries()
-    .filter((e) => e.pluginId === ref('audited'))
+    .filter((e) => e.subject?.ref === ref('audited'))
     .map((e) => e.method);
   for (const m of ['lifecycle.init', 'lifecycle.start', 'lifecycle.stop', 'lifecycle.unload']) {
     assert.ok(methods.includes(m), `审计缺少 ${m}（实际：${methods.join(',')}）`);
   }
   const unload = auditEntries().find(
-    (e) => e.pluginId === ref('audited') && e.method === 'lifecycle.unload',
+    (e) => e.subject?.ref === ref('audited') && e.method === 'lifecycle.unload',
   );
   assert.equal(unload?.result, 'ok');
-  assert.equal(typeof unload?.durationMs, 'number');
+  assert.equal(typeof unload?.timing?.ms, 'number');
 });
 
 test('审计：lifecycle.<hook> 条目带 suspendedMs —— 钩子里等宿主 I/O 的时间要能单独看出来', async () => {
   // 为什么要这条：`durationMs` 里同时含着"插件自己算的"与"等宿主 I/O 的"两段时间，而处置完全不同
   // （前者调预算/改代码，后者看宿主实现）。挂起期间解释器没在跑 ⇒ 既不吃 CPU 预算也不落中断，
-  // 只有这个字段能把它单列出来（见 `AuditEntry.suspendedMs` 的注释）。
+  // 只有这个字段能把它单列出来（见 `AuditTiming.suspendedMs` 的注释）。
   // 这里用的是**真异步宿主方法** `fs.readTextAsync`（`fs.promises.readFile` 那条真异步通道）。
   const dir = makePlugin(
     'suspended',
@@ -1113,17 +1128,17 @@ test('审计：lifecycle.<hook> 条目带 suspendedMs —— 钩子里等宿主 
   writeFileSync(join(pluginData, 'a.bin'), 'x'.repeat(256 * 1024), 'utf8');
   await manager.install(dir);
   const init = auditEntries().find(
-    (e) => e.pluginId === ref('suspended') && e.method === 'lifecycle.init',
+    (e) => e.subject?.ref === ref('suspended') && e.method === 'lifecycle.init',
   );
   assert.equal(init?.result, 'ok', `init 审计缺失或失败：${JSON.stringify(init)}`);
-  const suspended = init?.suspendedMs;
+  const suspended = init?.timing?.suspendedMs;
   assert.equal(typeof suspended, 'number', `lifecycle.init 没记 suspendedMs：${JSON.stringify(init)}`);
   assert.ok(
     (suspended as number) > 0,
     `30 次真异步读的挂起墙钟不该是 0（实际 ${String(suspended)}）`,
   );
   assert.ok(
-    (suspended as number) <= (init?.durationMs as number),
+    (suspended as number) <= (init?.timing?.ms as number),
     '挂起墙钟是阶段总时长的一部分，不该超过它',
   );
 });

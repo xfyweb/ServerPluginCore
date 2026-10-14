@@ -101,12 +101,22 @@ function runCli(
 }
 
 function auditRows(state: string): Record<string, unknown>[] {
-  const file = join(state, 'audit', 'audit.jsonl');
+  // ⚠️ 路径要从**传进来的 `state`** 算（守护进程的 `SPC_AUDIT_DIR` 就钉在 `<state>/audit`），
+  // 不能用 `core/audit` 的 `currentAuditFile()` —— 那个解析的是**测试进程自己**的环境变量，
+  // 与被测守护进程的目录不是同一个（2026-10-14 换"按天分文件"时踩到）。
+  const file = auditFileIn(state);
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split('\n')
     .filter(Boolean)
     .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+/** `<state>/audit/<YYYY-MM-DD>.jsonl`（审计**按天分文件**：见 `core/audit.ts` 头部） */
+function auditFileIn(state: string): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(state, 'audit', `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
 }
 
 function cleanup(d: Daemon): void {
@@ -157,7 +167,7 @@ test('停机契约：`spc daemon stop` ⇒ 退出码 0 + 审计 core.shutdown（
     // ④ 审计：`core.shutdown` 一条 ok，且用核心自己的 actor（不是某个插件）
     const rows = auditRows(d.state).filter((e) => e.method === 'core.shutdown');
     assert.equal(rows.length, 1, `应有且仅有一条 core.shutdown，实际 ${rows.length}`);
-    assert.equal(rows[0].pluginId, '<core>');
+    assert.equal((rows[0].actor as { kind?: string })?.kind, 'core', '停机审计的发起者是核心');
     assert.equal(rows[0].result, 'ok');
     // ⑤ 那条空闲连接被核心**主动踢掉**（closeIdleConnections），而不是等它自己走
     assert.equal(sock.destroyed, true, '停机应主动断开空闲连接');

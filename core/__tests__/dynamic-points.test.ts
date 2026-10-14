@@ -7,6 +7,7 @@
 // 混在一起过一次：那时 `permissions-meta.test.ts` 那份显式清单必须"跳过动态点"才能对齐 —— 那是污染的症状。
 //
 // 隔离：SPC_STATE_DIR / SPC_AUDIT_DIR 必须在**动态 import 之前**设好（见 core/audit.ts 的模块级常量）。
+import type { AuditEntry } from '../audit';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,6 +15,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'spc-dynpoints-'));
+
+/**
+ * 当天的审计文件：`<TMP>/audit/<YYYY-MM-DD>.jsonl`（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ 这里**故意本地算**、不走 `core/audit` 的 `currentAuditFile()`：本文件是"先设 `SPC_AUDIT_DIR`（临时目录）
+ * 再 `await import(...)`"的写法，若用**静态** `import`，模块会在环境变量设好**之前**加载 ⇒ 路径解析成默认目录，
+ * 既读到别的文件、又会往仓库的 `.spc/audit` 里写（2026-10-14 踩过）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(TMP, 'audit', `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_STATE_DIR = TMP;
 process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
@@ -88,13 +102,13 @@ async function rejects(fn: () => unknown, code: string): Promise<void> {
 }
 
 /** 读审计条目（JSONL；只读业务语义需要的字段） */
-function auditEntries(): Record<string, unknown>[] {
-  const file = join(TMP, 'audit', 'audit.jsonl');
+function auditEntries(): AuditEntry[] {
+  const file = auditFileToday();
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as Record<string, unknown>);
+    .map((l) => JSON.parse(l) as AuditEntry);
 }
 
 before(() => {
@@ -322,7 +336,8 @@ test('管理员授予/撤回跨插件授权：白名单一条道，撤回后判�
     (e) => e.method === 'plugin.grant' || e.method === 'plugin.revoke',
   );
   assert.deepEqual(
-    authz.map((e) => [e.method, e.target, e.pluginId]),
+    // 授权/撤回的**点**在 detail.points（闭集明文）；被授权的是 subject；发起者是 operator（不看 actor.ref）
+    authz.map((e) => [e.method, Array.isArray(e.detail?.points) ? e.detail.points.join(',') : String(e.detail?.points ?? ''), e.subject?.ref]),
     [
       ['plugin.grant', point, caller],
       ['plugin.revoke', point, caller],

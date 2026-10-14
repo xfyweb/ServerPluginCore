@@ -345,9 +345,10 @@ Aborted(Assertion failed: list_empty(&rt->gc_obj_list), quickjs.c:2036, JS_FreeR
 |---|---|---|
 | `lifecycle.load` | 求值 bundle 失败 | 已实现（沿用现有条目） |
 | `lifecycle.init` / `lifecycle.start` / `lifecycle.stop` / `lifecycle.unload` | 每个钩子 | `result: ok/error`，失败带 `error.code` |
-| `lifecycle.restart` | `failedRestart=auto` 触发 | 带 `attempts` |
+| `lifecycle.restart` | `failedRestart=auto` 触发 | 带 `detail.attempts` 与 `corr.attempts` |
 
-`target` = 插件 ID（非敏感）；所有条目沿用"只记码与参数摘要"的规矩（api-contract §8）。
+`subject` = 插件（v2 起，非敏感），`actor` = **谁触发的这次装载**（管理员操作 ⇒ `operator` + `via`，自动重启/开机 ⇒ `core`）；
+所有条目沿用"只记码与参数摘要"的规矩（api-contract §8）。
 
 ## 8. CLI 与 HTTP 面
 

@@ -41,7 +41,13 @@ import { domainToASCII, domainToUnicode } from 'node:url';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { SpcError, toErrorShape } from './errors';
 import { HandleTable } from './plugin/handles';
-import { audit as auditRaw, digest, type AuditEntry } from './audit';
+import {
+  audit as auditRaw,
+  digest,
+  pluginActor,
+  type AuditEntry,
+  type AuditSubject,
+} from './audit';
 import { assertInodeMatch, validatePath } from './fs/safe-path';
 import type { PathValidation } from './fs/safe-path';
 import type { HostApi, HostArg, SandboxBridge } from './sandbox';
@@ -932,18 +938,20 @@ function assertKvKey(key: string): void {
 export function buildHostApi(ctx: PluginHostContext): HostApi {
   // 本文件的审计都带"这个插件是谁"：`pluginId` 是裸 id（历史字段），`ref` 是**完整引用**（身份 = (origin, id)）。
   // 就地包装一次，免得每个调用点各写两遍（漏一个就出现"分不清是谁"的条目）。
-  const auditOwn = (entry: Omit<AuditEntry, 'pluginId' | 'ref'>): void =>
+  const auditOwn = (entry: Omit<AuditEntry, 'actor' | 'ts' | 'subject'> & { subject?: AuditSubject; ts?: number }): void =>
     auditRaw({
+      ts: Date.now(),
+      // 本插件就是**发起者**；"关于谁"默认是它自己（句柄/事件/权限点由调用点覆盖）
+      actor: pluginActor(ctx.ref ?? ctx.pluginId),
+      subject: entry.subject ?? { kind: 'self' },
       ...entry,
-      pluginId: ctx.pluginId,
-      ref: ctx.ref,
       // 本插件正被别的插件调用时（`plugins.call` 的落地阶段），这一段里产生的**每一条**审计
       // 都要带同一个 `callId` —— 否则"B 在处理器里读了三个文件"这三条无法归到那次跨插件调用上。
       // 环境值由沙箱提供（`bridge.currentCallId`），与沙箱自己写的那批条目同源。
-      ...(entry.callId === undefined
+      ...(entry.corr?.callId === undefined
         ? (() => {
             const callId = ctx.bridge?.currentCallId?.();
-            return callId === undefined ? {} : { callId };
+            return callId === undefined ? {} : { corr: { ...entry.corr, callId } };
           })()
         : {}),
     });
@@ -966,10 +974,11 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
       auditOwn({
         ts: Date.now(),
         method: `handles.${event.type}`,
-        target: event.id === '' ? undefined : event.id,
+        // 句柄 id 与类型进**明细**（码值，非敏感）：句柄事件没有"关于谁"，只有"哪个句柄"
+        detail: { kind: event.kind, ...(event.id === '' ? {} : { handle: event.id }) },
         paramsDigest: digest(event.kind),
         result: 'ok',
-        durationMs: 0,
+        timing: { ms: 0 },
       }),
   });
   // 卸载回收：沙箱在 `teardown()` 里调（桥是宿主↔沙箱的回填通道，见 SandboxBridge）
@@ -981,9 +990,10 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         auditOwn({
           ts: Date.now(),
           method: 'handles.forced-release',
+          detail: { count: leaked.length },
           paramsDigest: digest(String(leaked.length)),
           result: 'ok',
-          durationMs: 0,
+          timing: { ms: 0 },
         });
       }
     };
@@ -2422,7 +2432,7 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
         });
         // 让审计（沙箱包装层写的那条）带上 callId / attempts / waitedMs：
         // 这三个数只有投递链知道，而"每次宿主调用一条审计"这条不变量在包装层
-        ctx.bridge?.tagAudit?.({ callId: res.callId, attempts: res.attempts, waitedMs: res.waitedMs });
+        ctx.bridge?.tagAudit?.({ corr: { callId: res.callId, attempts: res.attempts, waitedMs: res.waitedMs } });
         // 交**信封对象**：桥会把它序列化成 JSON 文本交给插件（`plugins` 组不做自动解码，照 exec.run 的约定）
         return res.envelope;
       },

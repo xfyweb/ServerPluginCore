@@ -38,12 +38,19 @@ type AuditEntry = import('./audit').AuditEntry;
 type LogEntry = import('./logs').LogEntry;
 
 /** `spc audit tail` 的响应形状（与守护进程 `readAuditTail` 的返回一致） */
-type AuditBody = { entries: AuditEntry[]; skipped: number; truncatedFile: boolean; nextOffset: number };
+type AuditBody = {
+  entries: AuditEntry[];
+  skipped: number;
+  nextCursor: string;
+  lookbackExhausted: boolean;
+  windowSkipped: boolean;
+};
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-/** 窗口/坏行都要说出来（否则"审计里没有"会被误读成"没发生"） */
+/** 回看边界 / 单文件窗口 / 坏行都要说出来（否则"审计里没有"会被误读成"没发生"） */
 function reportAuditGaps(body: AuditBody): void {
-  if (body.truncatedFile) console.log(t('cli.audit.window', { skipped: String(body.skipped) }));
+  if (body.lookbackExhausted) console.log(t('cli.audit.window', { skipped: String(body.skipped) }));
+  else if (body.windowSkipped) console.log(t('cli.audit.windowShort', { skipped: String(body.skipped) }));
   else if (body.skipped > 0) console.log(t('cli.audit.skipped', { skipped: String(body.skipped) }));
 }
 
@@ -806,9 +813,15 @@ async function main() {
     }
     const limit = flags.get('--limit') ?? flags.get('-n');
     if (limit !== undefined) base.set('limit', limit);
+    // 按发起者/通道过滤：这是这次改结构最直接的用处（"插件自己干的"与"管理员干的"分开看）
+    const actor = flags.get('--actor');
+    const via = flags.get('--via');
+    if (actor !== undefined) base.set('actor', actor);
+    if (via !== undefined) base.set('via', via);
 
     // 同 `spc log`：`-n` 只管首屏，跟随轮询不带 limit（否则中间的新条目会被静默跳过）
-    const pull = async (since?: number): Promise<AuditBody> => {
+    // 审计的游标是字符串 `"<日期>#<seq>"`（按天分文件 ⇒ `(日期, seq)` 才唯一）；日志那边是数字 seq
+    const pull = async (since?: string): Promise<AuditBody> => {
       const qs = new URLSearchParams(base);
       if (since !== undefined) {
         qs.set('since', String(since));
@@ -833,7 +846,7 @@ async function main() {
     if (!follow) return;
 
     if (follow) console.log(t('cli.follow.hint'));
-    let cursor = body.nextOffset;
+    let cursor = body.nextCursor;
     for (;;) {
       await sleep(500);
       let next: AuditBody;
@@ -844,7 +857,7 @@ async function main() {
         console.error(t('cli.follow.lost'));
         process.exit(1);
       }
-      cursor = next.nextOffset;
+      cursor = next.nextCursor;
       for (const e of next.entries) console.log(auditLine(e));
       reportAuditGaps(next);
     }

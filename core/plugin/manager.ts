@@ -12,7 +12,18 @@ import { randomBytes } from 'node:crypto';
 import { cpSync, existsSync, renameSync, rmdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { Manifest, PluginType } from '../../sdk/types';
-import { audit, digest, digestParams } from '../audit';
+import {
+  audit,
+  coreActor,
+  digest,
+  digestParams,
+  operatorActor,
+  pluginActor,
+  currentChannel,
+  type AuditActor,
+  type AuditVia,
+  type AuditDetail,
+} from '../audit';
 import {
   DEFAULT_LOCAL_SOURCE,
   ensureDir,
@@ -439,12 +450,37 @@ export class PluginManager {
 
   // ---- 装载 / 卸载 ----
 
-  private async loadAndStart(record: PluginRecord, opts: { isRestart?: boolean } = {}): Promise<void> {
+  /**
+   * **管理动作**的审计（2026-10-14 加）：`plugin.install` / `.uninstall` / `.enable` / `.disable` / `.reload`。
+   *
+   * 为什么非加不可：这些动作以前**一条都不落**（只有它们**带出来**的 `lifecycle.*` 条目）——
+   * 于是"谁在什么时候装了/卸了/停用了什么"在审计里查不到；`uninstall` 之后记录就没了，
+   * 事后再也说不清当初是从哪个源装的。
+   *
+   * 规矩：`detail` 只放**码值**（来源 / 权限点 / 计数），**路径一律只留摘要**（契约：路径敏感）。
+   */
+  private auditAdmin(method: string, ref: string, detail?: AuditDetail, started?: number, via?: AuditVia): void {
+    audit({
+      ts: Date.now(),
+      actor: operatorActor(via),
+      subject: { kind: 'plugin', ref },
+      method,
+      paramsDigest: digestParams(detail) ?? digest(ref),
+      result: 'ok',
+      ...(detail === undefined ? {} : { detail }),
+      timing: { ms: started === undefined ? 0 : Date.now() - started },
+    });
+  }
+
+  private async loadAndStart(
+    record: PluginRecord,
+    opts: { isRestart?: boolean; actor?: AuditActor } = {},
+  ): Promise<void> {
     const ref = pluginRef(record);
     // 重入保护：同一插件已在装载中/已装载 → 先干净卸载再装。
     // 没有这一条，"重装同一个插件"或"startAll 撞上已有句柄"就会叠加能力登记 + 泄漏沙箱。
     if (this.loaded.has(ref)) {
-      await this.stopAndUnload(ref, 'reload');
+      await this.stopAndUnload(ref, 'reload', this.limits(), opts.actor ?? operatorActor());
     }
     this.setState(ref, 'loading');
     let run: RunningPlugin | undefined;
@@ -465,6 +501,8 @@ export class PluginManager {
         },
         // `console.*`：宿主 stdout 那份**由沙箱自己打（不带前缀，历史行为）**，这里只负责进聚合器
         onLog: (level, message) => logs.append({ ref, level, text: message }),
+        // **谁触发的这次装载**：管理员（install/enable/reload）⇒ operator；自动重启/开机 ⇒ core
+        actor: opts.actor ?? operatorActor(),
       });
       this.loaded.set(ref, run);
       // 能力清单落记录（撤销依据 + 展示 + 审计追溯）
@@ -490,7 +528,12 @@ export class PluginManager {
     }
   }
 
-  private async stopAndUnload(ref: string, reason: StopReason, limits = this.limits()): Promise<void> {
+  private async stopAndUnload(
+    ref: string,
+    reason: StopReason,
+    limits = this.limits(),
+    actor: AuditActor = operatorActor(),
+  ): Promise<void> {
     const run = this.loaded.get(ref);
     const record = findRecord(loadRecords(), ref);
     if (!run) {
@@ -502,7 +545,7 @@ export class PluginManager {
       return;
     }
     this.setState(ref, 'stopping');
-    await unloadPlugin(run, reason, limits);
+    await unloadPlugin(run, reason, limits, actor);
     this.loaded.delete(ref);
     this.patchRecord(ref, { capabilities: [] });
   }
@@ -521,26 +564,29 @@ export class PluginManager {
     if (attempts > cfg.maxRestartAttempts) {
       audit({
         ts: Date.now(),
-        pluginId: ref,
+        // 自动重启是**核心**自己触发的（不是管理员点出来的）⇒ actor = core
+        actor: coreActor(),
+        subject: { kind: 'plugin', ref },
         method: 'lifecycle.restart',
-        target: ref,
         paramsDigest: digestParams({ attempts: String(attempts), decision: 'give-up' }) ?? digest(ref),
         result: 'error',
         error: { code: error.code },
-        durationMs: 0,
+        detail: { attempts, decision: 'give-up' },
+        timing: { ms: 0 },
       });
       return;
     }
 
     audit({
       ts: Date.now(),
-      pluginId: ref,
+      actor: coreActor(),
+      subject: { kind: 'plugin', ref },
       method: 'lifecycle.restart',
-      target: ref,
       paramsDigest:
         digestParams({ attempts: String(attempts), backoffMs: String(cfg.restartBackoffMs) }) ?? digest(ref),
       result: 'ok',
-      durationMs: 0,
+      detail: { attempts, backoffMs: cfg.restartBackoffMs },
+      timing: { ms: 0 },
     });
 
     const timer = setTimeout(() => {
@@ -549,7 +595,7 @@ export class PluginManager {
         const rec = findRecord(loadRecords(), ref);
         if (!rec || !rec.enabled) return;
         try {
-          await this.loadAndStart(rec, { isRestart: true });
+          await this.loadAndStart(rec, { isRestart: true, actor: coreActor() });
         } catch {
           /* 失败已在 loadAndStart 里落状态与审计 */
         }
@@ -670,8 +716,11 @@ export class PluginManager {
    * （该包满足不了任何带 `author.pub` 的依赖声明）。
    */
   install(dir: string, opts: InstallOptions = {}): Promise<PluginView> {
-    return this.withLock(async () => {
+  // ⚠️ **同步**取通道：`withLock` 的排队链上 AsyncLocalStorage 上下文会丢，进去再取就是 internal
+  const via = currentChannel();
+  return this.withLock(async () => {
       // ① 读清单 ② 读可选信封 ③ 定归属来源 —— 与 `.spc` 那条入口共用（见 prepareInstall）
+      const started = Date.now();
       const { manifest, authorPub, origin } = this.prepareInstall(dir, opts);
       const file = loadRecords();
       const ref = pluginRef({ origin, id: manifest.id });
@@ -706,6 +755,8 @@ export class PluginManager {
       if (record.enabled) {
         await this.loadAndStart(record);
       }
+      // 管理动作留痕：装了谁、从哪个源来（**路径只进摘要**：契约里路径算敏感值）
+      this.auditAdmin('plugin.install', ref, { origin }, started, via);
       return this.status(ref);
     });
   }
@@ -834,13 +885,15 @@ export class PluginManager {
       }
       audit({
         ts: Date.now(),
-        pluginId: who.ref,
-        ref: who.ref,
+        // 管理员接受换钥：操作者身份 + 关于那个插件
+        actor: operatorActor(),
+        subject: { kind: 'plugin', ref: who.ref },
         method: 'plugin.key-change',
-        target: fingerprint,
         paramsDigest: digestParams({ previous: String(expected) }) ?? digest(who.ref),
         result: 'ok',
-        durationMs: 0,
+        // 新指纹是**公开值**（旧指纹在摘要里）：进明细，读得回来
+        detail: { fingerprint },
+        timing: { ms: 0 },
       });
     }
     rememberAuthor({ origin: who.origin, id: who.id, pub: authorPub });
@@ -879,46 +932,54 @@ export class PluginManager {
     record.grants = [...new Set([...record.grants, ...seeded])].sort();
     audit({
       ts: Date.now(),
-      pluginId: pluginRef(record),
-      ref: pluginRef(record),
+      // 安装时播种 install 档权限点：**管理员装出来的**（不是插件自己要的）
+      actor: operatorActor(),
+      subject: { kind: 'plugin', ref: pluginRef(record) },
       method: 'plugin.grant',
-      target: seeded.join(','),
       paramsDigest: digestParams({ via: 'install-seed' }) ?? digest(pluginRef(record)),
       result: 'ok',
-      durationMs: 0,
+      detail: { points: seeded, via: 'install-seed' },
+      timing: { ms: 0 },
     });
   }
 
   enable(input: string): Promise<PluginView> {
-    return this.withLock(async () => {
+  const via = currentChannel();
+  return this.withLock(async () => {
       const ref = pluginRef(this.mustRecord(input));
       const record = this.patchRecord(ref, { enabled: true, state: 'installed', lastError: null });
       if (!this.loaded.has(ref)) {
         await this.loadAndStart(record);
       }
+      this.auditAdmin('plugin.enable', ref, undefined, undefined, via);
       return this.status(ref);
     });
   }
 
   disable(input: string): Promise<PluginView> {
-    return this.withLock(async () => {
+  const via = currentChannel();
+  return this.withLock(async () => {
       const ref = pluginRef(this.mustRecord(input));
       // 禁用同样会让依赖方失去依赖（`dependencyStatus` 要求"已启用且已装载"）→ 一并设防
       this.assertNotInUse(ref, 'disable');
       await this.stopAndUnload(ref, 'disable');
       this.patchRecord(ref, { enabled: false, state: 'disabled' });
+      this.auditAdmin('plugin.disable', ref, undefined, undefined, via);
       return this.status(ref);
     });
   }
 
   /** 重载：整插件 stop → 重新 load（不做模块热替换），也是 failed 的恢复通道 */
   reload(input: string): Promise<PluginView> {
-    return this.withLock(async () => {
+  const via = currentChannel();
+  return this.withLock(async () => {
       const record = this.mustRecord(input);
       const ref = pluginRef(record);
       if (!record.enabled) throw new SpcError('PLUGIN_DISABLED', { pluginId: ref });
-      await this.stopAndUnload(ref, 'reload');
+      // reload 是管理动作（管理员/控制台发起）⇒ 操作者身份
+      await this.stopAndUnload(ref, 'reload', this.limits(), operatorActor());
       await this.loadAndStart(record);
+      this.auditAdmin('plugin.reload', ref, undefined, undefined, via);
       return this.status(ref);
     });
   }
@@ -931,7 +992,9 @@ export class PluginManager {
    * 打给管理员看 —— 回显他打的字符串是没法复核的（同名插件可能在多个来源下都出现过）。
    */
   uninstall(input: string): Promise<{ ref: string }> {
-    return this.withLock(async () => {
+  const via = currentChannel();
+  return this.withLock(async () => {
+    const started = Date.now();
       const record = this.mustRecord(input);
       const ref = pluginRef(record);
       const file = loadRecords();
@@ -944,6 +1007,8 @@ export class PluginManager {
       dropRecord(file, ref);
       saveRecords(file);
       this.needsReload.delete(ref);
+      // 记录已经删了：这条审计是"谁在什么时候卸的、从哪个源来"的**唯一**出处
+      this.auditAdmin('plugin.uninstall', ref, { origin: record.origin }, started, via);
       return { ref };
     });
   }
@@ -1374,10 +1439,10 @@ export class PluginManager {
       for (const m of plan.moves) {
         audit({
           ts: Date.now(),
-          pluginId: m.from,
-          ref: m.to,
+          // 管理员发起的换源：关于**搬过去之后的那个引用**，新来源进明细
+          actor: operatorActor(),
+          subject: { kind: 'plugin', ref: m.to },
           method: 'plugin.reanchor',
-          target: targetOrigin,
           paramsDigest:
             digestParams({
               to: m.to,
@@ -1387,7 +1452,8 @@ export class PluginManager {
               authorsMoved: String(authorsMoved),
             }) ?? digest(m.from),
           result: 'ok',
-          durationMs: Date.now() - started,
+          detail: { origin: targetOrigin, from: m.from },
+          timing: { ms: Date.now() - started },
         });
       }
 
@@ -1404,13 +1470,15 @@ export class PluginManager {
     if (changed.length === 0) return;
     audit({
       ts: Date.now(),
-      pluginId: ref,
-      ref,
+      // 授权/撤回是**管理员动作**：契约里"谁在什么时候改了授权"的唯一出处
+      actor: operatorActor(),
+      subject: { kind: 'plugin', ref },
       method,
-      target: [...changed].sort().join(','),
       paramsDigest: digestParams({ count: String(changed.length) }) ?? digest(ref),
       result: 'ok',
-      durationMs: 0,
+      // 变了哪几个点是这条审计的重点 ⇒ 明文（权限点是码，不敏感）
+      detail: { points: [...changed].sort() },
+      timing: { ms: 0 },
     });
   }
 
@@ -1514,17 +1582,16 @@ export class PluginManager {
       // 调用方这一侧的账：**一次跨插件交互一条**，callId 让对端内部那几条能串回来
       audit({
         ts: Date.now(),
-        pluginId: calleeRecord.id,
-        ref: req.caller.ref,
+        // 发起者是**调用方插件**（以前这槽里放的是被调方 —— 正是"分不清谁"的来源）；对端进 subject
+        actor: pluginActor(req.caller.ref ?? req.caller.pluginId),
+        subject: { kind: 'plugin', ref: req.calleeRef },
         method: 'plugins.call',
-        target: callId,
         paramsDigest: digest(JSON.stringify([req.calleeRef, req.path])),
         result: 'ok',
-        callId,
-        attempts,
-        waitedMs,
+        detail: { path: req.path },
+        corr: { callId, attempts, waitedMs },
         resultBytes: Buffer.byteLength(text),
-        durationMs,
+        timing: { ms: durationMs },
       });
       return {
         envelope: {
@@ -1542,17 +1609,15 @@ export class PluginManager {
       const shape = toErrorShape(err);
       audit({
         ts: Date.now(),
-        pluginId: calleeRecord.id,
-        ref: req.caller.ref,
+        actor: pluginActor(req.caller.ref ?? req.caller.pluginId),
+        subject: { kind: 'plugin', ref: req.calleeRef },
         method: 'plugins.call',
-        target: callId,
         paramsDigest: digest(JSON.stringify([req.calleeRef, req.path])),
         result: 'error',
         error: { code: shape?.code ?? 'INTERNAL', paramsDigest: digestParams(shape?.params) },
-        callId,
-        attempts,
-        waitedMs,
-        durationMs: Date.now() - started,
+        detail: { path: req.path },
+        corr: { callId, attempts, waitedMs },
+        timing: { ms: Date.now() - started },
       });
       throw err;
     }
@@ -1623,18 +1688,21 @@ export class PluginManager {
           console.warn(`[plugin] 停机预算用尽，放弃等待 ${ref}`);
           audit({
             ts: Date.now(),
-            pluginId: ref,
+            // 停机预算用完 ⇒ 放弃等这个插件：核心动作
+            actor: coreActor(),
+            subject: { kind: 'plugin', ref },
             method: 'lifecycle.shutdown-abandoned',
             paramsDigest: digestParams({ reason }) ?? digest(ref),
             result: 'error',
             error: { code: 'SHUTDOWN_BUDGET_EXHAUSTED' },
-            durationMs: 0,
+            detail: { reason },
+            timing: { ms: 0 },
           });
           continue;
         }
         try {
           const limits = { ...base, stopTimeoutMs: Math.min(base.stopTimeoutMs, remaining) };
-          await this.stopAndUnload(ref, reason, limits);
+          await this.stopAndUnload(ref, reason, limits, coreActor());
           const record = findRecord(loadRecords(), ref);
           this.patchRecord(ref, { state: record?.enabled ? 'stopped' : 'disabled' });
         } catch (err) {

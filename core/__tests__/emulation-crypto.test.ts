@@ -9,6 +9,7 @@
 // 特别钉住一条：**crypto 错误的 name/message 是契约**——`dotenv` 的加密 .env 路径就按
 // `error instanceof RangeError`、`message === 'Invalid key length'`、`'Unsupported state or unable to
 // authenticate data'` 分支（见 `dotenv/lib/main.js:350-360`，版本 17.4.2）。
+import type { AuditEntry } from '../audit';
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,6 +20,19 @@ import { pathToFileURL } from 'node:url';
 
 // 审计隔离（最后一组会建真沙箱）
 const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-crypto-'));
+
+/**
+ * 当天的审计文件（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ **本地算**，不走 `core/audit`：本文件对 `stop` 之前的所有模块都是静态 import，而 `AUDIT_DIR` 的隔离
+ * （`mkdtempSync` + `process.env.SPC_AUDIT_DIR`）在 import **之后**才执行 ⇒ 若从 `core/audit` 拿路径，
+ * 那个模块早用默认目录加载完了，读的写的是仓库 `.spc/audit`（2026-10-14 踩过，涨了近 1 MB）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(AUDIT_DIR, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 after(() => rmSync(AUDIT_DIR, { recursive: true, force: true }));
 
@@ -567,11 +581,11 @@ export function init() {
     // ⑦ 审计：句柄的 open/close/强回收都要落账（§5.3 的"审计 open/close/leak"）。
     //    `handles.forced-release` 这条特别有意义：上一步留下的 256 条**没人释放**，
     //    卸载时必须被强制回收并留痕 —— 这正是不给桥就测不到的那条路径。
-    const handleMethods = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const handleMethods = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pluginId?: string; method?: string })
-      .filter((e) => e.pluginId === '@spc-test/crypto' && e.method?.startsWith('handles.'))
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .filter((e) => (e.actor?.ref === '@spc-test/crypto' || e.actor?.ref?.endsWith('/@spc-test/crypto') === true) && e.method?.startsWith('handles.'))
       .map((e) => e.method!);
     for (const expected of ['handles.open', 'handles.close', 'handles.forced-release']) {
       assert.ok(

@@ -12,7 +12,7 @@ import { transform, type Loader } from 'esbuild';
 import type { Manifest } from '../../sdk/types';
 import type { DependencyDecl } from './deps';
 import { validateManifest } from '../../sdk/validate';
-import { audit, digest, digestParams } from '../audit';
+import { audit, coreActor, digest, digestParams, type AuditActor } from '../audit';
 import { ensureDir, pluginDataDir, type PluginLimits } from '../config';
 import { SpcError, toErrorShape } from '../errors';
 import { buildHostApi, type CallDispatchRequest, type CallDispatchResult, type CallHandle } from '../hostApi';
@@ -49,6 +49,11 @@ export interface LoadDeps {
   logger?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** console.* 的聚合器出口（宿主 stdout 那份沙箱自己打，不带前缀） */
   onLog?: (level: 'info' | 'warn' | 'error', message: string) => void;
+  /**
+   * **谁触发的这次装载**（审计的 `actor`）：管理员操作 ⇒ `operatorActor()`，自动重启/开机 ⇒ `coreActor()`。
+   * 缺省 `coreActor()`（开机装载、收尾）—— 猜错的代价是审计里把自动重启记成管理员干的。
+   */
+  actor?: AuditActor;
 }
 
 /** 一个已装载（init/start 成功）的插件句柄 */
@@ -63,6 +68,7 @@ export interface RunningPlugin {
 }
 
 function auditLifecycle(
+  actor: AuditActor,
   pluginId: string,
   method: string,
   result: 'ok' | 'error',
@@ -71,15 +77,15 @@ function auditLifecycle(
 ): void {
   audit({
     ts: Date.now(),
-    pluginId,
+    actor,
+    // 生命周期条目"关于"的就是这个插件（以前挤在 target 里，靠 method 家族猜）
+    subject: { kind: 'plugin', ref: pluginId },
     method,
-    target: pluginId,
     paramsDigest: extra?.paramsDigest ?? digest(pluginId),
     result,
     error: result === 'error' ? { code: extra?.cause ?? 'PLUGIN_ERROR' } : undefined,
-    // 挂起时长与 durationMs 分列：插件"自己算了 3 秒"与"等宿主 I/O 3 秒"是两件事（见 AuditEntry.suspendedMs）
-    suspendedMs: extra?.suspendedMs,
-    durationMs: Date.now() - started,
+    // 挂起时长与执行时长分列：插件"自己算了 3 秒"与"等宿主 I/O 3 秒"是两件事（见 AuditTiming.suspendedMs）
+    timing: { ms: Date.now() - started, suspendedMs: extra?.suspendedMs },
   });
 }
 
@@ -152,16 +158,17 @@ async function runHook(
   hook: 'init' | 'start' | 'stop',
   pluginId: string,
   timeoutMs: number,
+  actor: AuditActor = coreActor(),
 ): Promise<void> {
   const started = Date.now();
   try {
     await sandbox.callHook(hook, timeoutMs);
-    auditLifecycle(pluginId, `lifecycle.${hook}`, 'ok', started, {
+    auditLifecycle(actor, pluginId, `lifecycle.${hook}`, 'ok', started, {
       suspendedMs: sandbox.lastSuspendedMs(),
     });
   } catch (err) {
     const shape = toErrorShape(err);
-    auditLifecycle(pluginId, `lifecycle.${hook}`, 'error', started, {
+    auditLifecycle(actor, pluginId, `lifecycle.${hook}`, 'error', started, {
       cause: shape?.code,
       // 失败路径也要这笔账：**超时**恰恰是最需要知道"时间花在等宿主还是在跑插件"的场合
       suspendedMs: sandbox.lastSuspendedMs(),
@@ -307,9 +314,9 @@ export async function loadPlugin(record: PluginRecord, deps: LoadDeps): Promise<
     }
 
     // 6/7) init（准备）→ start（开始工作）；都是可选的 start 除外
-    await runHook(sandbox, 'init', ref, deps.limits.initTimeoutMs);
+    await runHook(sandbox, 'init', ref, deps.limits.initTimeoutMs, deps.actor ?? coreActor());
     if (sandbox.hasFunctionExport('start')) {
-      await runHook(sandbox, 'start', ref, deps.limits.startTimeoutMs);
+      await runHook(sandbox, 'start', ref, deps.limits.startTimeoutMs, deps.actor ?? coreActor());
     }
   } catch (err) {
     // 回滚：能力登记先撤（否则重载会叠加），再释放沙箱 handle
@@ -333,18 +340,20 @@ export async function unloadPlugin(
   run: RunningPlugin,
   reason: StopReason,
   limits: PluginLimits,
+  /** 谁触发的卸载（审计用）：管理员操作 ⇒ `operatorActor()`，停机/自动重启 ⇒ `coreActor()` */
+  actor: AuditActor = coreActor(),
 ): Promise<void> {
   const ref = pluginRef(run.record);
   const auditParams = digestParams({ reason });
   if (run.sandbox && run.sandbox.hasFunctionExport('stop')) {
     try {
-      await runHook(run.sandbox, 'stop', ref, limits.stopTimeoutMs);
+      await runHook(run.sandbox, 'stop', ref, limits.stopTimeoutMs, actor);
     } catch (err) {
       const shape = toErrorShape(err);
       console.warn(
         `[plugin] ${ref} stop 未正常结束（${shape?.code ?? 'PLUGIN_STOP_FAILED'}），继续卸载`,
       );
-      auditLifecycle(ref, 'lifecycle.stop', 'error', Date.now(), {
+      auditLifecycle(actor, ref, 'lifecycle.stop', 'error', Date.now(), {
         cause: shape?.code,
         paramsDigest: auditParams,
       });
@@ -352,5 +361,5 @@ export async function unloadPlugin(
   }
   capabilities.revoke(ref);
   run.sandbox?.dispose();
-  auditLifecycle(ref, 'lifecycle.unload', 'ok', Date.now(), { paramsDigest: auditParams });
+  auditLifecycle(actor, ref, 'lifecycle.unload', 'ok', Date.now(), { paramsDigest: auditParams });
 }

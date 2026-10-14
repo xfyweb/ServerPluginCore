@@ -10,6 +10,7 @@
 // 不是冲突，就像"两个作者各有一个 `/status`"。本文件里的用例仍各用各的 path，只是为了让日志好读。
 //
 // 隔离：SPC_STATE_DIR / SPC_AUDIT_DIR 必须在**动态 import 之前**设好（core/audit.ts 的模块级常量）。
+import type { AuditEntry } from '../audit';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,6 +18,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const TMP = mkdtempSync(join(tmpdir(), 'spc-call-'));
+
+/**
+ * 当天的审计文件：`<TMP>/audit/<YYYY-MM-DD>.jsonl`（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ 这里**故意本地算**、不走 `core/audit` 的 `currentAuditFile()`：本文件是"先设 `SPC_AUDIT_DIR`（临时目录）
+ * 再 `await import(...)`"的写法，若用**静态** `import`，模块会在环境变量设好**之前**加载 ⇒ 路径解析成默认目录，
+ * 既读到别的文件、又会往仓库的 `.spc/audit` 里写（2026-10-14 踩过）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(TMP, 'audit', `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_STATE_DIR = TMP;
 process.env.SPC_AUDIT_DIR = join(TMP, 'audit');
 
@@ -135,13 +149,13 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 8_000): Pr
 }
 
 /** 审计条目（JSONL；只按需取字段） */
-function auditEntries(): Record<string, unknown>[] {
-  const file = join(TMP, 'audit', 'audit.jsonl');
+function auditEntries(): AuditEntry[] {
+  const file = auditFileToday();
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split('\n')
     .filter((l) => l.trim() !== '')
-    .map((l) => JSON.parse(l) as Record<string, unknown>);
+    .map((l) => JSON.parse(l) as AuditEntry);
 }
 
 /** 装一对（被调方 + 调用方）；`grants` 由调用方决定给不给 */
@@ -603,18 +617,18 @@ export const endpoints = {
   });
   await manager.install(caller, { grants: [callPointOf(ref('audit-b'), B_PATH)] });
 
-  const callId = readOut('audit-a').callId as string;
+  const callId = readOut('audit-a').callId as string; // 插件自己写进 out.json 的字段，不是审计行
   assert.equal(typeof callId, 'string');
-  const related = auditEntries().filter((e) => e.callId === callId);
+  const related = auditEntries().filter((e) => e.corr?.callId === callId);
   const methods = related.map((e) => e.method);
   assert.ok(
     methods.includes('plugins.call'),
     `期望有 plugins.call 条目，callId=${callId}，全部条目：${JSON.stringify(
-      auditEntries().map((e) => ({ m: e.method, ref: e.ref, callId: e.callId })),
+      auditEntries().map((e) => ({ m: e.method, actor: e.actor?.ref, subject: e.subject?.ref, callId: e.corr?.callId })),
     )}`,
   );
   assert.ok(methods.includes('kv.set'), `对端内部的宿主调用也要带同一个 callId，实际 ${methods.join(',')}`);
-  // 调用方那一条（ref=A）带 attempts/waitedMs；被调方那一条 ref=B
-  assert.ok(related.some((e) => e.ref === ref('audit-a') && e.attempts === 1 && e.waitedMs === 0));
-  assert.ok(related.some((e) => e.ref === ref('audit-b') && e.method === 'plugins.call'));
+  // 调用方那一条（actor=A）带 attempts/waitedMs；被调方那一条（subject=B）
+  assert.ok(related.some((e) => e.actor?.ref === ref('audit-a') && e.corr?.attempts === 1 && e.corr?.waitedMs === 0));
+  assert.ok(related.some((e) => e.subject?.ref === ref('audit-b') && e.method === 'plugins.call'));
 });

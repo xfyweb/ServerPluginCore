@@ -5,6 +5,7 @@
 //   D2 失败时的 error handle 未释放 → runtime 释放命中 QuickJS 断言
 //      （JS_FreeRuntime: assert(list_empty(&rt->gc_obj_list))）导致进程 Aborted；
 //      因此这里显式断言 dispose() 不崩。
+import type { AuditEntry } from '../audit';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -16,6 +17,19 @@ import type { HostApi, SandboxBridge } from '../sandbox';
 
 // 审计写隔离目录：AUDIT_DIR 在模块加载时读取环境变量，故必须先设再动态导入
 const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-'));
+
+/**
+ * 当天的审计文件（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ **本地算**，不走 `core/audit`：本文件对 `stop` 之前的所有模块都是静态 import，而 `AUDIT_DIR` 的隔离
+ * （`mkdtempSync` + `process.env.SPC_AUDIT_DIR`）在 import **之后**才执行 ⇒ 若从 `core/audit` 拿路径，
+ * 那个模块早用默认目录加载完了，读的写的是仓库 `.spc/audit`（2026-10-14 踩过，涨了近 1 MB）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(AUDIT_DIR, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 /** 仓库根（子进程用例要按绝对路径 import TS 源码） */
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -411,14 +425,17 @@ export async function init() {
     assert.ok(Date.now() - started >= spent - 5, '挂起墙钟不该超过阶段总时长');
     // 定时器回调那条也走同一套记账，并且要**真落进审计**（sandbox 自己写 timers.tick 条目）
     await new Promise((r) => setTimeout(r, 350));
-    const ticks = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const ticks = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { method?: string; pluginId?: string; suspendedMs?: number })
-      .filter((e) => e.method === 'timers.tick' && e.pluginId === '@xfy2412/sandbox-test');
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .filter((e) =>
+      e.method === 'timers.tick' &&
+      (e.actor?.ref === '@xfy2412/sandbox-test' || e.actor?.ref?.endsWith('/@xfy2412/sandbox-test') === true),
+    );
     assert.ok(ticks.length >= 1, '定时器回调没落审计');
     assert.ok(
-      ticks.some((e) => typeof e.suspendedMs === 'number' && e.suspendedMs >= 30),
+      ticks.some((e) => typeof e.timing?.suspendedMs === 'number' && e.timing.suspendedMs >= 30),
       `timers.tick 条目没记 suspendedMs：${JSON.stringify(ticks)}`,
     );
   } finally {

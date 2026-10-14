@@ -18,6 +18,19 @@ import { after, describe, it } from 'node:test';
 // sandbox/hostApi 都是动态 import（在 describe 回调里），所以在这里设就来得及。
 // 不隔离的话，跑一次测试就往仓库的 `.spc/audit/audit.jsonl` 追加——实测已涨到 100+MB。
 const AUDIT_DIR = mkdtempSync(join(tmpdir(), 'spc-audit-modules-'));
+
+/**
+ * 当天的审计文件（**按天分文件**，见 `core/audit.ts` 头部）。
+ *
+ * ⚠️ **本地算**，不走 `core/audit`：本文件对 `stop` 之前的所有模块都是静态 import，而 `AUDIT_DIR` 的隔离
+ * （`mkdtempSync` + `process.env.SPC_AUDIT_DIR`）在 import **之后**才执行 ⇒ 若从 `core/audit` 拿路径，
+ * 那个模块早用默认目录加载完了，读的写的是仓库 `.spc/audit`（2026-10-14 踩过，涨了近 1 MB）。
+ */
+function auditFileToday(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return join(AUDIT_DIR, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`);
+}
 process.env.SPC_AUDIT_DIR = AUDIT_DIR;
 after(() => rmSync(AUDIT_DIR, { recursive: true, force: true }));
 
@@ -1287,11 +1300,11 @@ console.log([
     );
 
     // ── 审计不变量 ──
-    const entries = readFileSync(join(AUDIT_DIR, 'audit.jsonl'), 'utf8')
+    const entries = readFileSync(auditFileToday(), 'utf8')
       .split('\n')
       .filter(Boolean)
       .map((l) => JSON.parse(l) as Record<string, any>)
-      .filter((e) => e.pluginId === PLUGIN);
+      .filter((e) => e.actor?.ref === PLUGIN || e.actor?.ref?.endsWith('/' + PLUGIN) === true);
     const pick = (method: string, result: string) =>
       entries.find((e) => e.method === method && e.result === result);
 
@@ -1307,7 +1320,7 @@ console.log([
     // 越权：审计里记的是**权限点**（可复盘、非明文参数）
     const denied = pick('bridgefail.notdeclared', 'denied');
     assert.ok(denied, '越权没有落审计');
-    assert.equal(denied.target, 'test.bridge.host');
+    assert.equal(denied.subject?.ref, 'test.bridge.host');
     assert.equal(denied.permission.decision, 'deny');
 
     // S-6：权限点解析失败那一支**不得**写明文 target，改用 paramsDigest 关联。
@@ -1315,7 +1328,7 @@ console.log([
     // （明文永久落盘），所以这条断言是有判别力的，不是"恰好 undefined"。
     const unresolved = pick('bridgefail.unresolved', 'denied');
     assert.ok(unresolved, '权限点解析失败没有落审计');
-    assert.equal(unresolved.target, undefined, '解析失败那一支不该写 target');
+    assert.equal(unresolved.subject?.kind, 'self', '解析失败那一支不该写权限点（subject 退回 self）');
     assert.ok(unresolved.paramsDigest, '应当留下 paramsDigest 供复盘关联');
     assert.ok(
       !JSON.stringify(unresolved).includes('token-abc123'),
