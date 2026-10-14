@@ -129,7 +129,7 @@ test('§8-1/§8-7 样板插件经**构建产物**走通 install → 装载 → i
       "import { join } from 'node:path';",
       'export function init() {',
       '  const v = lifecycle.version();',
-      "  console.log('E2E api=' + v.api);",
+      "  console.log('E2E contract=' + v.contract + ' api=' + v.api);",
       "  fs.write('out.txt', 'hi');",
       "  console.log('E2E read=' + fs.read('out.txt').content);",
       "  console.log('E2E join=' + join('a', 'b'));",
@@ -158,7 +158,7 @@ test('§8-1/§8-7 样板插件经**构建产物**走通 install → 装载 → i
   assert.equal(view.id, '@std/e2e');
   assert.equal(view.authorFingerprint, f.fingerprint, '信封里的公钥指纹应当被记下来');
   assert.ok(
-    logs.some((l) => l.includes('E2E api=')),
+    logs.some((l) => l.includes('E2E contract=')),
     `插件的 init 应当跑过：${logs.join(' | ')}`,
   );
   assert.ok(

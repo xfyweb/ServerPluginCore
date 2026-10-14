@@ -1,5 +1,6 @@
 {
   "cli.status.running": "Core running: version {version} · pid {pid} · {platform} · uptime {uptime}s",
+  "cli.status.contract": "Contract version: {contract}",
   "cli.status.plugins": "Plugins: {total} total, {running} running",
   "cli.status.fail": "status failed ({code})",
   "cli.yes": "yes",
@@ -395,6 +396,7 @@
   "err.GRANT_NOT_APPLICABLE": "Permission point {permission} is in the {grant} tier: it applies on install and cannot be granted or revoked; disable or uninstall the plugin to stop it",
   "err.RECORDS_INVALID": "Invalid install records; refusing to start: {file} ({reason})",
 
+  "err.CONTRACT_MISMATCH": "The plugin requires a newer core: it needs >= {minCore} (this core is {core}); upgrade the core, or update the plugin to a compatible version",
   "err.PLUGIN_NOT_FOUND": "Plugin not found: {pluginId}",
   "err.PLUGIN_REF_AMBIGUOUS": "Ambiguous plugin reference: {input} matches several plugins ({refs}) — be more specific: @author/name, or the full reference <origin>/@author/name",
   "err.PLUGIN_SOURCE_INVALID": "Invalid source: {origin} (expected local:<name> or a market domain)",

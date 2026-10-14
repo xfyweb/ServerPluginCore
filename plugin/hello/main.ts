@@ -14,7 +14,7 @@ export async function init(ctx: PluginContext) {
 
   // 0) 契约协商：先问清楚"这个核心提供哪一版 API"
   const v = lifecycle.version();
-  ctx.logger.info(`core=${v.core} api=${v.api}`);
+  ctx.logger.info(`core=${v.core} contract=${v.contract} api=${v.api}`);
 
   // 1) kv：插件作用域持久化（值可以是任意可 JSON 化的数据）
   const starts = (kv.get<number>('starts') ?? 0) + 1;

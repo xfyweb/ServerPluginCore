@@ -11,7 +11,7 @@ const validFull = {
   id: '@xfy2412/docker',
   name: 'Docker Management',
   version: { code: 12, name: '1.2.0' },
-  compat: { minCore: '0.1.0', targetCore: '0.3.0' },
+  compat: { minCore: '0.1.0' },
   author: { id: 'xfy2412@market.spc.xfyweb.cn', name: 'SPC Team', homepage: 'https://spc.xfyweb.cn' },
   description: 'Docker 容器/镜像/网络/卷管理（薄适配器）',
   runtime: { type: 'quickjs', esm: true },
@@ -54,6 +54,19 @@ test('合法：完整清单通过', () => {
 test('合法：最小清单通过（type 缺省视为 ability，esm 缺省视为 true）', () => {
   const r = validateManifest(validMinimal);
   assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('非法：compat.targetCore 已被移除（不做跨版本交叉编译）⇒ schema 拒', () => {
+  const r = validateManifest({
+    schema: 2,
+    id: '@xfy2412/t',
+    name: 'T',
+    version: { code: 1, name: '0.1.0' },
+    compat: { minCore: '0.1.0', targetCore: '0.3.0' },
+    runtime: { type: 'quickjs', esm: true },
+    permissions: [{ name: 'kv.read' }],
+  });
+  assert.equal(r.ok, false, 'targetCore 不该再被接受（additionalProperties: false）');
 });
 
 test('非法：runtime.type 只有 quickjs（子进程档已砍）⇒ node-child 被 schema 拒', () => {

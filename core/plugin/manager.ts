@@ -37,6 +37,8 @@ import {
   type SpcConfig,
 } from '../config';
 import { SpcError, toErrorShape } from '../errors';
+import { coreCompat } from './compat';
+import { VERSION } from '../version';
 import type { CallDispatchRequest, CallDispatchResult } from '../hostApi';
 import { isValidGrantPoint } from '../permissions/check';
 import { CALL_POINT_PREFIX, SUBSCRIBE_POINT_PREFIX, callPointOf } from '../permissions/points';
@@ -485,6 +487,25 @@ export class PluginManager {
     this.setState(ref, 'loading');
     let run: RunningPlugin | undefined;
     try {
+      // ① 契约兼容闸（2026-10-14 落）：`compat.minCore` 是插件**唯一**的兼容要求，
+      //    判据与"开发占位豁免"见 `core/plugin/compat.ts`。放在装载前 ⇒ 不满足就不进沙箱。
+      //    失败也留痕：这条审计是"为什么没跑起来"的唯一出处（loader 的 lifecycle.load 到不了这里）。
+      const manifest = readRecordManifest(record);
+      const verdict = coreCompat(manifest.compat?.minCore);
+      if (!verdict.ok) {
+        audit({
+          ts: Date.now(),
+          actor: opts.actor ?? operatorActor(),
+          subject: { kind: 'plugin', ref },
+          method: 'lifecycle.load',
+          paramsDigest: digestParams({ minCore: manifest.compat?.minCore ?? '' }) ?? digest(ref),
+          result: 'error',
+          error: { code: 'CONTRACT_MISMATCH' },
+          detail: { minCore: manifest.compat?.minCore ?? '', core: VERSION, reason: verdict.reason },
+          timing: { ms: 0 },
+        });
+        throw new SpcError('CONTRACT_MISMATCH', { minCore: manifest.compat?.minCore ?? '', core: VERSION });
+      }
       run = await loadPlugin(record, {
         limits: this.limits(),
         dependencyStatus: this.dependencyStatus,

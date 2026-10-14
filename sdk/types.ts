@@ -84,10 +84,12 @@ export interface Manifest {
     /** 展示用 semver */
     name: string;
   };
-  /** 核心版本兼容（minCore 必填） */
+  /**
+   * 核心版本兼容（minCore 必填）。
+   * ⚠️ 没有 `targetCore`：本项目**不做跨版本交叉编译**，"针对某个核心版本"没有行为可表达（要兼容旧核心就把 minCore 写低）。
+   */
   compat?: {
     minCore: string;
-    targetCore?: string;
   };
   author?: {
     /** 作者 ID：`<username>@<源域名>`（可选；填写时须与 id 命名空间、源域名一致） */

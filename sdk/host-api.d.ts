@@ -241,7 +241,12 @@ declare module '@host/api' {
   export interface VersionInfo {
     /** 核心版本（semver） */
     core: string;
-    /** 宿主 API 契约版本（整数，破坏性变更才 +1） */
+    /** **契约版本**（宿主 API 面，semver）：新增 API +minor、修 API +patch、破坏性变更 +major 并归零 */
+    contract: string;
+    /**
+     * 契约的**主版本**（= `major(contract)`）。
+     * ⚠️ 保留给老插件；新插件请读 `contract`（`api` 说不出 minor/patch）。
+     */
     api: number;
     pluginId: string;
   }

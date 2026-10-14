@@ -692,6 +692,7 @@ async function main() {
         pid: number;
         platform: string;
         uptimeMs: number;
+        contract: string;
         plugins: { total: number; running: number };
       };
     };
@@ -705,6 +706,7 @@ async function main() {
         uptime: (s.uptimeMs / 1000).toFixed(0),
       }),
     );
+    console.log(t('cli.status.contract', { contract: s.contract }));
     console.log(t('cli.status.plugins', { total: s.plugins.total, running: s.plugins.running }));
     return;
   }

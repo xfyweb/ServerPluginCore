@@ -32,7 +32,7 @@ import {
   setSourceAnchor,
   setSourceEnabled,
 } from './sources/manage';
-import { BRAND, VERSION } from './version';
+import { CONTRACT_VERSION,  BRAND, VERSION } from './version';
 
 const PORT = Number(process.env.SPC_PORT ?? 18777);
 
@@ -190,6 +190,8 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         version: VERSION,
+        // 契约版本：`management-channel.md` §4 的 `/api/status` 那行说了要返回它（之前只有核心版本）
+        contract: CONTRACT_VERSION,
         brand: BRAND,
         pid: process.pid,
         platform: process.platform,

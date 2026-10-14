@@ -253,7 +253,7 @@
       }
     },
     "compat": {
-      "description": "核心版本兼容：minCore 必填，targetCore 可选",
+      "description": "核心版本兼容：minCore 必填（判据 = 核心 major 相同且核心 ≥ minCore）",
       "type": "object",
       "required": [
         "minCore"
@@ -261,10 +261,6 @@
       "additionalProperties": false,
       "properties": {
         "minCore": {
-          "type": "string",
-          "pattern": "^\\d+\\.\\d+\\.\\d+$"
-        },
-        "targetCore": {
           "type": "string",
           "pattern": "^\\d+\\.\\d+\\.\\d+$"
         }

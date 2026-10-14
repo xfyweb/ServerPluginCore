@@ -431,12 +431,15 @@ test('lifecycle：version 做契约协商、health 回执（对象返回值被�
      export function init(ctx){
        const v = lifecycle.version();
        const h = lifecycle.health();
-       kv.set('probe', { core: v.core, api: v.api, vPlugin: v.pluginId, ok: h.ok, same: h.pluginId === ctx.pluginId });
+       kv.set('probe', { core: v.core, contract: v.contract, api: v.api, vPlugin: v.pluginId, ok: h.ok, same: h.pluginId === ctx.pluginId });
      }`,
   );
   await manager.install(dir);
   const probe = readKv(id('lc')).probe as Record<string, unknown>;
   assert.equal(typeof probe.core, 'string');
+  // 契约版本是 semver 的**源码事实**；`api` 是它的主版本（老字段，保留）——两者必须一致派生
+  assert.match(String(probe.contract), /^\d+\.\d+\.\d+$/, '契约版本是 semver');
+  assert.equal(probe.api, Number(String(probe.contract).split('.')[0]), 'api = major(contract)');
   assert.equal(probe.api, 1);
   assert.equal(probe.vPlugin, id('lc'));
   assert.equal(probe.ok, true);

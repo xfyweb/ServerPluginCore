@@ -479,7 +479,7 @@ POST /api/plugins/<id>/grants         # { add: [...], remove: [...] }
 | 所有管理操作走 `_pm_lock` | manager 的每次状态变更串行化（一把锁，§5） |
 | `plugin_id = author/name`（对类属性注入 `name/author/plugin_id`） | `id = @publisher/name`（多一个 `@`；身份与来源解耦见 ADR-001 v3） |
 | 插件专用 logger，且支持按插件覆盖日志等级 | `ctx.logger`；日志等级覆盖记在 P2-4 日志聚合器 |
-| `astrbot_version`（PEP 440 区间）不满足即拒载 | `compat.minCore/targetCore`：不满足即拒载，不静默降级 |
+| `astrbot_version`（PEP 440 区间）不满足即拒载 | `compat.minCore`：不满足即拒载，不静默降级 |
 | `OnPluginLoadedEvent` 钩子（插件间可监听"某插件已加载"） | **改成"依赖变更定向通知"**（只发给**声明依赖它的插件**；单向、不可裁决），设计见 `docs/events-and-hooks-design.md` §2.5。**不做广播**："所有插件都能监听别人加载"与"插件默认看不见其他插件"（manifest-design §6）冲突 |
 | 旧版插件类兼容加载（`Plugin`/`Main` 命名回退） | **不做兼容回退**：导出契约唯一（缺 `init` 即 `PLUGIN_NO_ENTRY`），fail-closed |
 

@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SpcError } from '../core/errors';
+import { VERSION } from '../core/version';
 import { ID_SEGMENT_RE, PLUGIN_ID_RE } from '../sdk/ids';
 import { checkAuthorId, type Workspace } from './workspace';
 
@@ -42,6 +43,8 @@ function manifestTemplate(id: string, displayName: string): string {
       version: { code: 1, name: '0.0.1' },
       description: '一句话说明这个插件做什么（会出现在插件列表里）',
       runtime: { type: 'quickjs', esm: true },
+      // 兼容下限：按**当前核心版本**自动填（作者要支持更老的核心就自己往下调）
+      compat: { minCore: VERSION },
       entry: 'main.ts',
       // 权限点要**精确**写，并写清 reason（它会出现在安装提示里给管理员看）。
       // 这里的三条都是 self 档（够不着宿主资源，声明即用）；要碰宿主资源就加 host 档的点。
@@ -77,7 +80,7 @@ import type { PluginContext } from '@spc/sdk';
 /** 装载后一次。\`ctx.config\` 已按 manifest 的 configSchema 校验并补过默认值（深度冻结） */
 export async function init(ctx: PluginContext): Promise<void> {
   const v = lifecycle.version();
-  ctx.logger.info(\`\${ctx.pluginId} init：core=\${v.core} api=\${v.api}\`);
+  ctx.logger.info(\`\${ctx.pluginId} init：core=\${v.core} contract=\${v.contract} api=\${v.api}\`);
 
   // 相对路径按**自己的数据目录**解析；写 \`../\` 或绝对路径会 PATH_OUT_OF_SCOPE（不是被静默改写）
   const written = fs.write('hello.txt', \`\${String(ctx.config.greeting ?? 'hello')}\\n\`);

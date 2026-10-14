@@ -10,8 +10,23 @@
 | **主通道** | QuickJS 沙箱插件（能力插件）· **随核心同一发布单元的内置功能** | 进程内 `@host/api` 模块注入（函数调用） | 插件 `import { fs, exec } from '@host/api'`；µs 级调用；注入即能力 |
 | **次通道**（**2026-10-07 请回来**） | **所有装进来的驱动插件**（判据见 ADR-005 §3：**进程位置只看技术属性、不看来源**——带不可控二进制的必须独立，其余"装进来的"一律独立，理由是可**用性**） | stdio JSON-RPC 2.0 | 沿革：2026-09-25 曾随"子进程档"整体砍掉（当时"两个用户都没了"：驱动改核心进程内）；2026-10-07 因"**驱动插件要允许第三方**"重新引入。**同一套方法签名，两种宿主；位置是配置** |
 
-- **版本协商**：`lifecycle.version`（核心返回契约版本，插件 SDK 校验兼容）；契约按 semver 演进，破坏性变更走废弃期；
+- **版本协商**：`lifecycle.version` → `{ core, contract, api, pluginId }`（`core` = 核心版本，`contract` = **契约版本**，`api` = `major(contract)`，保留给老插件）。
+  **契约版本走标准 semver，从 `1.0.0` 起**（源码事实：`core/version.ts` 的 `CONTRACT_VERSION`）：
+  新增 API ⇒ minor +1；修 API ⇒ patch +1；**破坏性变更**（删 API / 改调用签名）⇒ major +1 并归零。
+- **兼容性要求只有一处声明**：`manifest.compat.minCore`（核心版本）。判据 = **核心 major 必须相同 且 核心 ≥ minCore**
+  （等价 `semver.satisfies(core, '>=minCore <major+1')`）。**契约版本与核心版本同一次发版走**，
+  唯一错位是"某次发版只动前端/无关部分"——那时契约版本不变，它是派生事实、无副作用。
+  不满足 ⇒ `CONTRACT_MISMATCH`（参数 `{ minCore, core }`）+ 审计；文案给两条出路：升级核心 / **更新插件**（面板的独立更新通道）。
+  **判定已落地**（`core/plugin/compat.ts`，装载路径上、进沙箱之前）：`compat` 不声明 = 不要求；
+  **核心版本 = 仓库根 `package.json` 的 `version`**（树的事实 —— 不设环境变量，要观察另一个版本就 `git checkout` 过去；
+  发布产物由构建期内联）。**没有开发豁免**：`0.0.0` 是正经可比的版本（未发布/读不到版本时的值），要求更高的插件照样被拒。
 - 沙箱插件**只能**通过注入拿到 `@host/api`；**跑独立进程的驱动插件通过 RPC 信封拿同一组方法**（同一套签名，见上表）。
+
+### 契约版本的 changelog（改 `CONTRACT_VERSION` 必须同时在这里加一行）
+
+| 契约版本 | 核心 | 变化 |
+|---|---|---|
+| `1.0.0` | — | 把此前的 API 面（`@host/api` 各组方法 + 权限点 + 审计字段 + CLI 退出码）**定为基线**；`lifecycle.version` 从"硬编码 `api: 1`"改成返回 `{ core, contract, api }`（`api` 保留 = `major(contract)`） |
 
 ## 2. 调用约定
 
@@ -537,7 +552,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
   "name": "Docker Management",
   "author": { "id": "xfy2412@market.spc.xfyweb.cn", "name": "xfy2412" },
   "version": { "code": 12, "name": "1.2.0" },
-  "compat": { "minCore": "0.1.0", "targetCore": "0.3.0" },
+  "compat": { "minCore": "0.1.0" },
   "runtime": { "type": "quickjs", "esm": true },
   "permissions": [ { "name": "docker.read", "reason": "列出容器与镜像" } ],
   "exports": {
@@ -624,7 +639,7 @@ export async function stop(ctx: PluginContext): Promise<void>;   // 可选
 
 1. ~~事件 topic 与插件可见性（`dependencies.plugins` 显式声明）的细化授权模型~~ **已定（2026-09-22）**：订阅他人事件必须先在 `dependencies.plugins` 里声明依赖发布方；topic 枚举声明、无通配（`manifest-design.md` §6、`docs/events-and-hooks-design.md` §1.7）；
 2. `@host/api` 类型声明的自动生成（从注册表生成 TS 类型，保证 IDE 体验与运行时一致）；
-3. ~~驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）~~ **✅ 已定（2026-09-25）：进程内运行** ——
+3. ~~驱动插件与核心的进程边界（同进程 vs 独立进程的取舍与配置）~~ **⚠️ 已被取代（2026-10-07，见 `ROADMAP` P2-10）：装进来的驱动一律独立进程**（双档同接口；原"进程内"结论作废） ——
    冻结表要求驱动在能力插件加载前写完（跨进程注册协议只会自找麻烦），且 IPC 白加一层开销；
    代价（等同核心沦陷，不提供隔离）与实现约束见 **§10**；
 4. QuickJS 性能 benchmark 结论对 §5 超时/并发默认值的影响；

@@ -9,7 +9,7 @@
 |---|---|---|
 | `package` 名 | 全局唯一标识 | 发布者命名空间 id：`@username/name`（**市场内唯一**；跨市场全局唯一性由完整引用 `<origin>/@username/name` 提供） |
 | `versionCode` / `versionName` | 程序化比较 / 展示 | `version.code`（整数）/ `version.name`（字符串） |
-| `minSdkVersion` / `targetSdkVersion` | 兼容下限 / 针对版本 | `compat.minCore` / `compat.targetCore`（核心 API 版本） |
+| `minSdkVersion` / `targetSdkVersion` | 兼容下限 / 针对版本 | **只取 `compat.minCore`**（兼容下限）（核心 API 版本） |
 | `<uses-permission>` | **声明"需要"，不是"拥有"** | `permissions[]`（请求） |
 | `<permission protectionLevel>` | 权限定义 + **授予仪式** | **无对应**——宿主权限注册表（D4）用 `scope`（碰不碰宿主资源）+ `grant`（三档授予方式）+ 等级（提示强度），见 api-contract §6 |
 | `protectionLevel=normal` | 安装时自动授予 | `grant: auto`：只碰插件自身的数据 → 安装即生效 |
@@ -34,7 +34,7 @@
   "id": "@xfy2412/docker",
   "name": "Docker Management",
   "version": { "code": 12, "name": "1.2.0" },
-  "compat": { "minCore": "0.1.0", "targetCore": "0.3.0" },
+  "compat": { "minCore": "0.1.0" },
   "author": { "id": "xfy2412@market.spc.xfyweb.cn", "name": "...", "homepage": "..." },
   "runtime": { "type": "quickjs", "esm": true },
   "description": "Docker 容器/镜像/网络/卷管理（能力插件：面板页面 + 调驱动插件端点）",
@@ -91,7 +91,7 @@
 
 4. **`version.code/name` 分离**：升级比较用整数 `code`，展示用 `name`（对应 Android versionCode/versionName），避免 `"1.2.0" < "1.10.0"` 这类字符串比较陷阱。
 
-5. **`compat.minCore/targetCore`（对应 minSdk/targetSdk）**：解决插件与核心的版本耦合——`minCore` = 运行所需的核心 API 下限；`targetCore` = 开发针对的核心版本。**`targetCore` 按清单值；缺省 = 构建时所在的核心版本**。用途有**两层**：① **可否运行** —— `minCore` 不满足 ⇒ **拒装**（fail-closed，不是"装但警告"）；② **兼容行为开关** —— 核心按 `targetCore` 决定"对这个插件启用哪一版兼容行为"（这才是安卓 `targetSdkVersion` 的真正用途，也是它最难改的原因）。**核心 API 契约发布前一律 `0.x`**——可以破坏，但每次都要写迁移说明。semver + 废弃期（api-contract §6）由此可判定"此插件能否在此核心版本上运行 / 是否需要警告"。这是生态一旦建立就最难改的部分，第一天就要定。
+5. **`compat.minCore`（只取 minSdk 那一半）**：解决插件与核心的版本耦合——`minCore` = 运行所需的核心 API 下限；`targetCore` = 开发针对的核心版本。**`targetCore` 按清单值；缺省 = 构建时所在的核心版本**。用途有**两层**：① **可否运行** —— `minCore` 不满足 ⇒ **拒装**（fail-closed，不是"装但警告"）；② **兼容行为开关** —— 核心按 `targetCore` 决定"对这个插件启用哪一版兼容行为"（这才是安卓 `targetSdkVersion` 的真正用途，也是它最难改的原因）。**核心 API 契约发布前一律 `0.x`**——可以破坏，但每次都要写迁移说明。semver + 废弃期（api-contract §6）由此可判定"此插件能否在此核心版本上运行 / 是否需要警告"。这是生态一旦建立就最难改的部分，第一天就要定。
 
 6. **插件间可见性（对应 Android 11+ `<queries>`）**：插件默认看不见其他插件；要订阅他人事件或调用他人 Web API，必须在 `dependencies.plugins` 显式声明（**`author.pub` 必填**；`origin` 的写法按目标分四格 —— 市场目标必填域名、**本地目标可省略**（在本地源范围内按 `author.pub + id` 唯一匹配）、**市场包不许依赖本地源**，见表下）。顺带解决了 api-contract §12 的待定项"事件 topic 授权模型（通配 vs 枚举）"——用显式声明替代通配：**订阅他人事件必须先声明依赖发布方**，见 `docs/events-and-hooks-design.md` §1.7。
 
@@ -127,7 +127,7 @@
 | `permissions: ["docker.read"]` 字符串数组 | `permissions: [{name, reason}]` 对象数组 | reason 支撑风险提示与审核（要点 7） |
 | 无 exports | `exports: {endpoints, routes, events}` | 默认私有 + 显式导出（要点 3） |
 | `version: "1.0.0"` 字符串 | `version: {code, name}` | 版本比较正确性（要点 4） |
-| 无 compat | `compat: {minCore, targetCore}` | 插件-核心版本耦合（要点 5） |
+| 无 compat | `compat: { minCore }` | 插件-核心版本耦合（要点 5） |
 | `runtime: "node"` 字符串 | `runtime: {type, esm}` | 运行时类型 + ESM-only 硬约束（ADR-005 §4） |
 | 无 dependencies | `dependencies: {npm, plugins}` | 依赖管控 + 插件间可见性（要点 6/8） |
 | 无 configSchema | `configSchema`（可选） | 插件配置声明 + 面板渲染 + `ctx.config` 只读注入（要点 9） |

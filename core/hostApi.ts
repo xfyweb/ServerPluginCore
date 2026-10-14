@@ -52,7 +52,7 @@ import { assertInodeMatch, validatePath } from './fs/safe-path';
 import type { PathValidation } from './fs/safe-path';
 import type { HostApi, HostArg, SandboxBridge } from './sandbox';
 import { ensureDir } from './config';
-import { VERSION } from './version';
+import { CONTRACT_API, CONTRACT_VERSION, VERSION } from './version';
 
 import './exec/install'; // 副作用：注册内置模板 + 其权限点
 import { decodeBridgeArg, matchExecTemplate, resolveExecRequest } from './exec/request';
@@ -1715,7 +1715,13 @@ export function buildHostApi(ctx: PluginHostContext): HostApi {
     // ---- lifecycle：插件 → 宿主的契约协商与心跳 ----
     'lifecycle.version': {
       permission: 'lifecycle.version',
-      fn: () => ({ core: VERSION, api: 1, pluginId: ctx.pluginId }),
+      fn: () => ({
+        core: VERSION,
+        // 契约版本（semver）：插件用它做特性判断；`api` = 它的主版本（老字段，保留）
+        contract: CONTRACT_VERSION,
+        api: CONTRACT_API,
+        pluginId: ctx.pluginId,
+      }),
     },
     'lifecycle.health': {
       permission: 'lifecycle.health',
